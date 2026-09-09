@@ -1,0 +1,27 @@
+{
+  "name": "althunter",
+  "version": "2.0.0",
+  "private": true,
+  "description": "Relative Strength Decoupling Hunter — Institutional-grade RS detection with backtest",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "next": "14.2.15",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "lightweight-charts": "^4.2.1"
+  },
+  "devDependencies": {
+    "@types/node": "22.10.0",
+    "@types/react": "18.3.14",
+    "@types/react-dom": "18.3.5",
+    "eslint": "8.57.0",
+    "eslint-config-next": "14.2.15",
+    "typescript": "5.7.2"
+  }
+}
