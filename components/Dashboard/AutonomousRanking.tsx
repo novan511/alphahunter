@@ -29,21 +29,41 @@ const SIGNAL_RANK: Record<MultiTimeframeResult['finalSignal'], number> = {
   strong_sell: 1,
 };
 
-type SignalSortDir = 'asc' | 'desc' | null;
+type SortDir = 'asc' | 'desc';
+type SortKey = 'signal' | 'conf' | 'rsz';
+type SortState = Partial<Record<SortKey, SortDir>>;
+
+const SORT_PRIORITY: SortKey[] = ['signal', 'conf', 'rsz'];
+
+function nextSortDir(prev: SortDir | undefined): SortDir | undefined {
+  if (prev === undefined) return 'desc';
+  if (prev === 'desc') return 'asc';
+  return undefined;
+}
 
 export default function AutonomousRanking({ rankings, onSelectAsset, selectedAsset }: AutonomousRankingProps) {
-  const [signalSort, setSignalSort] = useState<SignalSortDir>(null);
+  const [sort, setSort] = useState<SortState>({});
 
   const sortedRankings = useMemo(() => {
-    if (!signalSort) return rankings;
+    const active = SORT_PRIORITY.filter((key) => sort[key]).map((key) => ({ key, dir: sort[key]! }));
+    if (active.length === 0) return rankings;
 
-    const dir = signalSort === 'asc' ? 1 : -1;
+    const getSignal = (r: MultiTimeframeResult) => SIGNAL_RANK[r.finalSignal] ?? 0;
+    const getConf = (r: MultiTimeframeResult) => r.confluenceScore;
+    const getRsz = (r: MultiTimeframeResult) => r.timeframes[1]?.rsZScore ?? 0;
+
     return [...rankings].sort((a, b) => {
-      const diff = (SIGNAL_RANK[a.finalSignal] - SIGNAL_RANK[b.finalSignal]) * dir;
-      if (diff !== 0) return diff;
-      return b.confluenceScore - a.confluenceScore;
+      for (const { key, dir } of active) {
+        const mul = dir === 'desc' ? 1 : -1;
+        let diff = 0;
+        if (key === 'signal') diff = (getSignal(a) - getSignal(b)) * mul;
+        if (key === 'conf') diff = (getConf(a) - getConf(b)) * mul;
+        if (key === 'rsz') diff = (getRsz(a) - getRsz(b)) * mul;
+        if (diff !== 0) return diff;
+      }
+      return getSignal(b) - getSignal(a);
     });
-  }, [rankings, signalSort]);
+  }, [rankings, sort]);
 
   if (rankings.length === 0) {
     return (
@@ -63,16 +83,33 @@ export default function AutonomousRanking({ rankings, onSelectAsset, selectedAss
 
   const signalsFound = rankings.filter((r) => r.finalSignal !== 'neutral').length;
 
-  const handleSignalSort = () => {
-    setSignalSort((prev) => {
-      if (prev === null) return 'desc';
-      if (prev === 'desc') return 'asc';
-      return null;
+  const toggleSort = (key: SortKey) => {
+    setSort((prev) => {
+      const next: SortState = { ...prev };
+      const dir = nextSortDir(prev[key]);
+      if (dir) next[key] = dir;
+      else delete next[key];
+      return next;
     });
   };
 
-  const signalSortLabel =
-    signalSort === 'desc' ? ' ▼' : signalSort === 'asc' ? ' ▲' : '';
+  const sortLabel = (key: SortKey) =>
+    sort[key] === 'desc' ? ' ▼' : sort[key] === 'asc' ? ' ▲' : '';
+
+  const sortableTh = (key: SortKey, label: string) => (
+    <th
+      style={{
+        ...thStyle,
+        cursor: 'pointer',
+        userSelect: 'none',
+        color: sort[key] ? '#3b82f6' : '#6b7280',
+      }}
+      onClick={() => toggleSort(key)}
+      title={`Click to sort by ${label} (best → worst → reverse → default). Multiple columns combine.`}
+    >
+      {label}{sortLabel(key)}
+    </th>
+  );
 
   return (
     <div style={{
@@ -104,20 +141,9 @@ export default function AutonomousRanking({ rankings, onSelectAsset, selectedAss
               <th style={thStyle}>1h</th>
               <th style={thStyle}>4h</th>
               <th style={thStyle}>1d</th>
-              <th style={thStyle}>RS Z</th>
-              <th style={thStyle}>Conf%</th>
-              <th
-                style={{
-                  ...thStyle,
-                  cursor: 'pointer',
-                  userSelect: 'none',
-                  color: signalSort ? '#3b82f6' : '#6b7280',
-                }}
-                onClick={handleSignalSort}
-                title="Click to sort by signal (desc → asc → default)"
-              >
-                Signal{signalSortLabel}
-              </th>
+              {sortableTh('rsz', 'RS Z')}
+              {sortableTh('conf', 'Conf%')}
+              {sortableTh('signal', 'Signal')}
             </tr>
           </thead>
           <tbody>

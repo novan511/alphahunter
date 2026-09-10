@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useEffect } from 'react';
+import React, { useState, useCallback, useEffect, useMemo } from 'react';
 import Layout from '../components/Layout/Layout';
 import StatsCard from '../components/Dashboard/StatsCard';
 import { Candle } from '../lib/types';
@@ -27,6 +27,68 @@ interface IDXScanResult {
   rank: number;
 }
 
+interface IdxScanCache {
+  scannedAt: number;
+  interval: string;
+  indexThreshold: number;
+  volumeMultiplier: number;
+  categories: string[];
+  results: IDXScanResult[];
+}
+
+const IDX_CACHE_KEY = 'althunter:last-idx-scan';
+
+function loadIdxCache(): IdxScanCache | null {
+  try {
+    const raw = localStorage.getItem(IDX_CACHE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as IdxScanCache;
+    if (!parsed?.results?.length) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function saveIdxCache(cache: IdxScanCache): void {
+  try {
+    localStorage.setItem(IDX_CACHE_KEY, JSON.stringify(cache));
+  } catch {
+    // storage full / private mode — ignore
+  }
+}
+
+async function fetchLastIdxScanFromSupabase(): Promise<IdxScanCache | null> {
+  try {
+    const res = await fetch('/api/idx-scan-history');
+    if (!res.ok) return null;
+    const data = await res.json();
+    if (!data?.found || !data.results?.length) return null;
+    return {
+      scannedAt: data.scannedAt,
+      interval: data.interval || '1d',
+      indexThreshold: data.indexThreshold ?? 2,
+      volumeMultiplier: data.volumeMultiplier ?? 1.5,
+      categories: data.categories ?? [],
+      results: data.results,
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function saveIdxScanToSupabase(cache: IdxScanCache): Promise<void> {
+  try {
+    await fetch('/api/idx-scan-history', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(cache),
+    });
+  } catch {
+    // non-fatal — local cache still works
+  }
+}
+
 const TF_OPTIONS = [
   { value: '1d', label: 'Daily' },
   { value: '1w', label: 'Weekly' },
@@ -52,6 +114,7 @@ export default function IDXPage() {
   const [selectedCategories, setSelectedCategories] = useState<string[]>(['Blue Chips', 'Bank', 'Telco & Tech']);
   const [indexThreshold, setIndexThreshold] = useState(2);
   const [volumeMultiplier, setVolumeMultiplier] = useState(1.5);
+  const [lastScannedAt, setLastScannedAt] = useState<number | null>(null);
   const { explanation, loading: aiLoading, fetchExplanation } = useAIExplanation();
 
   const toggleCategory = (cat: string) => {
@@ -66,6 +129,47 @@ export default function IDXPage() {
     );
     return Array.from(new Set(matched.flatMap((c) => c.stocks.map((s) => s.ticker))));
   }, [selectedCategories]);
+
+  const applyCachedScan = useCallback((cached: IdxScanCache) => {
+    setResults(cached.results);
+    setLastScannedAt(cached.scannedAt);
+    setSelectedInterval(cached.interval || '1d');
+    setIndexThreshold(cached.indexThreshold ?? 2);
+    setVolumeMultiplier(cached.volumeMultiplier ?? 1.5);
+    if (cached.categories?.length) {
+      setSelectedCategories(cached.categories);
+    }
+
+    const withSignals = cached.results.filter((r) => r.signal !== null);
+    if (withSignals.length > 0) {
+      setSelectedTicker(withSignals[0].ticker);
+    } else if (cached.results.length > 0) {
+      setSelectedTicker(cached.results[0].ticker);
+    }
+    saveIdxCache(cached);
+  }, []);
+
+  useEffect(() => {
+    const cached = loadIdxCache();
+    if (cached) {
+      applyCachedScan(cached);
+    }
+
+    let cancelled = false;
+    (async () => {
+      const remote = await fetchLastIdxScanFromSupabase();
+      if (cancelled || !remote) return;
+
+      const local = loadIdxCache();
+      if (!local || remote.scannedAt >= local.scannedAt) {
+        applyCachedScan(remote);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [applyCachedScan]);
 
   const runScan = useCallback(async () => {
     const tickerList = getTickerList();
@@ -86,7 +190,20 @@ export default function IDXPage() {
       }
 
       const data: IDXScanResult[] = await response.json();
+      const scannedAt = Date.now();
+      const cachePayload: IdxScanCache = {
+        scannedAt,
+        interval: selectedInterval,
+        indexThreshold,
+        volumeMultiplier,
+        categories: selectedCategories,
+        results: data,
+      };
+
       setResults(data);
+      setLastScannedAt(scannedAt);
+      saveIdxCache(cachePayload);
+      void saveIdxScanToSupabase(cachePayload);
 
       if (data.length > 0) {
         const withSignals = data.filter((r) => r.signal !== null);
@@ -103,7 +220,7 @@ export default function IDXPage() {
     } finally {
       setScanning(false);
     }
-  }, [getTickerList, selectedInterval, indexThreshold, volumeMultiplier]);
+  }, [getTickerList, selectedInterval, indexThreshold, volumeMultiplier, selectedCategories]);
 
   const runBacktest = useCallback(async (ticker: string) => {
     if (!ticker) return;
@@ -163,8 +280,38 @@ export default function IDXPage() {
     }
   };
 
+  const [signalSort, setSignalSort] = useState<'desc' | 'asc' | null>(null);
+
+  const sortedResults = useMemo(() => {
+    if (!signalSort) return results;
+
+    const dir = signalSort === 'desc' ? 1 : -1;
+    const signalRank = (r: IDXScanResult) => {
+      if (!r.signal) return 0;
+      const base = r.signal.type === 'buy' ? 10 : -10;
+      return base + (r.signal.strength || 0);
+    };
+
+    return [...results].sort((a, b) => {
+      const diff = (signalRank(a) - signalRank(b)) * dir;
+      if (diff !== 0) return diff;
+      return b.currentRSZScore - a.currentRSZScore;
+    });
+  }, [results, signalSort]);
+
   const buySignals = results.filter((r) => r.signal?.type === 'buy');
   const sellSignals = results.filter((r) => r.signal?.type === 'sell');
+
+  const handleSignalSort = () => {
+    setSignalSort((prev) => {
+      if (prev === null) return 'desc';
+      if (prev === 'desc') return 'asc';
+      return null;
+    });
+  };
+
+  const signalSortLabel =
+    signalSort === 'desc' ? ' ▼' : signalSort === 'asc' ? ' ▲' : '';
 
   return (
     <Layout>
@@ -195,10 +342,17 @@ export default function IDXPage() {
         padding: '16px',
         marginBottom: '20px',
       }}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px' }}>
-          <h2 style={{ fontSize: '16px', fontWeight: '600', color: '#f9fafb', margin: 0 }}>
-            🇮🇩 IDX / IHSG — Relative Strength Scanner
-          </h2>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px', gap: '12px', flexWrap: 'wrap' }}>
+          <div>
+            <h2 style={{ fontSize: '16px', fontWeight: '600', color: '#f9fafb', margin: 0 }}>
+              🇮🇩 IDX / IHSG — Relative Strength Scanner
+            </h2>
+            {lastScannedAt && (
+              <div style={{ fontSize: '11px', color: '#6b7280', marginTop: '4px' }}>
+                Last scan: {new Date(lastScannedAt).toLocaleString()}
+              </div>
+            )}
+          </div>
           <button
             onClick={runScan}
             disabled={scanning || getTickerList().length === 0}
@@ -370,11 +524,22 @@ export default function IDXPage() {
                   <th style={thStyle}>Stock Ret</th>
                   <th style={thStyle}>IHSG Ret</th>
                   <th style={thStyle}>Vol Ratio</th>
-                  <th style={thStyle}>Signal</th>
+                  <th
+                    style={{
+                      ...thStyle,
+                      cursor: 'pointer',
+                      userSelect: 'none',
+                      color: signalSort ? '#3b82f6' : '#6b7280',
+                    }}
+                    onClick={handleSignalSort}
+                    title="Click to sort by signal (best → worst → default)"
+                  >
+                    Signal{signalSortLabel}
+                  </th>
                 </tr>
               </thead>
               <tbody>
-                {results.map((result) => {
+                {sortedResults.map((result) => {
                   const isSelected = result.ticker === selectedTicker;
                   return (
                     <tr
