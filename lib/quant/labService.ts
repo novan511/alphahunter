@@ -2,7 +2,8 @@ import { runLabBatch, rankLabRows, LabRunRow, LabBatchRequest } from './labEngin
 import { MarketId } from './marketProfiles';
 import { getSupabase, isSupabaseConfigured } from '../supabase';
 
-export const LAB_AUTO_INTERVAL_HOURS = 6;
+// Vercel Hobby allows only daily cron — keep UI due-check in sync (24h)
+export const LAB_AUTO_INTERVAL_HOURS = 24;
 export const LAB_MARKETS: MarketId[] = ['crypto', 'commodities', 'gold-silver'];
 
 export async function persistLabBatch(marketId: string, rows: LabRunRow[], source = 'manual') {

@@ -2,7 +2,7 @@
   "crons": [
     {
       "path": "/api/quant-lab-cron",
-      "schedule": "17 */6 * * *"
+      "schedule": "17 9 * * *"
     }
   ]
 }
