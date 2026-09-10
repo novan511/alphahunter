@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useMemo, useState } from 'react';
 import { MultiTimeframeResult } from '../../lib/algorithms/multiTimeframe';
 
 interface AutonomousRankingProps {
@@ -21,7 +21,30 @@ const TF_COLORS: Record<string, string> = {
   neutral: '#6b7280',
 };
 
+const SIGNAL_RANK: Record<MultiTimeframeResult['finalSignal'], number> = {
+  strong_buy: 5,
+  buy: 4,
+  neutral: 3,
+  sell: 2,
+  strong_sell: 1,
+};
+
+type SignalSortDir = 'asc' | 'desc' | null;
+
 export default function AutonomousRanking({ rankings, onSelectAsset, selectedAsset }: AutonomousRankingProps) {
+  const [signalSort, setSignalSort] = useState<SignalSortDir>(null);
+
+  const sortedRankings = useMemo(() => {
+    if (!signalSort) return rankings;
+
+    const dir = signalSort === 'asc' ? 1 : -1;
+    return [...rankings].sort((a, b) => {
+      const diff = (SIGNAL_RANK[a.finalSignal] - SIGNAL_RANK[b.finalSignal]) * dir;
+      if (diff !== 0) return diff;
+      return b.confluenceScore - a.confluenceScore;
+    });
+  }, [rankings, signalSort]);
+
   if (rankings.length === 0) {
     return (
       <div style={{
@@ -33,12 +56,23 @@ export default function AutonomousRanking({ rankings, onSelectAsset, selectedAss
         color: '#6b7280',
         fontSize: '13px',
       }}>
-        Run autonomous scan to detect multi-timeframe confluence.
+        Waiting for scan… Previous results will restore automatically after first load.
       </div>
     );
   }
 
   const signalsFound = rankings.filter((r) => r.finalSignal !== 'neutral').length;
+
+  const handleSignalSort = () => {
+    setSignalSort((prev) => {
+      if (prev === null) return 'desc';
+      if (prev === 'desc') return 'asc';
+      return null;
+    });
+  };
+
+  const signalSortLabel =
+    signalSort === 'desc' ? ' ▼' : signalSort === 'asc' ? ' ▲' : '';
 
   return (
     <div style={{
@@ -72,11 +106,23 @@ export default function AutonomousRanking({ rankings, onSelectAsset, selectedAss
               <th style={thStyle}>1d</th>
               <th style={thStyle}>RS Z</th>
               <th style={thStyle}>Conf%</th>
-              <th style={thStyle}>Signal</th>
+              <th
+                style={{
+                  ...thStyle,
+                  cursor: 'pointer',
+                  userSelect: 'none',
+                  color: signalSort ? '#3b82f6' : '#6b7280',
+                }}
+                onClick={handleSignalSort}
+                title="Click to sort by signal (desc → asc → default)"
+              >
+                Signal{signalSortLabel}
+              </th>
             </tr>
           </thead>
           <tbody>
-            {rankings.map((result, idx) => {
+            {sortedRankings.map((result) => {
+              const originalIndex = rankings.findIndex((r) => r.asset === result.asset);
               const isSelected = result.asset === selectedAsset;
               const signalColor = SIGNAL_COLORS[result.finalSignal] || '#6b7280';
               return (
@@ -95,7 +141,7 @@ export default function AutonomousRanking({ rankings, onSelectAsset, selectedAss
                     if (!isSelected) e.currentTarget.style.background = 'transparent';
                   }}
                 >
-                  <td style={tdStyle}>{idx + 1}</td>
+                  <td style={tdStyle}>{originalIndex >= 0 ? originalIndex + 1 : '—'}</td>
                   <td style={{ ...tdStyle, fontWeight: '600', color: '#f9fafb' }}>
                     {result.asset.replace('USDT', '')}
                   </td>
@@ -116,13 +162,16 @@ export default function AutonomousRanking({ rankings, onSelectAsset, selectedAss
                           {tf.trendDirection === 'bullish' ? '↑' : tf.trendDirection === 'bearish' ? '↓' : '—'}
                         </span>
                         {tf.signal && (
-                          <span style={{
-                            fontSize: '8px',
-                            fontWeight: '700',
-                            color: tf.signal.type === 'buy' ? '#10b981' : '#ef4444',
-                            marginLeft: '2px',
-                          }}>
-                            {tf.signal.type === 'buy' ? '●' : '●'}
+                          <span
+                            title={tf.signalAgeBars != null ? `Signal age: ${tf.signalAgeBars} bars` : 'Fresh signal'}
+                            style={{
+                              fontSize: '8px',
+                              fontWeight: '700',
+                              color: tf.signal.type === 'buy' ? '#10b981' : '#ef4444',
+                              marginLeft: '2px',
+                            }}
+                          >
+                            {tf.signalAgeBars != null && tf.signalAgeBars > 5 ? '◐' : '●'}
                           </span>
                         )}
                       </div>

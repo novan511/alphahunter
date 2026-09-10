@@ -92,3 +92,89 @@ body {
   transform: translateY(-2px);
   box-shadow: 0 8px 25px rgba(0, 0, 0, 0.3);
 }
+
+/* Mobile-friendly quant / paper agent */
+.qm-page {
+  padding-bottom: 24px;
+}
+
+.qm-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+
+.qm-grid-metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 10px;
+}
+
+.qm-grid-params {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 12px;
+}
+
+.qm-grid-universe {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 12px;
+}
+
+.qm-two-col {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.qm-table-wrap {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.qm-table-wrap table {
+  min-width: 480px;
+}
+
+@media (max-width: 720px) {
+  .qm-grid-metrics {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .qm-grid-params,
+  .qm-grid-universe {
+    grid-template-columns: 1fr;
+  }
+
+  .qm-two-col {
+    grid-template-columns: 1fr;
+  }
+
+  .qm-actions {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .qm-actions button,
+  .qm-actions a {
+    width: 100%;
+    justify-content: center;
+    text-align: center;
+  }
+
+  h2 {
+    font-size: 16px !important;
+  }
+
+  body {
+    font-size: 14px;
+  }
+}
+
+@media (max-width: 480px) {
+  .qm-grid-metrics {
+    grid-template-columns: 1fr 1fr;
+  }
+}

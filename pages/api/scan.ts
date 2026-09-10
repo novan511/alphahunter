@@ -4,6 +4,7 @@ import { fetchBinanceKlines } from '../../lib/api';
 import { detectDecoupling } from '../../lib/algorithms/decouplingDetector';
 import { calculateRSData } from '../../lib/algorithms/relativeStrength';
 import { sma } from '../../lib/algorithms/indicators';
+import { getFreshLatestSignal, DEFAULT_MAX_SIGNAL_AGE_BARS } from '../../lib/algorithms/signalFreshness';
 
 export default async function handler(
   req: NextApiRequest,
@@ -83,7 +84,12 @@ export default async function handler(
           const lastVolMA = volMA[volMA.length - 1];
           const lastVol = trimmedAsset[trimmedAsset.length - 1].volume;
 
-          const latestSignal = signals.length > 0 ? signals[signals.length - 1] : null;
+          const { signal: latestSignal } = getFreshLatestSignal(
+            signals,
+            trimmedAsset,
+            config.interval,
+            DEFAULT_MAX_SIGNAL_AGE_BARS
+          );
 
           return {
             symbol,

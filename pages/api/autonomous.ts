@@ -58,9 +58,13 @@ export default async function handler(
     indexSymbol = 'BTCUSDT',
     categories,
     limit = '200',
+    maxScan,
   } = req.query;
 
   const parsedLimit = Math.min(Math.max(parseInt(limit as string, 10) || 200, 100), 500);
+  const parsedMaxScan = maxScan
+    ? Math.min(Math.max(parseInt(maxScan as string, 10) || 80, 10), 200)
+    : 80;
 
   try {
     let symbolsToScan: string[];
@@ -73,6 +77,9 @@ export default async function handler(
     } else {
       symbolsToScan = [...ALL_ASSET_SYMBOLS];
     }
+
+    // Cap universe to keep autonomous scan within a reasonable request budget.
+    symbolsToScan = symbolsToScan.slice(0, parsedMaxScan);
 
     const indexSymbolClean = (indexSymbol as string).toUpperCase();
 

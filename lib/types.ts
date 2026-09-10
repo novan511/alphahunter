@@ -79,6 +79,12 @@ export interface BacktestConfig {
   maxHoldBars: number;
   useTrailingStop: boolean;
   trailingStopATR: number;
+  /** Taker fee per side as decimal (0.001 = 0.1%). Defaults to 0 when omitted. */
+  feeRate?: number;
+  /** Slippage as decimal applied against fill (0.0005 = 0.05%). Defaults to 0 when omitted. */
+  slippage?: number;
+  /** Candle interval used for avgHoldBars. Defaults to 4h when omitted. */
+  interval?: string;
 }
 
 export interface AssetScanResult {

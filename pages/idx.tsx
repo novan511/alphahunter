@@ -153,10 +153,12 @@ export default function IDXPage() {
           signal: null,
           rsZScore: selectedResult.currentRSZScore,
           trendDirection: selectedResult.currentRSZScore > 0 ? 'bullish' : selectedResult.currentRSZScore < 0 ? 'bearish' : 'neutral',
+          signalAgeBars: null,
         }],
         confluenceScore: Math.min(Math.abs(selectedResult.currentRSZScore) * 50, 100),
         confluenceDirection: selectedResult.currentRSZScore > 0 ? 'bullish' : 'bearish',
         finalSignal: selectedResult.signal.type === 'buy' ? 'buy' : 'sell',
+        newestSignalAgeBars: null,
       });
     }
   };

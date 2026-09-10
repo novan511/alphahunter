@@ -24,6 +24,9 @@ export const DEFAULT_BACKTEST_CONFIG: BacktestConfig = {
   maxHoldBars: 24,
   useTrailingStop: true,
   trailingStopATR: 1.5,
+  feeRate: 0.001,
+  slippage: 0.0005,
+  interval: '4h',
 };
 
 export const AVAILABLE_INTERVALS: { value: Interval; label: string }[] = [

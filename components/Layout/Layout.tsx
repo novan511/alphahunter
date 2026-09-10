@@ -7,7 +7,11 @@ interface LayoutProps {
 
 const NAV_ITEMS = [
   { href: '/', label: 'Crypto', icon: '₿' },
-  { href: '/idx', label: 'IDX / IHSG', icon: '🇮🇩' },
+  { href: '/quant', label: 'Command', icon: '◉' },
+  { href: '/quant-crypto', label: 'Q Crypto', icon: '⌁' },
+  { href: '/quant-commodities', label: 'Q Comm', icon: '🛢' },
+  { href: '/quant-gold-silver', label: 'Q Au/Ag', icon: 'Au' },
+  { href: '/idx', label: 'IDX', icon: '🇮🇩' },
 ];
 
 export default function Layout({ children }: LayoutProps) {

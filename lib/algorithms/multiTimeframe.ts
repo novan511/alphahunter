@@ -1,13 +1,22 @@
-import { Candle, DecouplingSignal, ScanConfig } from '../types';
+import {
+  Candle,
+  DecouplingSignal,
+  ScanConfig,
+} from '../types';
 import { detectDecoupling } from './decouplingDetector';
 import { calculateRSData } from './relativeStrength';
 import { sma } from './indicators';
+import {
+  DEFAULT_MAX_SIGNAL_AGE_BARS,
+  getFreshLatestSignal,
+} from './signalFreshness';
 
 export interface TimeframeSignal {
   timeframe: string;
   signal: DecouplingSignal | null;
   rsZScore: number;
   trendDirection: 'bullish' | 'bearish' | 'neutral';
+  signalAgeBars: number | null;
 }
 
 export interface MultiTimeframeResult {
@@ -16,6 +25,12 @@ export interface MultiTimeframeResult {
   confluenceScore: number;
   confluenceDirection: 'bullish' | 'bearish' | 'none';
   finalSignal: 'strong_buy' | 'buy' | 'strong_sell' | 'sell' | 'neutral';
+  /** Min age (in bars) among contributing signals; null if none. */
+  newestSignalAgeBars: number | null;
+}
+
+export interface MultiTimeframeOptions {
+  maxSignalAgeBars?: number;
 }
 
 function determineTrend(candles: Candle[], period: number = 20): 'bullish' | 'bearish' | 'neutral' {
@@ -36,8 +51,10 @@ function determineTrend(candles: Candle[], period: number = 20): 'bullish' | 'be
 export function analyzeMultiTimeframe(
   assetSymbol: string,
   timeframeData: { [timeframe: string]: { asset: Candle[]; index: Candle[] } },
-  baseConfig: ScanConfig
+  baseConfig: ScanConfig,
+  options: MultiTimeframeOptions = {}
 ): MultiTimeframeResult {
+  const maxSignalAgeBars = options.maxSignalAgeBars ?? DEFAULT_MAX_SIGNAL_AGE_BARS;
   const timeframes = ['1h', '4h', '1d'];
   const tfSignals: TimeframeSignal[] = [];
 
@@ -49,6 +66,7 @@ export function analyzeMultiTimeframe(
         signal: null,
         rsZScore: 0,
         trendDirection: 'neutral',
+        signalAgeBars: null,
       });
       continue;
     }
@@ -67,13 +85,19 @@ export function analyzeMultiTimeframe(
     const lastRS = rsData[rsData.length - 1];
     const trend = determineTrend(trimmedAsset);
 
-    const latestSignal = signals.length > 0 ? signals[signals.length - 1] : null;
+    const { signal: latestSignal, ageBars } = getFreshLatestSignal(
+      signals,
+      trimmedAsset,
+      tf,
+      maxSignalAgeBars
+    );
 
     tfSignals.push({
       timeframe: tf,
       signal: latestSignal,
       rsZScore: lastRS.rsZScore,
       trendDirection: trend,
+      signalAgeBars: ageBars,
     });
   }
 
@@ -86,13 +110,17 @@ export function analyzeMultiTimeframe(
     '1d': 0.45,
   };
 
+  const signalAges: number[] = [];
+
   for (const tfSig of tfSignals) {
     const weight = tfWeights[tfSig.timeframe] || 0.3;
 
     if (tfSig.signal?.type === 'buy') {
       buyScore += weight * (1 + tfSig.signal.strength / 10);
+      if (tfSig.signalAgeBars != null) signalAges.push(tfSig.signalAgeBars);
     } else if (tfSig.signal?.type === 'sell') {
       sellScore += weight * (1 + tfSig.signal.strength / 10);
+      if (tfSig.signalAgeBars != null) signalAges.push(tfSig.signalAgeBars);
     }
 
     if (tfSig.rsZScore > 1) buyScore += weight * 0.5;
@@ -137,5 +165,6 @@ export function analyzeMultiTimeframe(
     confluenceScore,
     confluenceDirection,
     finalSignal,
+    newestSignalAgeBars: signalAges.length > 0 ? Math.min(...signalAges) : null,
   };
 }

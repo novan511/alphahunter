@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
 import Layout from '../components/Layout/Layout';
 import ParameterPanel from '../components/Controls/ParameterPanel';
 import DecouplingChart from '../components/Chart/DecouplingChart';
@@ -15,6 +15,69 @@ import { RegimeResult } from '../lib/algorithms/marketRegime';
 import { AutonomousParams } from '../lib/algorithms/autonomousParams';
 import { MultiTimeframeResult } from '../lib/algorithms/multiTimeframe';
 
+const AUTO_CACHE_KEY = 'althunter:last-autonomous';
+const AUTO_CACHE_MAX_AGE_MS = 30 * 60 * 1000;
+
+interface AutonomousCache {
+  scannedAt: number;
+  indexSymbol: string;
+  regime: RegimeResult;
+  autonomousParams: AutonomousParams;
+  rankings: MultiTimeframeResult[];
+  totalScanned: number;
+}
+
+function loadAutonomousCache(): AutonomousCache | null {
+  try {
+    const raw = localStorage.getItem(AUTO_CACHE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as AutonomousCache;
+    if (!parsed?.rankings?.length || !parsed.regime) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function saveAutonomousCache(cache: AutonomousCache): void {
+  try {
+    localStorage.setItem(AUTO_CACHE_KEY, JSON.stringify(cache));
+  } catch {
+    // storage full / private mode — ignore
+  }
+}
+
+async function fetchLastScanFromSupabase(indexSymbol: string): Promise<AutonomousCache | null> {
+  try {
+    const res = await fetch(`/api/scans?indexSymbol=${encodeURIComponent(indexSymbol)}`);
+    if (!res.ok) return null;
+    const data = await res.json();
+    if (!data?.found || !data.rankings?.length || !data.regime) return null;
+    return {
+      scannedAt: data.scannedAt,
+      indexSymbol: data.indexSymbol || indexSymbol,
+      regime: data.regime,
+      autonomousParams: data.autonomousParams,
+      rankings: data.rankings,
+      totalScanned: data.totalScanned ?? data.rankings.length,
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function saveScanToSupabase(cache: AutonomousCache): Promise<void> {
+  try {
+    await fetch('/api/scans-save', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(cache),
+    });
+  } catch {
+    // non-fatal — local cache still works
+  }
+}
+
 export default function Home() {
   const [mode, setMode] = useState<'manual' | 'autonomous'>('autonomous');
   const [config, setConfig] = useState<ScanConfig>(DEFAULT_SCAN_CONFIG);
@@ -29,10 +92,13 @@ export default function Home() {
   const [regime, setRegime] = useState<RegimeResult | null>(null);
   const [autoParams, setAutoParams] = useState<AutonomousParams | null>(null);
   const [totalScanned, setTotalScanned] = useState(0);
+  const [lastScannedAt, setLastScannedAt] = useState<number | null>(null);
+  const [isHydrated, setIsHydrated] = useState(false);
 
   const [scanning, setScanning] = useState(false);
   const [backtesting, setBacktesting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const didAutoScanRef = useRef(false);
 
   const runManualScan = useCallback(async () => {
     if (config.assetSymbols.length === 0) return;
@@ -82,10 +148,24 @@ export default function Home() {
       }
 
       const data = await response.json();
+      const scannedAt = Date.now();
+      const cachePayload: AutonomousCache = {
+        scannedAt,
+        indexSymbol: config.indexSymbol,
+        regime: data.regime,
+        autonomousParams: data.autonomousParams,
+        rankings: data.rankings,
+        totalScanned: data.totalScanned,
+      };
+
       setRegime(data.regime);
       setAutoParams(data.autonomousParams);
       setAutoRankings(data.rankings);
       setTotalScanned(data.totalScanned);
+      setLastScannedAt(scannedAt);
+
+      saveAutonomousCache(cachePayload);
+      void saveScanToSupabase(cachePayload);
 
       if (data.rankings.length > 0) {
         const withSignals = data.rankings.filter((r: MultiTimeframeResult) => r.finalSignal !== 'neutral');
@@ -97,6 +177,60 @@ export default function Home() {
       setScanning(false);
     }
   }, [config.indexSymbol]);
+
+  const applyCachedScan = useCallback((cached: AutonomousCache) => {
+    setRegime(cached.regime);
+    setAutoParams(cached.autonomousParams);
+    setAutoRankings(cached.rankings);
+    setTotalScanned(cached.totalScanned);
+    setLastScannedAt(cached.scannedAt);
+    saveAutonomousCache(cached);
+
+    const withSignals = cached.rankings.filter((r) => r.finalSignal !== 'neutral');
+    if (withSignals.length > 0) {
+      setSelectedAsset(withSignals[0].asset);
+    } else if (cached.rankings.length > 0) {
+      setSelectedAsset(cached.rankings[0].asset);
+    }
+  }, []);
+
+  useEffect(() => {
+    setIsHydrated(true);
+    const cached = loadAutonomousCache();
+    if (cached && cached.indexSymbol === config.indexSymbol) {
+      applyCachedScan(cached);
+    }
+
+    let cancelled = false;
+    (async () => {
+      const remote = await fetchLastScanFromSupabase(config.indexSymbol);
+      if (cancelled || !remote) return;
+
+      const local = loadAutonomousCache();
+      if (!local || remote.scannedAt >= local.scannedAt) {
+        applyCachedScan(remote);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [config.indexSymbol, applyCachedScan]);
+
+  useEffect(() => {
+    if (!isHydrated || didAutoScanRef.current) return;
+    didAutoScanRef.current = true;
+
+    const cached = loadAutonomousCache();
+    const isFresh =
+      cached &&
+      cached.indexSymbol === config.indexSymbol &&
+      Date.now() - cached.scannedAt < AUTO_CACHE_MAX_AGE_MS;
+
+    if (!isFresh) {
+      runAutonomousScan();
+    }
+  }, [isHydrated, config.indexSymbol, runAutonomousScan]);
 
   const runScan = useCallback(() => {
     if (mode === 'autonomous') {
@@ -229,23 +363,30 @@ export default function Home() {
         </div>
 
         {mode === 'autonomous' && (
-          <button
-            onClick={runScan}
-            disabled={scanning}
-            style={{
-              padding: '8px 20px',
-              background: scanning ? '#374151' : 'linear-gradient(135deg, #10b981, #3b82f6)',
-              border: 'none',
-              borderRadius: '8px',
-              color: 'white',
-              fontSize: '13px',
-              fontWeight: '600',
-              cursor: scanning ? 'not-allowed' : 'pointer',
-              opacity: scanning ? 0.6 : 1,
-            }}
-          >
-            {scanning ? 'Scanning...' : '🔍 Run Autonomous Scan'}
-          </button>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+            {lastScannedAt && (
+              <span style={{ fontSize: '11px', color: '#6b7280' }}>
+                Last scan: {new Date(lastScannedAt).toLocaleTimeString()}
+              </span>
+            )}
+            <button
+              onClick={runScan}
+              disabled={scanning}
+              style={{
+                padding: '8px 20px',
+                background: scanning ? '#374151' : 'linear-gradient(135deg, #10b981, #3b82f6)',
+                border: 'none',
+                borderRadius: '8px',
+                color: 'white',
+                fontSize: '13px',
+                fontWeight: '600',
+                cursor: scanning ? 'not-allowed' : 'pointer',
+                opacity: scanning ? 0.6 : 1,
+              }}
+            >
+              {scanning ? 'Scanning...' : '🔍 Run Autonomous Scan'}
+            </button>
+          </div>
         )}
       </div>
 

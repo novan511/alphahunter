@@ -29,6 +29,8 @@ export default async function handler(
     maxHoldBars = '24',
     useTrailingStop = 'true',
     trailingStopATR = '1.5',
+    feeRate = '0.001',
+    slippage = '0.0005',
   } = req.query;
 
   const scanConfig: ScanConfig = {
@@ -50,6 +52,9 @@ export default async function handler(
     maxHoldBars: parseInt(maxHoldBars as string, 10),
     useTrailingStop: useTrailingStop === 'true',
     trailingStopATR: parseFloat(trailingStopATR as string),
+    feeRate: parseFloat(feeRate as string),
+    slippage: parseFloat(slippage as string),
+    interval: scanConfig.interval,
   };
 
   try {

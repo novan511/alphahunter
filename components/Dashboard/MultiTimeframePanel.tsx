@@ -129,10 +129,19 @@ export default function MultiTimeframePanel({ result, regime }: MultiTimeframePa
                     <div style={{ color: '#6b7280', marginTop: '2px' }}>
                       Str: {tf.signal.strength.toFixed(1)} | Vol: {tf.signal.volumeRatio.toFixed(1)}x
                     </div>
+                    {tf.signalAgeBars != null && (
+                      <div style={{
+                        color: tf.signalAgeBars <= 3 ? '#10b981' : tf.signalAgeBars <= 8 ? '#f59e0b' : '#ef4444',
+                        marginTop: '2px',
+                      }}>
+                        Age: {tf.signalAgeBars} bar{tf.signalAgeBars === 1 ? '' : 's'}
+                        {tf.signalAgeBars > 8 ? ' (stale)' : ''}
+                      </div>
+                    )}
                   </div>
                 ) : (
                   <div style={{ fontSize: '10px', color: '#6b7280', padding: '6px 8px' }}>
-                    No signal on this TF
+                    No fresh signal on this TF
                   </div>
                 )}
               </div>
