@@ -1,4 +1,10 @@
-import { runLabBatch, rankLabRows, LabRunRow, LabBatchRequest } from './labEngine';
+import {
+  runLabBatch,
+  rankLabRows,
+  LabRunRow,
+  LabBatchRequest,
+  LabGridSize,
+} from './labEngine';
 import { MarketId } from './marketProfiles';
 import { getSupabase, isSupabaseConfigured } from '../supabase';
 
@@ -118,11 +124,17 @@ export function isLabDue(lastAt: string | null, now = Date.now()): boolean {
 
 export async function runAndPersistMarket(
   marketId: MarketId,
-  options: { applyBestToDesk?: boolean; source?: string; body?: LabBatchRequest } = {}
+  options: {
+    applyBestToDesk?: boolean;
+    source?: string;
+    body?: LabBatchRequest;
+    gridSize?: LabGridSize;
+  } = {}
 ) {
   const rows = await runLabBatch({
     marketId,
     combos: options.body?.combos,
+    gridSize: options.gridSize || options.body?.gridSize || 'standard',
     walkForward: true,
   });
   const ranked = rankLabRows(rows);

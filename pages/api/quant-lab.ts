@@ -74,6 +74,7 @@ export default async function handler(
         marketId: out.marketId,
         runId: out.runId,
         ranked: out.ranked,
+        comboCount: out.ranked.length,
         appliedBestToDesk: out.appliedBestToDesk,
       });
     }

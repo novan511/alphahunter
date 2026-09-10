@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Layout from '../components/Layout/Layout';
 import { MARKET_PROFILES, MarketId } from '../lib/quant/marketProfiles';
-import type { LabRunRow } from '../lib/quant/labEngine';
+import type { LabRunRow, LabGridSize } from '../lib/quant/labEngine';
 
 type LabTab = MarketId;
 
@@ -48,6 +48,7 @@ export default function QuantLabPage() {
   const autoRanRef = useRef(false);
   const [boardSource, setBoardSource] = useState<'batch' | 'last_run' | null>(null);
   const [lastRunMeta, setLastRunMeta] = useState<{ at: string; label?: string | null } | null>(null);
+  const [gridSize, setGridSize] = useState<LabGridSize>('standard');
 
   const accent = TABS.find((t) => t.id === tab)?.accent || '#3b82f6';
   const profile = MARKET_PROFILES[tab];
@@ -119,7 +120,8 @@ export default function QuantLabPage() {
     setAppliedNote(null);
     setRows([]);
     setDetail(null);
-    setProgress({ done: 0, total: 18 });
+    const expected = gridSize === 'quick' ? 18 : gridSize === 'standard' ? 36 : 54;
+    setProgress({ done: 0, total: expected });
     try {
       const res = await fetch('/api/quant-lab', {
         method: 'POST',
@@ -127,6 +129,7 @@ export default function QuantLabPage() {
         body: JSON.stringify({
           action: 'run',
           marketId: tab,
+          gridSize,
           applyBestToDesk: applyBest,
         }),
       });
@@ -153,7 +156,7 @@ export default function QuantLabPage() {
     } finally {
       setRunning(false);
     }
-  }, [tab, applyBest, loadHistory]);
+  }, [tab, applyBest, loadHistory, gridSize]);
 
   const applyRow = useCallback(
     async (row: LabRunRow) => {
@@ -228,13 +231,35 @@ export default function QuantLabPage() {
           <div>
             <div style={{ fontSize: 12, color: '#f9fafb', fontWeight: 700 }}>{profile.title}</div>
             <div style={{ fontSize: 11, color: '#6b7280', marginTop: 2 }}>
-              Default preset: {profile.defaultPresetId} · ~18 combos · sequential · walk-forward OOS
+              Default preset: {profile.defaultPresetId} · grid {gridSize} · sequential · walk-forward OOS
               {' · '}
-              auto every {autoStatus?.hours ?? 6}h
+              auto every {autoStatus?.hours ?? 24}h
               {autoStatus?.lastRunAt
                 ? ` · last ${new Date(autoStatus.lastRunAt).toLocaleString()}`
                 : ' · no saved run yet'}
             </div>
+          </div>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+            <label style={{ fontSize: 11, color: '#9ca3af' }}>
+              Grid{' '}
+              <select
+                value={gridSize}
+                onChange={(e) => setGridSize(e.target.value as LabGridSize)}
+                style={{
+                  marginLeft: 6,
+                  padding: '6px 8px',
+                  background: '#1f2937',
+                  border: '1px solid #374151',
+                  borderRadius: 6,
+                  color: '#f9fafb',
+                  fontSize: 12,
+                }}
+              >
+                <option value="quick">Quick (~18 combos)</option>
+                <option value="standard">Standard (~36 combos)</option>
+                <option value="full">Full (~54 combos)</option>
+              </select>
+            </label>
           </div>
           <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
             <label style={{ fontSize: 11, color: '#9ca3af', display: 'flex', alignItems: 'center', gap: 6 }}>

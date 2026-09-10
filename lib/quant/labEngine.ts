@@ -52,7 +52,8 @@ export interface LabRunRow {
 
 export interface LabBatchRequest {
   marketId: MarketId;
-  /** null = quick default grid for that market */
+  gridSize?: LabGridSize;
+  /** null = default grid for that market + gridSize */
   combos?: Array<{
     interval?: string;
     riskPerTrade?: number;
@@ -120,58 +121,120 @@ export function compositeScore(oos: {
   return { score: Math.round(score * 1000) / 1000, credible };
 }
 
-export function defaultLabCombos(marketId: MarketId): LabCombo[] {
+export type LabGridSize = 'quick' | 'standard' | 'full';
+
+export const LAB_GRID_SIZES: Record<LabGridSize, { label: string; maxCombos: number }> = {
+  quick: { label: 'Quick (~18)', maxCombos: 18 },
+  standard: { label: 'Standard (~36)', maxCombos: 36 },
+  full: { label: 'Full (~54)', maxCombos: 54 },
+};
+
+export function defaultLabCombos(
+  marketId: MarketId,
+  gridSize: LabGridSize = 'standard'
+): LabCombo[] {
   const profile = getMarketProfile(marketId);
   const base = profile.baseRisk;
   const presetId = profile.defaultPresetId;
-  const intervals =
-    marketId === 'crypto' ? ['4h', '1d'] : ['1d'];
+  const maxCombos = LAB_GRID_SIZES[gridSize].maxCombos;
+
+  // Broader TF coverage. Yahoo remaps some (4h→1h). Skip 45m (not on Binance/HL).
+  const intervals: string[] =
+    marketId === 'crypto'
+      ? gridSize === 'quick'
+        ? ['4h', '1d']
+        : gridSize === 'standard'
+          ? ['30m', '1h', '4h', '1d']
+          : ['15m', '30m', '1h', '4h', '1d']
+      : gridSize === 'quick'
+        ? ['1d']
+        : gridSize === 'standard'
+          ? ['1h', '4h', '1d']
+          : ['1h', '4h', '1d', '1w'];
 
   const riskPerTrades =
-    marketId === 'crypto' ? [0.004, 0.005, 0.008] : [0.003, 0.004, 0.006];
-  const minSignals = marketId === 'crypto' ? [3.0, 3.5, 4.0] : [2.6, 3.0, 3.5];
+    marketId === 'crypto' ? [0.003, 0.005, 0.008] : [0.003, 0.004, 0.006];
+  const minSignals =
+    marketId === 'crypto' ? [3.0, 3.5, 4.0] : [2.6, 3.0, 3.5];
   const slTps: Array<[number, number]> =
     marketId === 'crypto'
       ? [
-          [1.8, 2.5],
+          [1.5, 2.5],
           [2.0, 3.0],
           [1.5, 3.5],
+          [2.5, 2.5],
         ]
       : [
           [1.8, 2.8],
           [2.2, 3.0],
           [1.5, 3.5],
+          [2.0, 2.5],
         ];
+  const maxPositionsOpts = marketId === 'crypto' ? [3, 4, 5] : [2, 3, 4];
 
   const combos: LabCombo[] = [];
   let n = 0;
+
+  // Outer: TF × risk × minStr (main axes user cares about)
+  // Inner: rotate SL/TP + maxPositions so we cover more without exploding
   for (const interval of intervals) {
     for (const riskPerTrade of riskPerTrades) {
       for (const minSignalStrength of minSignals) {
-        for (const [stopLossATR, takeProfitATR] of slTps) {
-          n += 1;
-          combos.push({
-            id: `${marketId}-${n}`,
-            marketId,
-            presetId,
+        if (combos.length >= maxCombos) break;
+        const slIdx = n % slTps.length;
+        const posIdx = Math.floor(n / slTps.length) % maxPositionsOpts.length;
+        const [stopLossATR, takeProfitATR] = slTps[slIdx];
+        const maxConcurrentPositions = maxPositionsOpts[posIdx];
+        n += 1;
+        combos.push({
+          id: `${marketId}-${n}`,
+          marketId,
+          presetId,
+          interval,
+          risk: {
+            ...base,
             interval,
-            risk: {
-              ...base,
-              interval,
-              riskPerTrade,
-              minSignalStrength,
-              stopLossATR,
-              takeProfitATR,
-              allowShort: marketId !== 'crypto' ? true : base.allowShort,
-            },
-            label: `${interval} · risk ${(riskPerTrade * 100).toFixed(2)}% · minStr ${minSignalStrength} · SL/TP ${stopLossATR}/${takeProfitATR}`,
-          });
-        }
+            riskPerTrade,
+            minSignalStrength,
+            stopLossATR,
+            takeProfitATR,
+            maxConcurrentPositions,
+            allowShort: marketId !== 'crypto' ? true : base.allowShort,
+          },
+          label: `${interval} · risk ${(riskPerTrade * 100).toFixed(2)}% · minStr ${minSignalStrength} · SL/TP ${stopLossATR}/${takeProfitATR} · maxPos ${maxConcurrentPositions}`,
+        });
       }
     }
   }
-  // Keep lab manageable: max 18 combos per market per batch
-  return combos.slice(0, 18);
+
+  // If still under budget, add extra TF × SL/TP slices
+  if (combos.length < maxCombos) {
+    for (const interval of intervals) {
+      for (const [stopLossATR, takeProfitATR] of slTps) {
+        if (combos.length >= maxCombos) break;
+        n += 1;
+        combos.push({
+          id: `${marketId}-x${n}`,
+          marketId,
+          presetId,
+          interval,
+          risk: {
+            ...base,
+            interval,
+            riskPerTrade: riskPerTrades[n % riskPerTrades.length],
+            minSignalStrength: minSignals[n % minSignals.length],
+            stopLossATR,
+            takeProfitATR,
+            maxConcurrentPositions: maxPositionsOpts[n % maxPositionsOpts.length],
+            allowShort: marketId !== 'crypto' ? true : base.allowShort,
+          },
+          label: `${interval} · risk ${((riskPerTrades[n % riskPerTrades.length]) * 100).toFixed(2)}% · minStr ${minSignals[n % minSignals.length]} · SL/TP ${stopLossATR}/${takeProfitATR} · maxPos ${maxPositionsOpts[n % maxPositionsOpts.length]}`,
+        });
+      }
+    }
+  }
+
+  return combos.slice(0, maxCombos);
 }
 
 function emptyMetrics(): NonNullable<LabRunRow['metrics']> {
@@ -214,7 +277,7 @@ export async function runLabBatch(
           } as QuantRiskConfig,
           label: `${c.interval || getMarketProfile(req.marketId).baseRisk.interval} · risk ${((c.riskPerTrade ?? getMarketProfile(req.marketId).baseRisk.riskPerTrade) * 100).toFixed(2)}% · minStr ${c.minSignalStrength ?? getMarketProfile(req.marketId).baseRisk.minSignalStrength}`,
         }))
-      : defaultLabCombos(req.marketId);
+      : defaultLabCombos(req.marketId, req.gridSize || 'standard');
 
   const rows: LabRunRow[] = combos.map((c) => ({
     comboId: c.id,
