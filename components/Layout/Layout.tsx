@@ -9,6 +9,7 @@ const NAV_ITEMS = [
   { href: '/', label: 'Crypto', icon: '₿' },
   { href: '/quant', label: 'Command', icon: '◉' },
   { href: '/quant-lab', label: 'Lab', icon: '⚗' },
+  { href: '/learn', label: 'Learn', icon: '📖' },
   { href: '/quant-crypto', label: 'Q Crypto', icon: '⌁' },
   { href: '/quant-commodities', label: 'Q Comm', icon: '🛢' },
   { href: '/quant-gold-silver', label: 'Q Au/Ag', icon: 'Au' },
