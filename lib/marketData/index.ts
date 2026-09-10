@@ -28,7 +28,12 @@ export interface AssetPreset {
 const HYPERLIQUID_URL = process.env.HYPERLIQUID_BASE_URL || 'https://api.hyperliquid.xyz';
 
 export function parseAssetId(raw: string): AssetRef {
-  const cleaned = raw.trim();
+  // Strip annotations like "SOLUSDT (BINANCE)", "GC=F [Yahoo]", "ETH/USDT"
+  let cleaned = raw.trim();
+  cleaned = cleaned.replace(/\([^)]*\)/g, ' ').replace(/\[[^\]]*\]/g, ' ');
+  cleaned = cleaned.replace(/\s+/g, ' ').trim();
+  // Normalize pair separators: ETH/USDT → ETHUSDT
+  cleaned = cleaned.replace(/([A-Z0-9]+)\/([A-Z0-9]+)/g, '$1$2');
   const lower = cleaned.toLowerCase();
 
   if (lower.startsWith('hyperliquid:')) {
@@ -43,7 +48,9 @@ export function parseAssetId(raw: string): AssetRef {
   }
 
   if (lower.startsWith('yahoo:')) {
-    const symbol = cleaned.slice('yahoo:'.length).toUpperCase();
+    let symbol = cleaned.slice('yahoo:'.length).toUpperCase();
+    // Strip trailing exchange notes after strip of ()
+    symbol = symbol.replace(/\s+.*$/, '').trim();
     let klass: AssetRef['klass'] = 'equity';
     if (symbol.includes('=F')) klass = 'commodity';
     else if (symbol.includes('=X') || symbol.endsWith('USD=X')) klass = 'fx';
@@ -58,7 +65,8 @@ export function parseAssetId(raw: string): AssetRef {
   }
 
   if (lower.startsWith('binance:')) {
-    const symbol = cleaned.slice('binance:'.length).toUpperCase();
+    let symbol = cleaned.slice('binance:'.length).toUpperCase();
+    symbol = symbol.replace(/\s+.*$/, '').trim();
     return {
       id: `binance:${symbol}`,
       symbol,
@@ -68,9 +76,19 @@ export function parseAssetId(raw: string): AssetRef {
     };
   }
 
-  // Bare symbol → Binance if ends with USDT, else Yahoo (commodity-style)
-  if (/USDT$/.test(cleaned) || /^(BTC|ETH|SOL|BNB|XRP|ADA|AVAX|LINK|DOT)$/.test(cleaned)) {
-    const symbol = /USDT$/.test(cleaned) ? cleaned.toUpperCase() : `${cleaned.toUpperCase()}USDT`;
+  // Bare crypto-like symbols → Binance
+  const bare = cleaned.toUpperCase().replace(/\s+.*$/, '').trim();
+  const isCryptoPair =
+    /USDT$/.test(bare) ||
+    /USDC$/.test(bare) ||
+    /BTC$/.test(bare) ||
+    /^(BTC|ETH|SOL|BNB|XRP|ADA|AVAX|LINK|DOT|DOGE|TON|SUI|APT|ARBUSDT)$/i.test(bare);
+
+  if (isCryptoPair) {
+    let symbol = bare;
+    if (/^(BTC|ETH|SOL|BNB|XRP|ADA|AVAX|LINK|DOT|DOGE)$/i.test(symbol) && !/USDT$|USDC$|BTC$/.test(symbol)) {
+      symbol = `${symbol}USDT`;
+    }
     return {
       id: `binance:${symbol}`,
       symbol,
@@ -80,12 +98,11 @@ export function parseAssetId(raw: string): AssetRef {
     };
   }
 
-  const symbol = cleaned.toUpperCase();
   return {
-    id: `yahoo:${symbol}`,
-    symbol,
+    id: `yahoo:${bare}`,
+    symbol: bare,
     source: 'yahoo',
-    label: `${symbol} (Yahoo)`,
+    label: `${bare} (Yahoo)`,
     klass: 'equity',
   };
 }
@@ -120,10 +137,26 @@ export async function fetchAssetCandles(
   const deep = options.deep === true || limit > 800;
 
   if (asset.source === 'binance') {
-    return fetchBinanceKlines(asset.symbol, iv, limit, {
-      deep,
-      skipCache: options.skipCache,
-    });
+    try {
+      return await fetchBinanceKlines(asset.symbol, iv, limit, {
+        deep,
+        skipCache: options.skipCache,
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      // 451 = geo-restricted; fallback to Hyperliquid for common crypto
+      if (msg.includes('451') || msg.includes('403') || msg.includes('451')) {
+        try {
+          const hlCoin = asset.symbol.replace(/USDT$|USDC$/i, '');
+          return await fetchHyperliquidCandles(hlCoin, iv, limit);
+        } catch {
+          throw new Error(
+            `Binance blocked (451/geo) for ${asset.symbol}, Hyperliquid fallback also failed. Try BINANCE_BASE_URL=https://data-api.binance.vision or use hyperliquid:${asset.symbol}`
+          );
+        }
+      }
+      throw err;
+    }
   }
 
   if (asset.source === 'hyperliquid') {

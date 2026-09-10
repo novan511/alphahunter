@@ -125,7 +125,8 @@ export const TOP_CRYPTO_SYMBOLS: string[] = [
   'SUSHIUSDT', 'YFIUSDT', 'RUNEUSDT', 'INJUSDT', 'FETUSDT',
 ];
 
-export const BINANCE_BASE_URL = process.env.BINANCE_BASE_URL || 'https://api.binance.com';
+export const BINANCE_BASE_URL =
+  process.env.BINANCE_BASE_URL || 'https://data-api.binance.vision';
 
 export const NVIDIA_API_KEY = process.env.NVIDIA_API_KEY || '';
 export const NVIDIA_INVOKE_URL = 'https://integrate.api.nvidia.com/v1/chat/completions';

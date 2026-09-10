@@ -121,15 +121,42 @@ async function fetchBinancePage(
   if (startTime) params.set('startTime', String(startTime));
   if (endTime) params.set('endTime', String(endTime));
 
-  const url = `${BINANCE_BASE_URL}/api/v3/klines?${params.toString()}`;
-  const response = await fetchWithRetry(url, {
-    headers: { 'User-Agent': 'Althunter/2.0' },
-  });
-  if (!response.ok) {
-    throw new Error(`Binance API error for ${symbol}: ${response.status}`);
+  const bases = [
+    BINANCE_BASE_URL,
+    'https://data-api.binance.vision',
+    'https://api1.binance.com',
+  ].filter((b, i, arr) => b && arr.indexOf(b) === i);
+
+  let lastStatus = 0;
+  let lastErr = '';
+  for (const base of bases) {
+    const url = `${base}/api/v3/klines?${params.toString()}`;
+    try {
+      const response = await fetchWithRetry(url, {
+        headers: { 'User-Agent': 'Althunter/2.0' },
+      });
+      if (response.ok) {
+        const raw: BinanceKline[] = await response.json();
+        return raw.map(formatBinanceKline);
+      }
+      lastStatus = response.status;
+      lastErr = `Binance API error for ${symbol}: ${response.status} (${base})`;
+      // 451/403 → try next base; others throw
+      if (response.status !== 451 && response.status !== 403 && response.status !== 418) {
+        throw new Error(lastErr);
+      }
+    } catch (e) {
+      lastErr = e instanceof Error ? e.message : String(e);
+      if (lastStatus === 451 || lastErr.includes('451')) continue;
+      // network fail on this base → try next
+      if (base !== bases[bases.length - 1]) continue;
+      throw e;
+    }
   }
-  const raw: BinanceKline[] = await response.json();
-  return raw.map(formatBinanceKline);
+  throw new Error(
+    lastErr ||
+      `Binance API error for ${symbol}: 451 (geo-restricted). Set BINANCE_BASE_URL=https://data-api.binance.vision`
+  );
 }
 
 /**
