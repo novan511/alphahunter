@@ -113,12 +113,17 @@ export function mapIntervalForSource(source: MarketDataSource, interval: string)
 export async function fetchAssetCandles(
   asset: AssetRef,
   interval: string,
-  limit: number
+  limit: number,
+  options: { deep?: boolean; skipCache?: boolean } = {}
 ): Promise<Candle[]> {
   const iv = mapIntervalForSource(asset.source, interval);
+  const deep = options.deep === true || limit > 800;
 
   if (asset.source === 'binance') {
-    return fetchBinanceKlines(asset.symbol, iv, limit);
+    return fetchBinanceKlines(asset.symbol, iv, limit, {
+      deep,
+      skipCache: options.skipCache,
+    });
   }
 
   if (asset.source === 'hyperliquid') {
@@ -127,7 +132,10 @@ export async function fetchAssetCandles(
 
   if (asset.source === 'yahoo') {
     const range = rangeForLimit(iv, limit);
-    return fetchYahooChart(asset.symbol, iv, range);
+    return fetchYahooChart(asset.symbol, iv, range, {
+      deep,
+      skipCache: options.skipCache,
+    });
   }
 
   throw new Error(`Unknown market data source: ${(asset as AssetRef).source}`);

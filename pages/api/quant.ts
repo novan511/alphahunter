@@ -20,8 +20,9 @@ export default async function handler(
     interval: universe.interval,
   };
 
-  const limitRaw = typeof req.query.limit === 'string' ? parseInt(req.query.limit, 10) : 400;
-  const limit = Math.min(Math.max(limitRaw || 400, 120), 800);
+  const limitRaw = typeof req.query.limit === 'string' ? parseInt(req.query.limit, 10) : 800;
+  const deep = req.query.deep === 'true' || limitRaw > 800;
+  const limit = Math.min(Math.max(limitRaw || 800, 120), deep ? 2500 : 1000);
   const walkForward = req.query.walkForward !== 'false';
   const oosWindows =
     typeof req.query.oosWindows === 'string' ? parseInt(req.query.oosWindows, 10) : 3;
@@ -31,7 +32,8 @@ export default async function handler(
       universe.assets,
       universe.benchmark,
       universe.interval,
-      limit
+      limit,
+      deep
     );
 
     if (assets.length === 0) {

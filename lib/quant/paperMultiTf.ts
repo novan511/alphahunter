@@ -1,7 +1,8 @@
 import { Candle } from '../types';
-import { fetchAssetCandles, AssetRef } from '../../lib/marketData';
-import { generateQuantSignals } from '../../lib/quant/signals';
-import { PaperSignal, StepMarketSnapshot } from '../../lib/quant/paperEngine';
+import { fetchAssetCandles, AssetRef } from '../marketData';
+import { generateQuantSignals } from './signals';
+import { detectSpikes } from './spikeSignal';
+import { PaperSignal, StepMarketSnapshot } from './paperEngine';
 
 /** Timeframes the agent always looks at (paper execution still on primary TF). */
 export const PAPER_TIMEFRAMES = ['15m', '1h', '4h', '1d', '1w'] as const;
@@ -108,6 +109,23 @@ export async function buildMultiTfSnapshot(
         if (!candles || candles.length < 30) continue;
         const bench = benchCache.get(tf) || null;
         const sigs = generateQuantSignals(asset, candles, benchmark, bench, tf);
+        // Spike agent overlay on primary-ish TFs
+        if (tf === primaryInterval || tf === '4h' || tf === '1d') {
+          const spikes = detectSpikes(candles, { volZThreshold: 1.8, momThreshold: 0.006 });
+          for (const sp of spikes.slice(-3)) {
+            sigs.push({
+              time: sp.time,
+              price: candles[candles.length - 1].close,
+              type: sp.type,
+              strength: sp.strength,
+              rsZScore: sp.volumeZ,
+              indexReturn: 0,
+              assetReturn: sp.momentum,
+              volumeRatio: sp.volumeZ,
+              reason: `[${tf}] ${sp.reason}`,
+            });
+          }
+        }
         // last 12 bars of each TF for candidate window
         const recentFrom = candles[Math.max(0, candles.length - 12)]?.time ?? 0;
         for (const s of sigs) {

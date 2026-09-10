@@ -304,7 +304,260 @@ export default function QuantSupervisorPage() {
         equity, KPI pace, open positions, dan activity tiap agent.
         State tiap desk <strong>terisolasi</strong> (modal, param, trade history).
       </div>
+
+      <AgenticSupervisor />
     </Layout>
+  );
+}
+
+interface SupervisorInsightView {
+  insight: string;
+  source: 'llm' | 'rule_fallback';
+  generatedAt: number;
+  payload?: {
+    portfolio: {
+      totalEquity: number;
+      totalPnlPct: number;
+      runningDesks: number;
+      openPositions: number;
+      totalClosedTrades: number;
+    };
+  };
+  charts?: {
+    desks: Array<{
+      agentId: string;
+      label: string;
+      accent: string;
+      series: Array<{ time: number; equity: number }>;
+    }>;
+    total: Array<{ time: number; equity: number }>;
+  };
+}
+
+function MiniEquityChart({
+  series,
+  color,
+  height = 120,
+}: {
+  series: Array<{ time: number; equity: number }>;
+  color: string;
+  height?: number;
+}) {
+  if (!series || series.length < 2) {
+    return (
+      <div style={{
+        height,
+        background: '#0a0e17',
+        borderRadius: 8,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        fontSize: 11,
+        color: '#6b7280',
+      }}>
+        Not enough samples yet — run Step on the desk a few times
+      </div>
+    );
+  }
+
+  const w = 480;
+  const h = height;
+  const pad = 12;
+  const min = Math.min(...series.map((p) => p.equity));
+  const max = Math.max(...series.map((p) => p.equity));
+  const range = max - min || 1;
+  const path = series
+    .map((p, i) => {
+      const x = pad + (i / Math.max(1, series.length - 1)) * (w - pad * 2);
+      const y = h - pad - ((p.equity - min) / range) * (h - pad * 2);
+      return `${i === 0 ? 'M' : 'L'}${x.toFixed(1)},${y.toFixed(1)}`;
+    })
+    .join(' ');
+  const last = series[series.length - 1].equity;
+  const first = series[0].equity;
+  const up = last >= first;
+
+  return (
+    <svg viewBox={`0 0 ${w} ${h}`} style={{ width: '100%', height: 'auto', display: 'block' }}>
+      <rect x="0" y="0" width={w} height={h} fill="#0a0e17" rx="8" />
+      <path d={path} fill="none" stroke={color} strokeWidth="2" />
+      <text x={pad} y={14} fill="#6b7280" fontSize="10">
+        high ${max.toFixed(0)}
+      </text>
+      <text x={pad} y={h - 6} fill="#6b7280" fontSize="10">
+        low ${min.toFixed(0)}
+      </text>
+      <text x={w - pad} y={14} fill={up ? '#10b981' : '#ef4444'} fontSize="10" textAnchor="end">
+        ${last.toFixed(2)}
+      </text>
+    </svg>
+  );
+}
+
+function AgenticSupervisor() {
+  const [insight, setInsight] = useState<SupervisorInsightView | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [auto, setAuto] = useState(true);
+  const [lastAt, setLastAt] = useState<number | null>(null);
+
+  const load = useCallback(async (manual = false) => {
+    if (manual) setLoading(true);
+    setErr(null);
+    try {
+      const res = await fetch('/api/quant-supervisor');
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'supervisor failed');
+      setInsight(data as SupervisorInsightView);
+      setLastAt(Date.now());
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'supervisor failed');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void load(true);
+  }, [load]);
+
+  useEffect(() => {
+    if (!auto) return;
+    const t = setInterval(() => void load(false), 90_000);
+    return () => clearInterval(t);
+  }, [auto, load]);
+
+  const charts = insight?.charts;
+
+  return (
+    <div style={{
+      marginTop: 20,
+      background: '#111827',
+      border: '1px solid rgba(139,92,246,0.35)',
+      borderRadius: 12,
+      overflow: 'hidden',
+    }}>
+      <div style={{
+        padding: '12px 16px',
+        borderBottom: '1px solid #374151',
+        display: 'flex',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        gap: 10,
+        flexWrap: 'wrap',
+      }}>
+        <div>
+          <div style={{ fontSize: 11, fontWeight: 700, color: '#c4b5fd', textTransform: 'uppercase', letterSpacing: '0.4px' }}>
+            Agentic Supervisor
+          </div>
+          <div style={{ fontSize: 11, color: '#6b7280', marginTop: 2 }}>
+            Reads all 3 paper desks · equity charts · human-language insight
+          </div>
+        </div>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+          <label style={{ fontSize: 11, color: '#9ca3af', display: 'flex', alignItems: 'center', gap: 6 }}>
+            <input type="checkbox" checked={auto} onChange={(e) => setAuto(e.target.checked)} />
+            Auto 90s
+          </label>
+          <button
+            onClick={() => void load(true)}
+            disabled={loading}
+            style={{
+              padding: '7px 12px',
+              borderRadius: 8,
+              border: '1px solid rgba(139,92,246,0.4)',
+              background: loading ? '#374151' : 'rgba(139,92,246,0.15)',
+              color: '#c4b5fd',
+              fontSize: 11,
+              fontWeight: 700,
+              cursor: loading ? 'not-allowed' : 'pointer',
+            }}
+          >
+            {loading ? 'Analysing…' : '↻ Refresh'}
+          </button>
+        </div>
+      </div>
+
+      <div style={{ padding: '14px 16px' }}>
+        {err && (
+          <div style={{ color: '#ef4444', fontSize: 12, marginBottom: 10 }}>{err}</div>
+        )}
+        {loading && !insight && (
+          <div style={{ color: '#6b7280', fontSize: 12 }}>Reading desk states & building briefing…</div>
+        )}
+
+        {charts && (
+          <div style={{ marginBottom: 16 }}>
+            <div style={{ fontSize: 11, fontWeight: 700, color: '#9ca3af', textTransform: 'uppercase', marginBottom: 8 }}>
+              Total Equity (all desks)
+            </div>
+            <MiniEquityChart series={charts.total} color="#8b5cf6" height={110} />
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: 10, marginTop: 12 }}>
+              {charts.desks.map((d) => (
+                <div key={d.agentId} style={{
+                  background: '#0a0e17',
+                  borderRadius: 8,
+                  padding: '10px 12px',
+                  border: `1px solid ${d.accent}33`,
+                }}>
+                  <div style={{ fontSize: 11, fontWeight: 700, color: d.accent, marginBottom: 6 }}>
+                    {d.label}
+                  </div>
+                  <MiniEquityChart series={d.series} color={d.accent} height={90} />
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {insight && (
+          <>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
+              <span style={{
+                fontSize: 10,
+                fontWeight: 700,
+                padding: '3px 8px',
+                borderRadius: 6,
+                color: insight.source === 'llm' ? '#c4b5fd' : '#f59e0b',
+                background: insight.source === 'llm' ? 'rgba(139,92,246,0.15)' : 'rgba(245,158,11,0.12)',
+                border: `1px solid ${insight.source === 'llm' ? 'rgba(139,92,246,0.35)' : 'rgba(245,158,11,0.35)'}`,
+              }}>
+                {insight.source === 'llm' ? 'AI BRIEFING' : 'AUTO SNAPSHOT'}
+              </span>
+              {lastAt && (
+                <span style={{ fontSize: 10, color: '#6b7280', alignSelf: 'center' }}>
+                  {new Date(lastAt).toLocaleTimeString()}
+                </span>
+              )}
+              {insight.payload?.portfolio && (
+                <span style={{ fontSize: 10, color: '#6b7280', alignSelf: 'center' }}>
+                  equity ${insight.payload.portfolio.totalEquity} · trades {insight.payload.portfolio.totalClosedTrades}
+                </span>
+              )}
+            </div>
+            <pre style={{
+              margin: 0,
+              whiteSpace: 'pre-wrap',
+              fontFamily: 'inherit',
+              fontSize: 12,
+              color: '#d1d5db',
+              lineHeight: 1.65,
+            }}>
+              {insight.insight}
+            </pre>
+            <div style={{ marginTop: 12, fontSize: 10, color: '#6b7280', lineHeight: 1.5 }}>
+              Research briefing over paper agents only — not live trading advice.
+              Charts update as desks Step / poll. Enable NVIDIA_API_KEY for deeper AI pattern analysis.
+            </div>
+          </>
+        )}
+        {!insight && !loading && !err && (
+          <div style={{ fontSize: 12, color: '#6b7280' }}>
+            No briefing yet. Start agents on a desk, then Refresh.
+          </div>
+        )}
+      </div>
+    </div>
   );
 }
 

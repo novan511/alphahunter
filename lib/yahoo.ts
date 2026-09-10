@@ -1,5 +1,6 @@
 import { Candle } from './types';
 import { fetchWithRetry } from './api';
+import { readCandleCache, writeCandleCache } from './candleCache';
 
 interface YahooChartResult {
   chart: {
@@ -20,22 +21,56 @@ interface YahooChartResult {
 }
 
 export function toYahooSymbol(symbol: string): string {
-  // Futures / FX / indices use =F, =X, ^ prefix — do not remap
   if (symbol.startsWith('^')) return symbol;
   if (symbol.includes('=')) return symbol;
-  // Already qualified (e.g. BBCA.JK, BRK-B)
   if (symbol.includes('.')) return symbol;
-  // Bare ticker → Indonesian listing convention used by IDX pages
   return `${symbol}.JK`;
+}
+
+/** Map requested interval to Yahoo-supported interval. */
+export function mapYahooInterval(interval: string): string {
+  const allowed = new Set(['1m', '5m', '15m', '30m', '60m', '90m', '1h', '1d', '5d', '1wk', '1mo', '3mo']);
+  if (allowed.has(interval)) return interval;
+  if (interval === '4h' || interval === '2h' || interval === '3h') return '1h';
+  if (interval === '1w') return '1wk';
+  if (interval === '1d') return '1d';
+  return '1d';
+}
+
+/** Prefer deep ranges for daily+ so commodities get multi-year history. */
+export function yahooRangeFor(interval: string, deep: boolean): string {
+  const iv = mapYahooInterval(interval);
+  if (!deep) {
+    if (iv === '1m' || iv === '5m' || iv === '15m' || iv === '30m' || iv === '60m' || iv === '1h') {
+      return '3mo';
+    }
+    if (iv === '1wk') return '2y';
+    return '2y';
+  }
+  // deep history
+  if (iv === '1m' || iv === '5m') return '1mo';
+  if (iv === '15m' || iv === '30m' || iv === '1h' || iv === '60m') return '2y';
+  if (iv === '1wk') return '10y';
+  return '10y';
 }
 
 export async function fetchYahooChart(
   symbol: string,
   interval: string,
-  range: string
+  range: string,
+  options: { skipCache?: boolean; deep?: boolean } = {}
 ): Promise<Candle[]> {
   const yahooSymbol = toYahooSymbol(symbol);
-  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSymbol)}?interval=${interval}&range=${range}`;
+  const yi = mapYahooInterval(interval);
+  const effectiveRange = options.deep ? yahooRangeFor(interval, true) : range;
+  const cacheKey = `yahoo|${yahooSymbol}|${yi}|${effectiveRange}`;
+
+  if (!options.skipCache) {
+    const disk = readCandleCache(cacheKey);
+    if (disk && disk.length > 0) return disk;
+  }
+
+  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSymbol)}?interval=${yi}&range=${effectiveRange}`;
 
   const res = await fetchWithRetry(url, {
     headers: {
@@ -81,6 +116,10 @@ export async function fetchYahooChart(
       close: c,
       volume: v || 0,
     });
+  }
+
+  if (candles.length > 0) {
+    writeCandleCache(cacheKey, candles, options.deep ? 24 * 3600_000 : 6 * 3600_000);
   }
 
   return candles;

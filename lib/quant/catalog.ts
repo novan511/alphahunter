@@ -60,14 +60,16 @@ export async function loadQuantUniverse(
   assets: AssetRef[],
   benchmark: AssetRef | null,
   interval: string,
-  limit: number
+  limit: number,
+  deep: boolean = false
 ): Promise<{ assets: QuantAssetData[]; benchmarkCandles: Candle[] | null; errors: string[] }> {
   const errors: string[] = [];
   let benchmarkCandles: Candle[] | null = null;
+  const fetchOpts = { deep: deep || limit > 800 };
 
   if (benchmark) {
     try {
-      benchmarkCandles = await fetchAssetCandles(benchmark, interval, limit);
+      benchmarkCandles = await fetchAssetCandles(benchmark, interval, limit, fetchOpts);
     } catch (err) {
       errors.push(`benchmark ${benchmark.id}: ${err instanceof Error ? err.message : 'fail'}`);
     }
@@ -78,7 +80,7 @@ export async function loadQuantUniverse(
     const batch = assets.slice(i, i + 2);
     const results = await Promise.allSettled(
       batch.map(async (asset) => {
-        const candles = await fetchAssetCandles(asset, interval, limit);
+        const candles = await fetchAssetCandles(asset, interval, limit, fetchOpts);
         const signals = generateQuantSignals(asset, candles, benchmark, benchmarkCandles, interval);
         return { symbol: asset.id, candles, signals };
       })

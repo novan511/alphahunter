@@ -72,6 +72,8 @@ interface PaperStateView {
   openCount?: number;
   totalUnrealizedPnl?: number;
   lastPrices?: Record<string, number>;
+  metaWeight?: number;
+  bandit?: unknown;
 }
 
 interface PaperApiResponse {
@@ -81,6 +83,23 @@ interface PaperApiResponse {
   note?: string;
   kpi?: AgentKpiView;
   tune?: { reason: string; changed: boolean };
+  meta?: {
+    weights: Record<string, number>;
+    reason: string;
+    scale?: number;
+  };
+  bandit?: string;
+  stress?: {
+    iterations: number;
+    meanReturnPct: number;
+    stdReturnPct: number;
+    p5ReturnPct: number;
+    p95ReturnPct: number;
+    probabilityPositive: number;
+    meanProfitFactor: number;
+    scenario: string;
+    notes: string[];
+  };
 }
 
 interface AgentKpiView {
@@ -165,6 +184,10 @@ export default function PaperTradingAgent({
   );
   const [paperSymbols, setPaperSymbols] = useState(customSymbolsProp || '');
   const [allowShort, setAllowShort] = useState(true);
+  const [metaInfo, setMetaInfo] = useState<PaperApiResponse['meta'] | null>(null);
+  const [banditInfo, setBanditInfo] = useState<string>('');
+  const [stressInfo, setStressInfo] = useState<PaperApiResponse['stress'] | null>(null);
+  const [stressLoading, setStressLoading] = useState(false);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
@@ -237,6 +260,8 @@ export default function PaperTradingAgent({
       else if (data.state && 'kpi' in data.state) {
         setKpi((data.state as unknown as { kpi?: AgentKpiView }).kpi || null);
       }
+      if (data.meta) setMetaInfo(data.meta);
+      if (data.bandit) setBanditInfo(data.bandit);
       if (action === 'step' || action === 'start') void loadHistory();
       return data;
     } catch (e) {
@@ -247,11 +272,33 @@ export default function PaperTradingAgent({
     }
   }, [risk, paperPresetId, paperSymbols, allowShort, effectiveInterval, loadHistory, agentId]);
 
+  const runStress = useCallback(async () => {
+    setStressLoading(true);
+    setErr(null);
+    try {
+      const res = await fetch('/api/paper', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'stress', agentId }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'stress failed');
+      setStressInfo(data.stress);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'stress failed');
+    } finally {
+      setStressLoading(false);
+    }
+  }, [agentId]);
+
   const refresh = useCallback(async () => {
     const res = await fetch(`/api/paper?action=status&agentId=${encodeURIComponent(agentId)}`);
     const data = (await res.json()) as PaperApiResponse;
     setState(data.state);
     if (data.kpi) setKpi(data.kpi);
+    if (data.meta) setMetaInfo(data.meta);
+    if (data.bandit) setBanditInfo(data.bandit);
+    if (data.stress) setStressInfo(data.stress);
     void loadHistory();
   }, [loadHistory, agentId]);
 
@@ -259,20 +306,29 @@ export default function PaperTradingAgent({
     void refresh();
   }, [refresh]);
 
+  // Auto step when agent is running (already existed); also auto stress every ~3 min
+  const lastStressAtRef = useRef<number>(0);
   useEffect(() => {
     if (timerRef.current) {
       clearInterval(timerRef.current);
       timerRef.current = null;
     }
     if (state?.running) {
+      // kick one step immediately so meta/bandit update without click
+      void api('step');
       timerRef.current = setInterval(() => {
         void api('step');
+        // auto stress every ~3 minutes while running
+        if (Date.now() - lastStressAtRef.current > 180_000) {
+          lastStressAtRef.current = Date.now();
+          void runStress();
+        }
       }, 45_000);
     }
     return () => {
       if (timerRef.current) clearInterval(timerRef.current);
     };
-  }, [state?.running, api, agentId]);
+  }, [state?.running, api, runStress, agentId]);
 
   // reload when switching market pages
   useEffect(() => {
@@ -479,6 +535,118 @@ export default function PaperTradingAgent({
         <Stat label="Trades" value={state?.stats?.totalTrades ?? 0} />
         <Stat label="Win%" value={`${(state?.stats?.winRate ?? 0).toFixed(1)}%`} />
         <Stat label="Interval" value={state?.risk?.interval ?? risk.interval} />
+      </div>
+
+      {/* Meta / Bandit / Stress / Event layer */}
+      <div style={{
+        marginBottom: 14,
+        padding: '12px 14px',
+        borderRadius: 8,
+        border: '1px solid #374151',
+        background: '#0a0e17',
+      }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8, marginBottom: 10 }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: '#93c5fd', textTransform: 'uppercase' }}>
+            Meta &amp; Risk Layer
+          </div>
+          <button
+            onClick={runStress}
+            disabled={stressLoading}
+            style={{
+              padding: '5px 10px',
+              borderRadius: 6,
+              border: '1px solid #374151',
+              background: stressLoading ? '#374151' : '#1f2937',
+              color: '#d1d5db',
+              fontSize: 11,
+              cursor: stressLoading ? 'not-allowed' : 'pointer',
+            }}
+          >
+            {stressLoading ? 'Running MC…' : '▶ Stress Test (MC)'}
+          </button>
+        </div>
+
+        <div className="qm-grid-metrics" style={{ marginBottom: 10 }}>
+          <KpiMini
+            label="Meta weight (this desk)"
+            value={metaInfo?.weights?.[agentId] != null
+              ? `${(metaInfo.weights[agentId] * 100).toFixed(0)}%`
+              : state?.metaWeight != null
+                ? `${(state.metaWeight * 100).toFixed(0)}%`
+                : '—'}
+            color="#93c5fd"
+          />
+          <KpiMini
+            label="Risk scale"
+            value={metaInfo?.scale != null ? `×${metaInfo.scale.toFixed(2)}` : '—'}
+          />
+          <KpiMini
+            label="Preferred arm"
+            value={banditInfo
+              ? (banditInfo.split('·').map((s) => s.trim())
+                  .map((s) => ({ arm: s.split(':')[0], n: parseInt(s.split('n=')[1] || '0', 10) }))
+                  .sort((a, b) => b.n - a.n)[0]?.arm || '—')
+              : '—'}
+            color="#c4b5fd"
+          />
+          <KpiMini
+            label="Event filter"
+            value={
+              (state?.log || []).some((l) => l.includes('event-filter'))
+                ? 'active (see log)'
+                : 'open'
+            }
+          />
+        </div>
+
+        {metaInfo?.reason && (
+          <div style={{ fontSize: 11, color: '#9ca3af', marginBottom: 6 }}>
+            Meta: {metaInfo.reason}
+          </div>
+        )}
+        {metaInfo?.weights && (
+          <div style={{ fontSize: 11, color: '#6b7280', marginBottom: 8 }}>
+            Weights → Crypto {((metaInfo.weights.crypto ?? 0) * 100).toFixed(0)}% ·
+            Comm {((metaInfo.weights.commodities ?? 0) * 100).toFixed(0)}% ·
+            AuAg {((metaInfo.weights['gold-silver'] ?? 0) * 100).toFixed(0)}%
+          </div>
+        )}
+        {banditInfo && (
+          <div style={{ fontSize: 11, color: '#9ca3af', fontFamily: 'ui-monospace, monospace', marginBottom: 8 }}>
+            Bandit: {banditInfo}
+          </div>
+        )}
+
+        {(state?.log || []).some((l) => l.includes('conflict-guard')) && (
+          <div style={{ fontSize: 11, color: '#f59e0b', marginBottom: 6 }}>
+            ConflictGuard blocked at least one entry (symbol already open on another desk) — see Agent Log.
+          </div>
+        )}
+
+        {stressInfo && (
+          <div style={{
+            marginTop: 8,
+            padding: '10px 12px',
+            borderRadius: 6,
+            background: 'rgba(139,92,246,0.08)',
+            border: '1px solid rgba(139,92,246,0.25)',
+            fontSize: 11,
+            color: '#d1d5db',
+            lineHeight: 1.5,
+          }}>
+            <div style={{ fontWeight: 700, color: '#c4b5fd', marginBottom: 4 }}>
+              Monte Carlo stress ({stressInfo.scenario})
+            </div>
+            Mean PnL {stressInfo.meanReturnPct}% · σ {stressInfo.stdReturnPct}% ·
+            P5 {stressInfo.p5ReturnPct}% · P95 {stressInfo.p95ReturnPct}% ·
+            P(positive) {stressInfo.probabilityPositive}% · PF {stressInfo.meanProfitFactor}
+            {stressInfo.notes?.[0] ? <div style={{ color: '#6b7280', marginTop: 4 }}>{stressInfo.notes[0]}</div> : null}
+          </div>
+        )}
+
+        <div style={{ fontSize: 10, color: '#6b7280', marginTop: 6 }}>
+          Spike signals tagged [spike] in open reasons. Run Step to refresh meta + bandit.
+        </div>
       </div>
 
       {(state?.watchlist?.length ?? 0) > 0 && (

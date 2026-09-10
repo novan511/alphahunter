@@ -1,8 +1,12 @@
 import { BINANCE_BASE_URL } from './config';
 import { Candle, BinanceKline } from './types';
+import { readCandleCache, writeCandleCache } from './candleCache';
 
 const KLINE_CACHE_TTL_MS = 60_000;
 const KLINE_CACHE_MAX = 500;
+const DEEP_MEMORY_TTL_MS = 10 * 60_000;
+const DEEP_DISK_TTL_MS = 6 * 60 * 60 * 1000;
+const BINANCE_MAX_LIMIT = 1000;
 
 interface CacheEntry {
   data: Candle[];
@@ -29,10 +33,8 @@ function cloneCandles(candles: Candle[]): Candle[] {
 function pruneCache(): void {
   if (klineCache.size <= KLINE_CACHE_MAX) return;
   const now = Date.now();
-  klineCache.forEach((_entry, key) => {
-    if (_entry.expires <= now) {
-      klineCache.delete(key);
-    }
+  klineCache.forEach((entry, key) => {
+    if (entry.expires <= now) klineCache.delete(key);
   });
   while (klineCache.size > KLINE_CACHE_MAX) {
     const firstKey = klineCache.keys().next().value as string | undefined;
@@ -55,12 +57,7 @@ export async function fetchWithRetry(
     try {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 15000);
-
-      const response = await fetch(url, {
-        ...options,
-        signal: controller.signal,
-      });
-
+      const response = await fetch(url, { ...options, signal: controller.signal });
       clearTimeout(timeoutId);
 
       if (response.ok) return response;
@@ -87,41 +84,124 @@ export async function fetchWithRetry(
   throw new Error('Max retries exceeded');
 }
 
+function intervalMs(interval: string): number {
+  const map: Record<string, number> = {
+    '1m': 60_000,
+    '3m': 180_000,
+    '5m': 300_000,
+    '15m': 900_000,
+    '30m': 1_800_000,
+    '1h': 3_600_000,
+    '2h': 7_200_000,
+    '4h': 14_400_000,
+    '6h': 21_600_000,
+    '8h': 28_800_000,
+    '12h': 43_200_000,
+    '1d': 86_400_000,
+    '3d': 259_200_000,
+    '1w': 604_800_000,
+  };
+  return map[interval] || 86_400_000;
+}
+
+async function fetchBinancePage(
+  symbol: string,
+  interval: string,
+  limit: number,
+  startTime?: number,
+  endTime?: number
+): Promise<Candle[]> {
+  const s = symbol.replace(/[^A-Z0-9]/g, '');
+  const iv = interval.replace(/[^0-9a-z]/g, '');
+  const params = new URLSearchParams({
+    symbol: s,
+    interval: iv,
+    limit: String(Math.min(limit, BINANCE_MAX_LIMIT)),
+  });
+  if (startTime) params.set('startTime', String(startTime));
+  if (endTime) params.set('endTime', String(endTime));
+
+  const url = `${BINANCE_BASE_URL}/api/v3/klines?${params.toString()}`;
+  const response = await fetchWithRetry(url, {
+    headers: { 'User-Agent': 'Althunter/2.0' },
+  });
+  if (!response.ok) {
+    throw new Error(`Binance API error for ${symbol}: ${response.status}`);
+  }
+  const raw: BinanceKline[] = await response.json();
+  return raw.map(formatBinanceKline);
+}
+
+/**
+ * Fetch klines with optional deep pagination.
+ * deep=true walks backward via endTime until `limit` bars collected or maxPages.
+ */
 export async function fetchBinanceKlines(
   symbol: string,
   interval: string,
   limit: number,
-  options: { skipCache?: boolean } = {}
+  options: { skipCache?: boolean; deep?: boolean; maxPages?: number } = {}
 ): Promise<Candle[]> {
   const s = symbol.replace(/[^A-Z0-9]/g, '');
   const iv = interval.replace(/[^0-9a-z]/g, '');
-  const cacheKey = `${s}|${iv}|${limit}`;
+  const deep = options.deep === true || limit > BINANCE_MAX_LIMIT;
+  const target = Math.min(limit, deep ? 5000 : BINANCE_MAX_LIMIT);
+  const cacheKey = `binance|${s}|${iv}|${target}|${deep ? 'deep' : 'shallow'}`;
 
   if (!options.skipCache) {
-    const cached = klineCache.get(cacheKey);
-    if (cached && cached.expires > Date.now()) {
-      return cloneCandles(cached.data);
+    const mem = klineCache.get(cacheKey);
+    if (mem && mem.expires > Date.now()) {
+      return cloneCandles(mem.data);
+    }
+    const disk = readCandleCache(cacheKey);
+    if (disk && disk.length >= Math.min(target, 50)) {
+      klineCache.set(cacheKey, {
+        data: disk,
+        expires: Date.now() + DEEP_MEMORY_TTL_MS,
+      });
+      return cloneCandles(disk);
     }
   }
 
-  const url = `${BINANCE_BASE_URL}/api/v3/klines?symbol=${s}&interval=${iv}&limit=${limit}`;
+  let candles: Candle[];
 
-  const response = await fetchWithRetry(url, {
-    headers: { 'User-Agent': 'Althunter/2.0' },
-  });
+  if (!deep) {
+    candles = await fetchBinancePage(s, iv, target);
+  } else {
+    const maxPages = options.maxPages ?? Math.ceil(target / BINANCE_MAX_LIMIT) + 1;
+    const all: Candle[] = [];
+    let endTime: number | undefined;
+    const page = BINANCE_MAX_LIMIT;
 
-  if (!response.ok) {
-    throw new Error(`Binance API error for ${symbol}: ${response.status}`);
+    for (let p = 0; p < maxPages; p++) {
+      const batch = await fetchBinancePage(s, iv, page, undefined, endTime);
+      if (batch.length === 0) break;
+      all.unshift(...batch);
+      const first = batch[0].time;
+      endTime = first * 1000 - 1;
+      if (all.length >= target) break;
+      // stop if we went back far enough
+      if (batch.length < page) break;
+      await new Promise((r) => setTimeout(r, 120));
+    }
+
+    // dedupe + sort + take last N
+    const map = new Map<number, Candle>();
+    for (const c of all) map.set(c.time, c);
+    candles = Array.from(map.values())
+      .sort((a, b) => a.time - b.time)
+      .slice(-target);
   }
 
-  const raw: BinanceKline[] = await response.json();
-  const candles = raw.map(formatBinanceKline);
-
+  const ttl = deep ? DEEP_DISK_TTL_MS : KLINE_CACHE_TTL_MS;
   klineCache.set(cacheKey, {
     data: cloneCandles(candles),
-    expires: Date.now() + KLINE_CACHE_TTL_MS,
+    expires: Date.now() + ttl,
   });
   pruneCache();
+  if (deep) {
+    writeCandleCache(cacheKey, candles, DEEP_DISK_TTL_MS);
+  }
 
   return candles;
 }
@@ -129,3 +209,5 @@ export async function fetchBinanceKlines(
 export async function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
+
+export { intervalMs };

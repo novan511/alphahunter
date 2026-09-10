@@ -179,7 +179,9 @@ export default function QuantMarketPage({ marketId }: { marketId: MarketId }) {
         interval: effectiveRisk.interval,
         walkForward: 'true',
         oosWindows: '3',
-        limit: effectiveRisk.interval === '1d' ? '250' : '400',
+        // Deep history: crypto 1d ~2y (pagination), commodities Yahoo 10y
+        deep: 'true',
+        limit: effectiveRisk.interval === '1d' || effectiveRisk.interval === '1w' ? '2000' : '1200',
       });
       if (customSymbols.trim()) qs.set('symbols', customSymbols.trim());
 

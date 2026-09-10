@@ -1,6 +1,9 @@
 import { Candle } from '../types';
 import { atr } from '../algorithms/indicators';
 import { QuantRiskConfig } from './types';
+import { claimSymbol, releaseSymbol, releaseAgent } from './conflictGuard';
+import { evaluateEventFilter } from './eventFilter';
+import { createBanditState, pickStrategyUCB, updateBandit, BanditState, StrategyArm } from './strategyBandit';
 
 export interface PaperPosition {
   symbol: string;
@@ -14,6 +17,7 @@ export interface PaperPosition {
   barsHeld: number;
   signalStrength: number;
   reason: string;
+  strategy?: StrategyArm;
 }
 
 export interface PaperTrade {
@@ -69,6 +73,21 @@ export interface PaperState {
   lastBarTimes: Record<string, number>;
   /** Latest close per symbol from last market scan (for running PnL) */
   lastPrices: Record<string, number>;
+  /** Rolling equity samples for supervisor charts */
+  equityHistory: Array<{ time: number; equity: number }>;
+  /** Strategy bandit state per agent */
+  bandit: BanditState;
+  /** Meta capital weight from supervisor allocator (0–1) */
+  metaWeight: number;
+  /** Last meta allocation snapshot (for UI without re-step) */
+  lastMeta?: {
+    weights: Record<string, number>;
+    reason: string;
+    scale?: number;
+    at: number;
+  };
+  lastBandit?: string;
+  lastStress?: unknown;
   stats: {
     totalTrades: number;
     winningTrades: number;
@@ -100,6 +119,9 @@ export function createPaperState(
     log: [`[start] paper agent online · capital ${cash} · ${universe.length} assets · ${risk.interval}`],
     lastBarTimes: {},
     lastPrices: {},
+    equityHistory: [{ time: Date.now(), equity: cash }],
+    bandit: createBanditState(),
+    metaWeight: 1 / 3,
     stats: {
       totalTrades: 0,
       winningTrades: 0,
@@ -256,7 +278,8 @@ export function buildWatchlist(
  */
 export function paperStep(
   state: PaperState,
-  snap: StepMarketSnapshot
+  snap: StepMarketSnapshot,
+  agentId: string = 'default'
 ): { state: PaperState; closedTrades: PaperTrade[] } {
   const closedTrades: PaperTrade[] = [];
   if (!state.running) {
@@ -290,6 +313,15 @@ export function paperStep(
     reason: string
   ) => {
     closePaper(state, pos, exitTime, exitPx, reason, prices);
+    releaseSymbol(pos.symbol, agentId);
+    // Update bandit with realized reward
+    if (state.bandit && pos.strategy) {
+      const lastT = state.trades[0];
+      if (lastT) {
+        const reward = Math.max(-1, Math.min(1, lastT.pnlPercent / 5));
+        updateBandit(state.bandit, pos.strategy, reward);
+      }
+    }
     if (state.trades[0]) closedTrades.unshift(state.trades[0]);
   };
 
@@ -355,82 +387,128 @@ export function paperStep(
   }
 
   if (!state.halted) {
-    // Prefer newest signals; also allow recent-window signals on first fills
-    const recentCutoff = Date.now() - 0; // use bar freshness from snap
-    const candidates = snap.signals
-      .filter((s) => s.strength >= risk.minSignalStrength)
-      .filter((s) => risk.allowShort || s.type === 'buy')
-      .sort((a, b) => b.time - a.time || b.strength - a.strength);
+    const evt = evaluateEventFilter(agentId);
+    if (!evt.allowEntries) {
+      pushLog(state, `event-filter: skip entries — ${evt.reason}`);
+    } else {
+      // Prefer newest signals; also allow recent-window signals on first fills
+      const candidates = snap.signals
+        .filter((s) => s.strength >= risk.minSignalStrength)
+        .filter((s) => risk.allowShort || s.type === 'buy')
+        .sort((a, b) => b.time - a.time || b.strength - a.strength);
 
-    // Dedupe by symbol keep strongest recent
-    const bySym = new Map<string, (typeof candidates)[number]>();
-    for (const s of candidates) {
-      const prev = bySym.get(s.symbol);
-      if (!prev || s.strength > prev.strength || s.time > prev.time) {
-        bySym.set(s.symbol, s);
+      // Dedupe by symbol keep strongest recent
+      const bySym = new Map<string, (typeof candidates)[number]>();
+      for (const s of candidates) {
+        const prev = bySym.get(s.symbol);
+        if (!prev || s.strength > prev.strength || s.time > prev.time) {
+          bySym.set(s.symbol, s);
+        }
       }
-    }
-    const deduped: typeof candidates = [];
-    bySym.forEach((v) => deduped.push(v));
-    deduped.sort((a, b) => b.strength - a.strength);
-    void recentCutoff;
+      const deduped: typeof candidates = [];
+      bySym.forEach((v) => deduped.push(v));
+      deduped.sort((a, b) => b.strength - a.strength);
 
-    for (const sig of deduped) {
-      if (state.positions.length >= risk.maxConcurrentPositions) break;
-      if (state.positions.some((p) => p.symbol === sig.symbol)) continue;
+      // Bandit picks preferred arm; we boost matching signals
+      if (!state.bandit) state.bandit = createBanditState();
+      const preferredArm = pickStrategyUCB(state.bandit);
+      const armBoost = (reason: string): number => {
+        const r = reason.toLowerCase();
+        if (preferredArm === 'spike' && r.includes('spike')) return 1.15;
+        if (preferredArm === 'momentum' && (r.includes('mom') || r.includes('vol'))) return 1.1;
+        if (preferredArm === 'decoupling' && r.includes('decoupl')) return 1.1;
+        return 1;
+      };
 
-      const hist = snap.history[sig.symbol];
-      const last = snap.latest[sig.symbol];
-      if (!hist || !last || hist.length < 20) continue;
+      const metaScale = Math.max(0.5, Math.min(1.3, state.metaWeight || 1 / 3) * 3);
 
-      // Use current ATR; allow entry even if signal.time is slightly older than last bar
-      const currentATR = atr(hist, 14)[hist.length - 1];
-      if (!currentATR || currentATR <= 0) continue;
+      for (const sig of deduped) {
+        if (state.positions.length >= risk.maxConcurrentPositions) break;
+        if (state.positions.some((p) => p.symbol === sig.symbol)) continue;
 
-      const side: 'long' | 'short' = sig.type === 'buy' ? 'long' : 'short';
-      const openPx = last.open || last.close;
-      const entryPrice = openPx * (1 + (side === 'long' ? risk.slippage : -risk.slippage));
-      const riskPerUnit = risk.stopLossATR * currentATR;
-      const eqNow = paperEquity(state, prices);
-      const qty = (Math.max(0, eqNow) * risk.riskPerTrade) / riskPerUnit;
+        const claim = claimSymbol(agentId, sig.symbol, sig.type === 'buy' ? 'long' : 'short', sig.strength);
+        if (!claim.ok) {
+          pushLog(state, `conflict-guard skip ${sig.symbol} — ${claim.reason}`);
+          continue;
+        }
 
-      const exposure = state.positions.reduce((sum, p) => {
-        const px = prices[p.symbol] ?? p.entryPrice;
-        return sum + p.qty * px;
-      }, 0);
-      if (eqNow > 0 && (exposure + qty * entryPrice) / eqNow > risk.maxExposurePct) {
-        continue;
+        const hist = snap.history[sig.symbol];
+        const last = snap.latest[sig.symbol];
+        if (!hist || !last || hist.length < 20) {
+          releaseSymbol(sig.symbol, agentId);
+          continue;
+        }
+
+        const currentATR = atr(hist, 14)[hist.length - 1];
+        if (!currentATR || currentATR <= 0) {
+          releaseSymbol(sig.symbol, agentId);
+          continue;
+        }
+
+        const side: 'long' | 'short' = sig.type === 'buy' ? 'long' : 'short';
+        const openPx = last.open || last.close;
+        const entryPrice = openPx * (1 + (side === 'long' ? risk.slippage : -risk.slippage));
+        const riskPerUnit = risk.stopLossATR * currentATR;
+        const eqNow = paperEquity(state, prices);
+        const sizeScale = evt.sizeScale * metaScale * armBoost(sig.reason);
+        const qty = (Math.max(0, eqNow) * risk.riskPerTrade * sizeScale) / riskPerUnit;
+
+        const exposure = state.positions.reduce((sum, p) => {
+          const px = prices[p.symbol] ?? p.entryPrice;
+          return sum + p.qty * px;
+        }, 0);
+        if (eqNow > 0 && (exposure + qty * entryPrice) / eqNow > risk.maxExposurePct) {
+          releaseSymbol(sig.symbol, agentId);
+          continue;
+        }
+
+        const stopLoss =
+          side === 'long' ? entryPrice - riskPerUnit : entryPrice + riskPerUnit;
+        const takeProfit =
+          side === 'long'
+            ? entryPrice + risk.takeProfitATR * currentATR
+            : entryPrice - risk.takeProfitATR * currentATR;
+
+        const strategy: StrategyArm = sig.reason.toLowerCase().includes('spike')
+          ? 'spike'
+          : sig.reason.toLowerCase().includes('decoupl')
+            ? 'decoupling'
+            : 'momentum';
+
+        state.positions.push({
+          symbol: sig.symbol,
+          side,
+          entryTime: last.time,
+          entryPrice,
+          entryATR: currentATR,
+          qty,
+          stopLoss,
+          takeProfit,
+          barsHeld: 0,
+          signalStrength: sig.strength,
+          reason: sig.reason,
+          strategy,
+        });
+        pushLog(
+          state,
+          `OPEN ${side.toUpperCase()} ${sig.symbol} @ ${entryPrice.toFixed(4)} str=${sig.strength.toFixed(1)} [${strategy}] — ${sig.reason}`
+        );
       }
-
-      const stopLoss =
-        side === 'long' ? entryPrice - riskPerUnit : entryPrice + riskPerUnit;
-      const takeProfit =
-        side === 'long'
-          ? entryPrice + risk.takeProfitATR * currentATR
-          : entryPrice - risk.takeProfitATR * currentATR;
-
-      state.positions.push({
-        symbol: sig.symbol,
-        side,
-        entryTime: last.time,
-        entryPrice,
-        entryATR: currentATR,
-        qty,
-        stopLoss,
-        takeProfit,
-        barsHeld: 0,
-        signalStrength: sig.strength,
-        reason: sig.reason,
-      });
-      pushLog(
-        state,
-        `OPEN ${side.toUpperCase()} ${sig.symbol} @ ${entryPrice.toFixed(4)} str=${sig.strength.toFixed(1)} — ${sig.reason}`
-      );
     }
   }
 
   recalcStats(state);
-  state.updatedAt = Date.now();
+  const finalEq = paperEquity(state, prices);
+  if (!state.equityHistory) state.equityHistory = [];
+  const lastSample = state.equityHistory[state.equityHistory.length - 1];
+  const nowMs = Date.now();
+  if (!lastSample || nowMs - lastSample.time > 45_000 || Math.abs(lastSample.equity - finalEq) > 0.05) {
+    state.equityHistory.push({ time: nowMs, equity: Math.round(finalEq * 100) / 100 });
+    if (state.equityHistory.length > 240) {
+      state.equityHistory = state.equityHistory.slice(-240);
+    }
+  }
+  state.updatedAt = nowMs;
 
   // Final activity narrative
   if (state.halted) {
@@ -492,10 +570,17 @@ export function serializePaper(state: PaperState) {
   const totalUnrealized = positions.reduce((a, p) => a + p.unrealizedPnl, 0);
   const equity = paperEquity(state, prices);
 
+  // ensure history has at least current point
+  if (!state.equityHistory) state.equityHistory = [];
+  if (state.equityHistory.length === 0) {
+    state.equityHistory.push({ time: Date.now(), equity: Math.round(equity * 100) / 100 });
+  }
+
   return {
     ...state,
     positions,
     lastPrices: prices,
+    equityHistory: state.equityHistory,
     totalUnrealizedPnl: Math.round(totalUnrealized * 100) / 100,
     equity: Math.round(equity * 100) / 100,
     openCount: state.positions.length,

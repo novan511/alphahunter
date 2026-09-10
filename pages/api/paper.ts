@@ -27,6 +27,10 @@ import {
 } from '../../lib/quant/paperStore';
 import { getSupabase, isSupabaseConfigured } from '../../lib/supabase';
 import { buildMultiTfSnapshot } from '../../lib/quant/paperMultiTf';
+import { allocateMetaCapital, metaRiskScale, DeskPerf } from '../../lib/quant/metaAllocator';
+import { releaseAgent } from '../../lib/quant/conflictGuard';
+import { banditSummary } from '../../lib/quant/strategyBandit';
+import { runStressTest } from '../../lib/quant/stressTest';
 
 const VALID_AGENTS = new Set(['crypto', 'commodities', 'gold-silver', 'default']);
 const memory = new Map<string, PaperState>();
@@ -140,6 +144,11 @@ export default async function handler(
         agentId,
         state: { ...serializePaper(state), equity, kpi },
         kpi,
+        meta: state.lastMeta
+          ? { weights: state.lastMeta.weights, reason: state.lastMeta.reason, scale: state.lastMeta.scale }
+          : undefined,
+        bandit: state.lastBandit,
+        stress: state.lastStress as never,
       });
     }
 
@@ -183,9 +192,21 @@ export default async function handler(
       const state = await loadState(agentId);
       if (!state) return res.status(200).json({ ok: true, running: false, state: null, agentId });
       state.running = false;
+      releaseAgent(agentId);
       state.log = [`[stop:${agentId}] halted by user`, ...state.log].slice(0, 80);
       await saveState(agentId, state);
       return res.status(200).json({ ok: true, running: false, agentId, state: serializePaper(state) });
+    }
+
+    if (action === 'stress') {
+      const trades = await fetchPaperTrades(200, agentId);
+      const pnls = trades.map((t) => ({ pnl: Number(t.pnl || 0) }));
+      const result = runStressTest(pnls, {
+        iterations: 400,
+        scenario: 'all',
+        initialCapital: getKpiForAgent(agentId).capitalStart,
+      });
+      return res.status(200).json({ ok: true, agentId, stress: result });
     }
 
     if (action === 'reset') {
@@ -217,9 +238,48 @@ export default async function handler(
         refs[0] ||
         null;
 
+      // MetaAllocator: rebalance capital share across 3 desks
+      const deskPerf: DeskPerf[] = [];
+      for (const id of ['crypto', 'commodities', 'gold-silver'] as const) {
+        const s = id === agentId ? state : await loadState(id);
+        const kpiCfg = getKpiForAgent(id);
+        deskPerf.push({
+          agentId: id,
+          equity: s ? s.cash : kpiCfg.capitalStart,
+          capitalStart: kpiCfg.capitalStart,
+          pnlPercent: s
+            ? ((s.cash - kpiCfg.capitalStart) / kpiCfg.capitalStart) * 100
+            : 0,
+          winRate: s?.stats?.winRate ?? 0,
+          totalTrades: s?.stats?.totalTrades ?? 0,
+          maxDrawdownPct:
+            s && s.peakEquity > 0
+              ? ((s.peakEquity - s.cash) / s.peakEquity) * 100
+              : 0,
+          running: Boolean(s?.running),
+        });
+      }
+      const meta = allocateMetaCapital(deskPerf);
+      state.metaWeight = meta.weights[agentId] ?? 1 / 3;
+      state.lastMeta = {
+        weights: meta.weights,
+        reason: meta.reason,
+        scale: metaRiskScale(meta, agentId),
+        at: Date.now(),
+      };
+      if (state.risk) {
+        state.risk = {
+          ...state.risk,
+          riskPerTrade: Math.min(
+            0.02,
+            state.risk.riskPerTrade * metaRiskScale(meta, agentId)
+          ),
+        };
+      }
+
       state.activity = `Fetching live candles (${refs.length} assets)…`;
-      const snap = await buildSnapshot(refs, presetBenchmark, state.risk.interval);
-      const stepResult = paperStep(state, snap);
+      const snap = await buildMultiTfSnapshot(refs, presetBenchmark, state.risk.interval);
+      const stepResult = paperStep(state, snap, agentId);
       state = stepResult.state;
 
       for (const t of stepResult.closedTrades) {
@@ -253,6 +313,25 @@ export default async function handler(
         await persistParamTune(tune.reason, kpi, oldParams, state.risk, agentId);
       }
 
+      const banditNote = state.bandit ? banditSummary(state.bandit) : '';
+      state.lastBandit = banditNote || state.lastBandit;
+      if (banditNote && stepResult.closedTrades.length > 0) {
+        state.log = [`[bandit] ${banditNote}`, ...state.log].slice(0, 80);
+      }
+
+      // Auto stress: always once we have any trades; refresh every ~10 closed
+      if (state.trades.length > 0 && (!state.lastStress || state.stats.totalTrades % 10 === 0)) {
+        const stress = runStressTest(
+          state.trades.slice(0, 200).map((t) => ({ pnl: t.pnl })),
+          {
+            iterations: 300,
+            scenario: 'all',
+            initialCapital: getKpiForAgent(agentId).capitalStart,
+          }
+        );
+        state.lastStress = stress;
+      }
+
       await saveState(agentId, state);
       await persistKpiSnapshot(kpi, state.positions.length, agentId);
 
@@ -262,6 +341,11 @@ export default async function handler(
         agentId,
         state: serializePaper(state),
         kpi,
+        meta: state.lastMeta
+          ? { weights: state.lastMeta.weights, reason: state.lastMeta.reason, scale: state.lastMeta.scale }
+          : { weights: meta.weights, reason: meta.reason, scale: metaRiskScale(meta, agentId) },
+        bandit: state.lastBandit || banditNote,
+        stress: state.lastStress as never,
         tune: { reason: tune.reason, changed: tune.changed },
         closedThisStep: stepResult.closedTrades.length,
         lastSignals: snap.signals.slice(0, 20),
