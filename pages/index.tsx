@@ -11,6 +11,7 @@ import AutonomousRanking from '../components/Dashboard/AutonomousRanking';
 import MultiTimeframePanel from '../components/Dashboard/MultiTimeframePanel';
 import { ScanConfig, AssetScanResult, Candle, DecouplingSignal, BacktestResult } from '../lib/types';
 import { DEFAULT_SCAN_CONFIG, ASSET_UNIVERSE } from '../lib/config';
+import { buildRanges, parseRanges } from '../lib/ranges';
 import { RegimeResult } from '../lib/algorithms/marketRegime';
 import { AutonomousParams } from '../lib/algorithms/autonomousParams';
 import { MultiTimeframeResult } from '../lib/algorithms/multiTimeframe';
@@ -18,9 +19,19 @@ import { MultiTimeframeResult } from '../lib/algorithms/multiTimeframe';
 const AUTO_CACHE_KEY = 'althunter:last-autonomous';
 const AUTO_CACHE_MAX_AGE_MS = 30 * 60 * 1000;
 
+type Depth = 'all' | '100' | '500';
+
 interface AutonomousCache {
   scannedAt: number;
   indexSymbol: string;
+  depth: Depth;
+  universeId?: string;
+  /** Resume cursor: first universe position not yet scanned. */
+  offset: number;
+  /** Compact ranges of every position already scanned (enables gap-free resume). */
+  doneRanges?: string;
+  /** True when the sweep finished the whole (depth-sliced) universe. */
+  done: boolean;
   regime: RegimeResult;
   autonomousParams: AutonomousParams;
   rankings: MultiTimeframeResult[];
@@ -32,7 +43,9 @@ function loadAutonomousCache(): AutonomousCache | null {
     const raw = localStorage.getItem(AUTO_CACHE_KEY);
     if (!raw) return null;
     const parsed = JSON.parse(raw) as AutonomousCache;
-    if (!parsed?.rankings?.length || !parsed.regime) return null;
+    if (!parsed?.regime) return null;
+    // Partial sweeps (offset > 0) are resumable even with few/no rankings yet.
+    if (!parsed.rankings?.length && !(parsed.offset > 0)) return null;
     return parsed;
   } catch {
     return null;
@@ -56,6 +69,9 @@ async function fetchLastScanFromSupabase(indexSymbol: string): Promise<Autonomou
     return {
       scannedAt: data.scannedAt,
       indexSymbol: data.indexSymbol || indexSymbol,
+      depth: 'all',
+      offset: data.rankings.length,
+      done: true,
       regime: data.regime,
       autonomousParams: data.autonomousParams,
       rankings: data.rankings,
@@ -100,6 +116,12 @@ export default function Home() {
   const [error, setError] = useState<string | null>(null);
   const didAutoScanRef = useRef(false);
 
+  const [depth, setDepth] = useState<Depth>('all');
+  const [progress, setProgress] = useState<{ offset: number; total: number; etaSec: number | null } | null>(null);
+  const [sourceCounts, setSourceCounts] = useState<{ binance: number; gate: number; hyperliquid: number } | null>(null);
+  /** Monotonic run id — a new run (or stop) invalidates any loop still in flight. */
+  const runIdRef = useRef(0);
+
   const runManualScan = useCallback(async () => {
     if (config.assetSymbols.length === 0) return;
     setScanning(true);
@@ -130,53 +152,158 @@ export default function Home() {
     }
   }, [config]);
 
-  const runAutonomousScan = useCallback(async () => {
+  interface ScanResume {
+    depth?: Depth;
+    universeId?: string;
+    doneRanges?: string;
+    rankings?: MultiTimeframeResult[];
+  }
+
+  const runAutonomousScan = useCallback(async (opts: ScanResume = {}) => {
+    const runDepth = opts.depth ?? depth;
+    const runId = ++runIdRef.current;
     setScanning(true);
     setError(null);
-    setAutoRankings([]);
-    setRegime(null);
-    setAutoParams(null);
-    setBacktestResult(null);
+
+    const donePositions = parseRanges(opts.doneRanges);
+    let merged: MultiTimeframeResult[] = opts.rankings ? [...opts.rankings] : [];
+    let universeId = opts.universeId;
+    let total: number | null = null;
+    let stallCount = 0;
+
+    const firstUndone = () => {
+      let p = 0;
+      while (donePositions.has(p)) p++;
+      return p;
+    };
+
+    if (donePositions.size === 0) {
+      setAutoRankings([]);
+      setRegime(null);
+      setAutoParams(null);
+      setBacktestResult(null);
+    }
+    setAutoRankings(merged);
 
     try {
-      const url = `/api/autonomous?indexSymbol=${config.indexSymbol}&limit=200`;
+      // Chunked sweep: each request scans a time-budgeted slice of the universe.
+      // Already-scanned positions are sent back as ranges so the server skips them.
+      while (true) {
+        if (runIdRef.current !== runId) break;
 
-      const response = await fetch(url);
-      if (!response.ok) {
-        const errData = await response.json();
-        throw new Error(errData.error || `HTTP ${response.status}`);
+        const offset = firstUndone();
+        if (total !== null && offset >= total) break;
+
+        const windowEnd = offset + 500;
+        const skipPositions: number[] = [];
+        for (let p = offset; p < windowEnd; p++) {
+          if (donePositions.has(p)) skipPositions.push(p);
+        }
+
+        const params = new URLSearchParams({
+          indexSymbol: config.indexSymbol,
+          depth: runDepth,
+          offset: String(offset),
+          span: '500',
+          budgetMs: '15000',
+        });
+        const skipStr = buildRanges(skipPositions);
+        if (skipStr) params.set('skip', skipStr);
+        if (universeId) params.set('universeId', universeId);
+
+        const response = await fetch(`/api/autonomous?${params.toString()}`);
+        if (runIdRef.current !== runId) break;
+        if (!response.ok) {
+          const errData = await response.json();
+          throw new Error(errData.error || `HTTP ${response.status}`);
+        }
+        const data = await response.json();
+
+        // Universe was rediscovered mid-scan (server restart / TTL) → restart cleanly.
+        const universeChanged = universeId !== undefined && data.universeId !== universeId;
+        universeId = data.universeId;
+        if (universeChanged) {
+          donePositions.clear();
+          merged = [];
+        }
+
+        const deduped = new Map<string, MultiTimeframeResult>();
+        for (const r of merged) deduped.set(r.asset, r);
+        const positions: number[] = data.positions || [];
+        const rankingsChunk: MultiTimeframeResult[] = data.rankings || [];
+        for (let i = 0; i < rankingsChunk.length; i++) {
+          deduped.set(rankingsChunk[i].asset, rankingsChunk[i]);
+          if (positions[i] != null) donePositions.add(positions[i]);
+        }
+        merged = Array.from(deduped.values()).sort((a, b) => b.confluenceScore - a.confluenceScore);
+        total = data.total;
+
+        // Stall guard: three consecutive chunks with zero progress → abort.
+        if (data.progress.scannedInChunk > 0) {
+          stallCount = 0;
+        } else {
+          stallCount += 1;
+          if (stallCount >= 3) {
+            throw new Error('Scan stalled: no symbols completed within the time budget');
+          }
+        }
+
+        setRegime(data.regime);
+        setAutoParams(data.autonomousParams);
+        setAutoRankings(merged);
+        setTotalScanned(data.total);
+        setLastScannedAt(Date.now());
+        setSourceCounts(data.sources);
+        setProgress({ offset: donePositions.size, total: data.total, etaSec: data.progress.etaSec });
+
+        const done = donePositions.size >= data.total;
+        const cachePayload: AutonomousCache = {
+          scannedAt: Date.now(),
+          indexSymbol: config.indexSymbol,
+          depth: runDepth,
+          universeId,
+          offset: firstUndone(),
+          doneRanges: buildRanges(donePositions),
+          done,
+          regime: data.regime,
+          autonomousParams: data.autonomousParams,
+          rankings: merged,
+          totalScanned: data.total,
+        };
+        saveAutonomousCache(cachePayload);
+
+        if (done) {
+          void saveScanToSupabase(cachePayload);
+          break;
+        }
       }
 
-      const data = await response.json();
-      const scannedAt = Date.now();
-      const cachePayload: AutonomousCache = {
-        scannedAt,
-        indexSymbol: config.indexSymbol,
-        regime: data.regime,
-        autonomousParams: data.autonomousParams,
-        rankings: data.rankings,
-        totalScanned: data.totalScanned,
-      };
-
-      setRegime(data.regime);
-      setAutoParams(data.autonomousParams);
-      setAutoRankings(data.rankings);
-      setTotalScanned(data.totalScanned);
-      setLastScannedAt(scannedAt);
-
-      saveAutonomousCache(cachePayload);
-      void saveScanToSupabase(cachePayload);
-
-      if (data.rankings.length > 0) {
-        const withSignals = data.rankings.filter((r: MultiTimeframeResult) => r.finalSignal !== 'neutral');
-        setSelectedAsset(withSignals.length > 0 ? withSignals[0].asset : data.rankings[0].asset);
+      if (merged.length > 0) {
+        const withSignals = merged.filter((r) => r.finalSignal !== 'neutral');
+        setSelectedAsset(withSignals.length > 0 ? withSignals[0].asset : merged[0].asset);
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Autonomous scan failed');
+      if (runIdRef.current === runId) {
+        setError(err instanceof Error ? err.message : 'Autonomous scan failed');
+      }
     } finally {
-      setScanning(false);
+      if (runIdRef.current === runId) {
+        setScanning(false);
+        setProgress(null);
+      }
     }
-  }, [config.indexSymbol]);
+  }, [config.indexSymbol, depth]);
+
+  const stopAutonomousScan = useCallback(() => {
+    runIdRef.current += 1;
+    setScanning(false);
+    setProgress(null);
+  }, []);
+
+  const handleDepthChange = useCallback((next: Depth) => {
+    setDepth(next);
+    void runAutonomousScan({ depth: next });
+  }, [runAutonomousScan]);
 
   const applyCachedScan = useCallback((cached: AutonomousCache) => {
     setRegime(cached.regime);
@@ -222,15 +349,29 @@ export default function Home() {
     didAutoScanRef.current = true;
 
     const cached = loadAutonomousCache();
-    const isFresh =
+    const matches =
       cached &&
       cached.indexSymbol === config.indexSymbol &&
-      Date.now() - cached.scannedAt < AUTO_CACHE_MAX_AGE_MS;
+      (cached.depth ?? 'all') === depth;
+
+    if (matches && cached.done === false) {
+      // Interrupted sweep — resume from the saved cursor instead of starting over.
+      void runAutonomousScan({
+        depth,
+        doneRanges: cached.doneRanges,
+        rankings: cached.rankings,
+        universeId: cached.universeId,
+      });
+      return;
+    }
+
+    const isFresh =
+      matches && Date.now() - cached.scannedAt < AUTO_CACHE_MAX_AGE_MS && cached.done !== false;
 
     if (!isFresh) {
-      runAutonomousScan();
+      void runAutonomousScan({ depth });
     }
-  }, [isHydrated, config.indexSymbol, runAutonomousScan]);
+  }, [isHydrated, config.indexSymbol, depth, runAutonomousScan]);
 
   const runScan = useCallback(() => {
     if (mode === 'autonomous') {
@@ -363,32 +504,113 @@ export default function Home() {
         </div>
 
         {mode === 'autonomous' && (
-          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '11px', color: '#9ca3af', fontWeight: 600 }}>
+              Coverage
+              <select
+                value={depth}
+                onChange={(e) => handleDepthChange(e.target.value as Depth)}
+                disabled={scanning}
+                style={{
+                  padding: '7px 10px',
+                  background: '#1f2937',
+                  border: '1px solid #374151',
+                  borderRadius: '6px',
+                  color: '#f9fafb',
+                  fontSize: '12px',
+                  outline: 'none',
+                  cursor: scanning ? 'not-allowed' : 'pointer',
+                }}
+              >
+                <option value="all">All coins (full sweep)</option>
+                <option value="500">Top 500 by volume</option>
+                <option value="100">Top 100 by volume</option>
+              </select>
+            </label>
             {lastScannedAt && (
               <span style={{ fontSize: '11px', color: '#6b7280' }}>
                 Last scan: {new Date(lastScannedAt).toLocaleTimeString()}
               </span>
             )}
-            <button
-              onClick={runScan}
-              disabled={scanning}
-              style={{
-                padding: '8px 20px',
-                background: scanning ? '#374151' : 'linear-gradient(135deg, #10b981, #3b82f6)',
-                border: 'none',
-                borderRadius: '8px',
-                color: 'white',
-                fontSize: '13px',
-                fontWeight: '600',
-                cursor: scanning ? 'not-allowed' : 'pointer',
-                opacity: scanning ? 0.6 : 1,
-              }}
-            >
-              {scanning ? 'Scanning...' : '🔍 Run Autonomous Scan'}
-            </button>
+            {scanning ? (
+              <button
+                onClick={stopAutonomousScan}
+                style={{
+                  padding: '8px 20px',
+                  background: '#374151',
+                  border: '1px solid #4b5563',
+                  borderRadius: '8px',
+                  color: '#f9fafb',
+                  fontSize: '13px',
+                  fontWeight: '600',
+                  cursor: 'pointer',
+                }}
+              >
+                ⏹ Stop
+              </button>
+            ) : (
+              <button
+                onClick={runScan}
+                style={{
+                  padding: '8px 20px',
+                  background: 'linear-gradient(135deg, #10b981, #3b82f6)',
+                  border: 'none',
+                  borderRadius: '8px',
+                  color: 'white',
+                  fontSize: '13px',
+                  fontWeight: '600',
+                  cursor: 'pointer',
+                }}
+              >
+                🔍 Run Autonomous Scan
+              </button>
+            )}
           </div>
         )}
       </div>
+
+      {mode === 'autonomous' && scanning && progress && progress.total > 0 && (
+        <div style={{
+          background: '#111827',
+          border: '1px solid #374151',
+          borderRadius: '10px',
+          padding: '12px 16px',
+          marginBottom: '20px',
+        }}>
+          <div style={{
+            display: 'flex',
+            justifyContent: 'space-between',
+            fontSize: '11px',
+            color: '#9ca3af',
+            marginBottom: '8px',
+          }}>
+            <span>
+              Scanning universe…
+              {' '}<strong style={{ color: '#f9fafb' }}>{progress.offset.toLocaleString()}</strong>
+              {' / '}{progress.total.toLocaleString()} coins
+              {progress.etaSec != null && progress.etaSec > 0 && (
+                <span style={{ color: '#6b7280' }}>
+                  {' · '}~{progress.etaSec >= 60
+                    ? `${Math.ceil(progress.etaSec / 60)} min left`
+                    : `${progress.etaSec}s left`}
+                </span>
+              )}
+            </span>
+            <span style={{ color: '#6b7280' }}>
+              {sourceCounts && `Binance ${sourceCounts.binance.toLocaleString()} · Gate ${sourceCounts.gate.toLocaleString()} · Hyperliquid ${sourceCounts.hyperliquid.toLocaleString()}`}
+            </span>
+          </div>
+          <div style={{ height: '6px', background: '#1f2937', borderRadius: '3px', overflow: 'hidden' }}>
+            <div style={{
+              width: `${Math.min(100, (progress.offset / Math.max(progress.total, 1)) * 100)}%`,
+              height: '100%',
+              background: 'linear-gradient(90deg, #3b82f6, #8b5cf6)',
+              borderRadius: '3px',
+              transition: 'width 0.4s ease',
+            }} />
+          </div>
+        </div>
+      )}
 
       {mode === 'manual' && (
         <div style={{ marginBottom: '20px' }}>
@@ -408,9 +630,22 @@ export default function Home() {
         </div>
       )}
 
-      {mode === 'autonomous' && autoRankings.length > 0 && (
+      {mode === 'autonomous' && (autoRankings.length > 0 || (scanning && progress)) && (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '10px', marginBottom: '20px' }}>
-          <StatsCard label="Assets Scanned" value={totalScanned} icon="📊" />
+          <StatsCard
+            label="Assets Scanned"
+            value={
+              scanning && progress
+                ? `${progress.offset.toLocaleString()} / ${progress.total.toLocaleString()}`
+                : autoRankings.length.toLocaleString()
+            }
+            subtext={
+              totalScanned > 0
+                ? `Universe: ${totalScanned.toLocaleString()} coins`
+                : undefined
+            }
+            icon="📊"
+          />
           <StatsCard label="BUY Signals" value={buySignals.length} color="#10b981" icon="🟢" />
           <StatsCard label="SELL Signals" value={sellSignals.length} color="#ef4444" icon="🔴" />
           <StatsCard label="Regime" value={regime?.regime?.replace(/_/g, ' ') || '—'} icon="📈" />
@@ -487,8 +722,8 @@ export default function Home() {
               <p>Scans 1h, 4h, and 1d simultaneously. Weights: 1h=20%, 4h=35%, 1d=45%. Requires alignment across timeframes for high-confidence signals.</p>
             </div>
             <div>
-              <h4 style={{ color: '#f59e0b', fontSize: '12px', marginBottom: '6px' }}>4. Expanded Asset Universe</h4>
-              <p>Scans 70+ assets across Layer 1, DeFi, AI, Meme, Gaming, and Infrastructure categories. No manual selection needed.</p>
+              <h4 style={{ color: '#f59e0b', fontSize: '12px', marginBottom: '6px' }}>4. Full-Exchange Universe</h4>
+              <p>Auto-discovers every listed coin across Binance, Gate.io and Hyperliquid (2,000+ USDT pairs), ranked by 24h volume. Mid-caps like $LINK or $XPL are never dropped — the list refreshes hourly, so new listings appear on their own.</p>
             </div>
           </div>
         ) : (

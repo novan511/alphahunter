@@ -51,12 +51,13 @@ export async function fetchWithRetry(
   url: string,
   options: RequestInit = {},
   retries: number = 3,
-  backoffMs: number = 500
+  backoffMs: number = 500,
+  timeoutMs: number = 15000
 ): Promise<Response> {
   for (let attempt = 1; attempt <= retries; attempt++) {
     try {
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 15000);
+      const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
       const response = await fetch(url, { ...options, signal: controller.signal });
       clearTimeout(timeoutId);
 
@@ -76,6 +77,8 @@ export async function fetchWithRetry(
 
       return response;
     } catch (err) {
+      // Cert errors can be intermittent (ISP TLS interception on some lookups) —
+      // a retry usually lands on a clean connection, so treat like other errors.
       if (attempt === retries) throw err;
       await new Promise((r) => setTimeout(r, backoffMs * attempt));
     }

@@ -1,6 +1,6 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
 import { Candle } from '../../lib/types';
-import { fetchBinanceKlines } from '../../lib/api';
+import { fetchKlinesRouted } from '../../lib/universe';
 
 export default async function handler(
   req: NextApiRequest,
@@ -22,7 +22,7 @@ export default async function handler(
   const parsedLimit = Math.min(Math.max(parseInt(limit as string, 10) || 500, 50), 1000);
 
   try {
-    const candles = await fetchBinanceKlines(symbol, interval, parsedLimit);
+    const candles = await fetchKlinesRouted(symbol, interval, parsedLimit);
     return res.status(200).json(candles);
   } catch (err) {
     return res.status(500).json({

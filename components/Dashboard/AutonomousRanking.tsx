@@ -43,6 +43,7 @@ function nextSortDir(prev: SortDir | undefined): SortDir | undefined {
 
 export default function AutonomousRanking({ rankings, onSelectAsset, selectedAsset }: AutonomousRankingProps) {
   const [sort, setSort] = useState<SortState>({});
+  const [visibleCount, setVisibleCount] = useState(300);
 
   const sortedRankings = useMemo(() => {
     const active = SORT_PRIORITY.filter((key) => sort[key]).map((key) => ({ key, dir: sort[key]! }));
@@ -147,7 +148,7 @@ export default function AutonomousRanking({ rankings, onSelectAsset, selectedAss
             </tr>
           </thead>
           <tbody>
-            {sortedRankings.map((result) => {
+            {sortedRankings.slice(0, visibleCount).map((result) => {
               const originalIndex = rankings.findIndex((r) => r.asset === result.asset);
               const isSelected = result.asset === selectedAsset;
               const signalColor = SIGNAL_COLORS[result.finalSignal] || '#6b7280';
@@ -242,6 +243,25 @@ export default function AutonomousRanking({ rankings, onSelectAsset, selectedAss
             })}
           </tbody>
         </table>
+        {sortedRankings.length > visibleCount && (
+          <div style={{ padding: '10px 16px', borderTop: '1px solid #374151', textAlign: 'center' }}>
+            <button
+              onClick={() => setVisibleCount((c) => c + 500)}
+              style={{
+                padding: '7px 18px',
+                background: '#1f2937',
+                border: '1px solid #374151',
+                borderRadius: '6px',
+                color: '#9ca3af',
+                fontSize: '12px',
+                fontWeight: 600,
+                cursor: 'pointer',
+              }}
+            >
+              Show more ({(sortedRankings.length - visibleCount).toLocaleString()} remaining)
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );

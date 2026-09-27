@@ -3,7 +3,7 @@ import { fetchWithRetry } from '../api';
 import { fetchBinanceKlines } from '../api';
 import { fetchYahooChart } from '../yahoo';
 
-export type MarketDataSource = 'binance' | 'hyperliquid' | 'yahoo';
+export type MarketDataSource = 'binance' | 'gate' | 'hyperliquid' | 'yahoo';
 
 export interface AssetRef {
   /** Display / internal id, e.g. binance:ETHUSDT, hyperliquid:HYPE, yahoo:GC=F */
@@ -26,6 +26,7 @@ export interface AssetPreset {
 }
 
 const HYPERLIQUID_URL = process.env.HYPERLIQUID_BASE_URL || 'https://api.hyperliquid.xyz';
+const GATE_URL = process.env.GATE_BASE_URL || 'https://api.gateio.ws';
 
 export function parseAssetId(raw: string): AssetRef {
   // Strip annotations like "SOLUSDT (BINANCE)", "GC=F [Yahoo]", "ETH/USDT"
@@ -35,6 +36,20 @@ export function parseAssetId(raw: string): AssetRef {
   // Normalize pair separators: ETH/USDT → ETHUSDT
   cleaned = cleaned.replace(/([A-Z0-9]+)\/([A-Z0-9]+)/g, '$1$2');
   const lower = cleaned.toLowerCase();
+
+  if (lower.startsWith('gate:')) {
+    let symbol = cleaned.slice('gate:'.length).toUpperCase();
+    symbol = symbol.replace(/\s+.*$/, '').trim();
+    // XYZ_USDT → XYZUSDT (internal symbol form)
+    symbol = symbol.replace(/_/g, '');
+    return {
+      id: `gate:${symbol}`,
+      symbol,
+      source: 'gate',
+      label: `${symbol} (Gate)`,
+      klass: 'crypto',
+    };
+  }
 
   if (lower.startsWith('hyperliquid:')) {
     const symbol = cleaned.slice('hyperliquid:'.length).toUpperCase();
@@ -159,6 +174,10 @@ export async function fetchAssetCandles(
     }
   }
 
+  if (asset.source === 'gate') {
+    return fetchGateCandles(asset.symbol, iv, limit);
+  }
+
   if (asset.source === 'hyperliquid') {
     return fetchHyperliquidCandles(asset.symbol, iv, limit);
   }
@@ -183,6 +202,66 @@ function rangeForLimit(interval: string, limit: number): string {
   if (limit > 400) return '10y';
   if (limit > 150) return '5y';
   return '2y';
+}
+
+/**
+ * Gate.io spot candlesticks.
+ * Response row (verified against Binance): [window_start, quote_volume, close, high, low, open, base_volume, is_closed]
+ * Pair form: XYZ_USDT.
+ */
+export async function fetchGateCandles(
+  symbol: string,
+  interval: string,
+  limit: number
+): Promise<Candle[]> {
+  const pair = symbol.includes('_') ? symbol : `${symbol.replace(/USDT$/i, '')}_USDT`;
+  const ivMap: Record<string, string> = {
+    '1m': '1m', '5m': '5m', '15m': '15m', '30m': '30m',
+    '1h': '1h', '2h': '2h', '4h': '4h', '8h': '8h',
+    '1d': '1d', '7d': '7d',
+  };
+  const iv = ivMap[interval] || '4h';
+  const capped = Math.min(limit, 1000);
+  const to = Math.floor(Date.now() / 1000);
+  const from = to - Math.ceil(intervalToMs(iv) * capped * 1.2);
+
+  const params = new URLSearchParams({
+    currency_pair: pair,
+    interval: iv,
+    from: String(from),
+    to: String(to),
+    limit: String(capped),
+  });
+
+  const res = await fetchWithRetry(
+    `${GATE_URL}/api/v4/spot/candlesticks?${params.toString()}`,
+    { headers: { 'User-Agent': 'Althunter/2.0' } },
+    4, // patient retries — Gate rate-limits bursts with 429
+    1000,
+    6000 // fail fast through ISP connect blackholes, rotate via retry
+  );
+  if (!res.ok) {
+    throw new Error(`Gate API error for ${pair}: ${res.status}`);
+  }
+
+  const raw = (await res.json()) as (string | number | boolean)[][];
+  if (!Array.isArray(raw)) return [];
+
+  const candles = raw
+    .map((row) => ({
+      time: Math.floor(Number(row[0]) / 1000),
+      quoteVolume: Number(row[1]),
+      close: parseFloat(String(row[2])),
+      high: parseFloat(String(row[3])),
+      low: parseFloat(String(row[4])),
+      open: parseFloat(String(row[5])),
+      volume: parseFloat(String(row[6])),
+    }))
+    .filter((c) => Number.isFinite(c.open) && Number.isFinite(c.close) && c.time > 0)
+    .map(({ time, open, high, low, close, volume }) => ({ time, open, high, low, close, volume }))
+    .sort((a, b) => a.time - b.time);
+
+  return candles.slice(-capped);
 }
 
 interface HyperliquidCandle {

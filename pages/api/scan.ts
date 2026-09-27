@@ -1,6 +1,6 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
 import { Candle, AssetScanResult, ScanConfig } from '../../lib/types';
-import { fetchBinanceKlines } from '../../lib/api';
+import { fetchKlinesRouted } from '../../lib/universe';
 import { detectDecoupling } from '../../lib/algorithms/decouplingDetector';
 import { calculateRSData } from '../../lib/algorithms/relativeStrength';
 import { sma } from '../../lib/algorithms/indicators';
@@ -46,7 +46,7 @@ export default async function handler(
   try {
     const parsedLimit = Math.min(Math.max(parseInt(limit as string, 10) || 200, 100), 1000);
 
-    const indexCandles = await fetchBinanceKlines(config.indexSymbol, config.interval, parsedLimit);
+    const indexCandles = await fetchKlinesRouted(config.indexSymbol, config.interval, parsedLimit);
 
     const results: AssetScanResult[] = [];
 
@@ -58,7 +58,7 @@ export default async function handler(
     for (const chunk of assetChunks) {
       const fetchPromises = chunk.map(async (symbol) => {
         try {
-          const assetCandles = await fetchBinanceKlines(symbol, config.interval, parsedLimit);
+          const assetCandles = await fetchKlinesRouted(symbol, config.interval, parsedLimit);
 
           const minLength = Math.min(assetCandles.length, indexCandles.length);
           const trimmedAsset = assetCandles.slice(-minLength);

@@ -1,6 +1,6 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
 import { Candle, BacktestResult, BacktestConfig, ScanConfig } from '../../lib/types';
-import { fetchBinanceKlines } from '../../lib/api';
+import { fetchKlinesRouted } from '../../lib/universe';
 import { detectDecoupling } from '../../lib/algorithms/decouplingDetector';
 import { runBacktest } from '../../lib/algorithms/backtestEngine';
 
@@ -61,8 +61,8 @@ export default async function handler(
     const parsedLimit = Math.min(Math.max(parseInt(limit as string, 10) || 500, 200), 1000);
 
     const [indexCandles, assetCandles] = await Promise.all([
-      fetchBinanceKlines(scanConfig.indexSymbol, scanConfig.interval, parsedLimit),
-      fetchBinanceKlines((assetSymbol as string).toUpperCase(), scanConfig.interval, parsedLimit),
+      fetchKlinesRouted(scanConfig.indexSymbol, scanConfig.interval, parsedLimit),
+      fetchKlinesRouted((assetSymbol as string).toUpperCase(), scanConfig.interval, parsedLimit),
     ]);
 
     const minLength = Math.min(assetCandles.length, indexCandles.length);
