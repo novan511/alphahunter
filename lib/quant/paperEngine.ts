@@ -4,6 +4,10 @@ import { QuantRiskConfig } from './types';
 import { claimSymbol, releaseSymbol, releaseAgent } from './conflictGuard';
 import { evaluateEventFilter } from './eventFilter';
 import { createBanditState, pickStrategyUCB, updateBandit, BanditState, StrategyArm } from './strategyBandit';
+import { intervalToSeconds } from '../algorithms/signalFreshness';
+
+/** Bars to stay flat after a drawdown halt before entries may resume. */
+const DD_HALT_COOLDOWN_BARS = 20;
 
 export interface PaperPosition {
   symbol: string;
@@ -67,6 +71,8 @@ export interface PaperState {
   cash: number;
   peakEquity: number;
   halted: boolean;
+  /** Timestamp of the newest bar seen when the current halt began. */
+  haltedAtBar?: number | null;
   positions: PaperPosition[];
   trades: PaperTrade[];
   log: string[];
@@ -296,14 +302,30 @@ export function paperStep(
   state.lastPrices = { ...prices };
   state.activity = `MTF scan ${state.universe.length} assets · primary ${risk.interval} + context TFs…`;
 
-  // only act on newly closed bars
-  const freshSymbols = new Set<string>();
+  // Track the newest closed bar per symbol. barsHeld counts BARS, not ticks:
+  // the UI polls every 45s, so incrementing on every step let a position hit
+  // maxHoldBars and the trailing-stop ratchet many times inside a single bar.
+  let anyFreshBar = false;
   for (const [sym, c] of Object.entries(snap.latest)) {
     const last = state.lastBarTimes[sym];
     if (last === undefined || c.time > last) {
-      freshSymbols.add(sym);
+      anyFreshBar = true;
       state.lastBarTimes[sym] = c.time;
     }
+  }
+  const isNewBar = anyFreshBar;
+  const stateAny = state as PaperState & { lastStepBarKey?: string };
+  const barKey = Object.entries(snap.latest)
+    .map(([s, c]) => `${s}:${c.time}`)
+    .sort()
+    .join('|');
+  // Same set of latest bars as the previous step => nothing new to act on.
+  const newBarForUs = isNewBar || stateAny.lastStepBarKey !== barKey;
+  stateAny.lastStepBarKey = barKey;
+  if (!newBarForUs) {
+    state.activity = `No new closed bar yet · waiting for next ${risk.interval} candle`;
+    state.updatedAt = Date.now();
+    return { state, closedTrades };
   }
 
   const closeAndTrack = (
@@ -375,8 +397,9 @@ export function paperStep(
   if (equity > state.peakEquity) state.peakEquity = equity;
   const dd = state.peakEquity > 0 ? (state.peakEquity - equity) / state.peakEquity : 0;
 
-  if (dd >= risk.maxPortfolioDrawdownPct && state.positions.length > 0) {
+  if (dd >= risk.maxPortfolioDrawdownPct && state.positions.length > 0 && !state.halted) {
     state.halted = true;
+    state.haltedAtBar = state.lastBarTimes[Object.keys(state.lastBarTimes)[0]] ?? 0;
     pushLog(state, `DD HALT at ${(dd * 100).toFixed(2)}% — closing all`);
     for (let i = state.positions.length - 1; i >= 0; i--) {
       const pos = state.positions[i];
@@ -384,6 +407,21 @@ export function paperStep(
       if (last) closeAndTrack(pos, last.time, last.close, 'dd_halt');
     }
     state.positions = [];
+  }
+
+  // Recovery path: a halt with no reset left the agent permanently flat with a
+  // dead "waiting for reset" message. Re-arm once the cooldown has elapsed AND
+  // equity has recovered to within half the drawdown limit.
+  if (state.halted && state.positions.length === 0 && state.haltedAtBar != null) {
+    const nowBar = Math.max(...Object.values(state.lastBarTimes), 0);
+    const barsSince = Math.round((nowBar - state.haltedAtBar) / intervalToSeconds(risk.interval));
+    const recovered = dd < risk.maxPortfolioDrawdownPct * 0.5;
+    if (barsSince >= DD_HALT_COOLDOWN_BARS && recovered) {
+      state.halted = false;
+      state.haltedAtBar = null;
+      state.peakEquity = equity;
+      pushLog(state, `DD halt cleared after ${barsSince} bars — resuming entries`);
+    }
   }
 
   if (!state.halted) {
@@ -409,15 +447,24 @@ export function paperStep(
       bySym.forEach((v) => deduped.push(v));
       deduped.sort((a, b) => b.strength - a.strength);
 
-      // Bandit picks preferred arm; we boost matching signals
+      // Bandit picks preferred arm; we boost matching signals.
+      // armBoost also scales riskPerTrade, so it must be a live multiplier —
+      // folding it into the persisted base parameter compounded every step and
+      // silently drove risk to 0 (losing desks) or to the hard cap (winning ones).
       if (!state.bandit) state.bandit = createBanditState();
       const preferredArm = pickStrategyUCB(state.bandit);
       const armBoost = (reason: string): number => {
         const r = reason.toLowerCase();
-        if (preferredArm === 'spike' && r.includes('spike')) return 1.15;
-        if (preferredArm === 'momentum' && (r.includes('mom') || r.includes('vol'))) return 1.1;
-        if (preferredArm === 'decoupling' && r.includes('decoupl')) return 1.1;
-        return 1;
+        // Classify the SAME way pos.strategy is assigned below. Matching on a
+        // bare 'vol' substring leaked the momentum boost onto decoupling
+        // signals, whose reason text also contains "Vol:".
+        const arm: StrategyArm = r.includes('spike')
+          ? 'spike'
+          : r.includes('decoupl')
+            ? 'decoupling'
+            : 'momentum';
+        if (arm !== preferredArm) return 1;
+        return arm === 'spike' ? 1.15 : 1.1;
       };
 
       const metaScale = Math.max(0.5, Math.min(1.3, state.metaWeight || 1 / 3) * 3);
@@ -446,8 +493,13 @@ export function paperStep(
         }
 
         const side: 'long' | 'short' = sig.type === 'buy' ? 'long' : 'short';
-        const openPx = last.open || last.close;
-        const entryPrice = openPx * (1 + (side === 'long' ? risk.slippage : -risk.slippage));
+        // Signals are derived from the CLOSE of the latest closed bar, so that
+        // price is already in the past. Filling at that bar's open handed us the
+        // entire intrabar move the signal was designed to detect, for free —
+        // it made every momentum buy look like alpha. Fill at the last close
+        // instead: still historical, but it no longer front-runs the bar.
+        const rawPx = last.close;
+        const entryPrice = rawPx * (1 + (side === 'long' ? risk.slippage : -risk.slippage));
         const riskPerUnit = risk.stopLossATR * currentATR;
         const eqNow = paperEquity(state, prices);
         const sizeScale = evt.sizeScale * metaScale * armBoost(sig.reason);

@@ -267,13 +267,16 @@ export default async function handler(
         scale: metaRiskScale(meta, agentId),
         at: Date.now(),
       };
-      if (state.risk) {
+        if (state.risk) {
+        // Meta weight is a SIZING hint, not a new baseline. Multiplying the
+        // persisted riskPerTrade compounded every step: a losing desk decayed
+        // geometrically to ~0 within minutes, a winning desk pinned itself at
+        // the 0.02 hard cap within a few. Scale is applied to size at entry
+        // time instead (see paperEngine sizeScale), leaving the stored
+        // parameter stable.
         state.risk = {
           ...state.risk,
-          riskPerTrade: Math.min(
-            0.02,
-            state.risk.riskPerTrade * metaRiskScale(meta, agentId)
-          ),
+          riskPerTrade: Math.min(0.02, Math.max(0.0005, state.risk.riskPerTrade)),
         };
       }
 

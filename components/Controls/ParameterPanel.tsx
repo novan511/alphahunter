@@ -202,22 +202,22 @@ export default function ParameterPanel({ config, onChange, onScan, loading }: Pa
       </div>
 
       <div style={{ marginBottom: '16px' }}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px', flexWrap: 'wrap', marginBottom: '8px' }}>
           <label style={{ fontSize: '11px', color: '#9ca3af', fontWeight: '600' }}>
             Assets to Scan ({config.assetSymbols.length} selected)
           </label>
           <div style={{ display: 'flex', gap: '8px' }}>
             <button onClick={selectAll} style={{
-              padding: '2px 8px', background: '#374151', border: 'none', borderRadius: '4px',
+              padding: '4px 12px', background: '#374151', border: 'none', borderRadius: '4px',
               color: '#9ca3af', fontSize: '10px', cursor: 'pointer',
             }}>All</button>
             <button onClick={selectNone} style={{
-              padding: '2px 8px', background: '#374151', border: 'none', borderRadius: '4px',
+              padding: '4px 12px', background: '#374151', border: 'none', borderRadius: '4px',
               color: '#9ca3af', fontSize: '10px', cursor: 'pointer',
             }}>None</button>
           </div>
         </div>
-        <div style={{
+        <div className="ah-chips" style={{
           display: 'flex',
           flexWrap: 'wrap',
           gap: '6px',

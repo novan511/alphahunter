@@ -178,3 +178,253 @@ body {
     grid-template-columns: 1fr 1fr;
   }
 }
+
+/* ==========================================================================
+   Beranda (home) responsive layout
+   Colors/spacing stay inline; only layout switches by viewport here.
+   ========================================================================== */
+
+/* Toolbar baris atas: mode + coverage + order + run — wrap, jangan overflow */
+.ah-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 20px;
+}
+
+.ah-mode-switch {
+  display: flex;
+}
+
+/* Label select Coverage / Order */
+.ah-field {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: #9ca3af;
+  font-weight: 600;
+}
+
+.ah-two-col {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 20px;
+}
+
+.ah-stats {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 10px;
+}
+
+.ah-tf-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+}
+
+.ah-params-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  font-size: 12px;
+}
+
+/* Header panel yang judul + badge kanan-kiri */
+.ah-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+/* Tabel lebar: scroll horizontal di dalam card, bukan membesarkan halaman */
+.ah-scroll {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-x: contain;
+}
+
+/* Daftar chip padat (pilih aset) — tetap ringkas tapi masih bisa ditap */
+.ah-chips {
+  -webkit-overflow-scrolling: touch;
+}
+
+/* ---- Radar Narasi: kartu sektor ---- */
+.ah-narrative-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(330px, 1fr));
+  gap: 12px;
+}
+
+/* ---- Coin yang bisa ditrade: kartu + baris watchlist ---- */
+.ah-trade-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+  gap: 10px;
+}
+
+/* Baris filter (arah + risiko) dan baris watchlist */
+.ah-chip-row {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+/* Ticker + chip + angka dalam satu baris; wraps di layar sempit */
+.ah-trade-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+/* Header chrome */
+.site-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 24px;
+}
+
+.brand-sub {
+  font-size: 11px;
+  color: #6b7280;
+  margin: 0;
+}
+
+.site-main {
+  flex: 1;
+  width: 100%;
+  max-width: 1400px;
+  margin: 0 auto;
+  padding: 20px 24px;
+}
+
+.site-footer {
+  padding: 12px 24px;
+  padding-bottom: calc(12px + env(safe-area-inset-bottom, 0px));
+  border-top: 1px solid #374151;
+  text-align: center;
+  font-size: 11px;
+  color: #6b7280;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+/* ---- Tablet ---- */
+@media (max-width: 900px) {
+  .ah-stats {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+@media (max-width: 860px) {
+  .ah-two-col {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ---- HP ---- */
+@media (max-width: 640px) {
+  .site-header {
+    padding: 10px 12px;
+  }
+
+  .brand-sub {
+    display: none;
+  }
+
+  .site-main {
+    padding: 14px 12px;
+  }
+
+  .site-footer {
+    padding: 12px;
+    padding-bottom: calc(12px + env(safe-area-inset-bottom, 0px));
+  }
+
+  .ah-toolbar {
+    gap: 8px;
+  }
+
+  .ah-toolbar .ah-mode-switch {
+    width: 100%;
+  }
+
+  .ah-toolbar .ah-mode-switch button {
+    flex: 1;
+  }
+
+  .ah-toolbar-group {
+    flex: 1 1 100%;
+  }
+
+  .ah-toolbar .ah-field {
+    flex: 1 1 150px;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 4px;
+  }
+
+  .ah-toolbar .ah-field select {
+    width: 100%;
+    max-width: 100%;
+  }
+
+  .ah-toolbar .ah-action {
+    width: 100%;
+  }
+
+  /* Kontrol lebih besar supaya enak ditap */
+  button {
+    min-height: 36px;
+  }
+
+  /* Kecualikan chip padat: tetap ringkas agar tidak memakan scroll */
+  .ah-chips button {
+    min-height: 30px;
+    padding-top: 6px;
+    padding-bottom: 6px;
+  }
+
+  .ah-chips {
+    max-height: 160px;
+  }
+
+  /* iOS auto-zoom kalau font < 16px saat input difokuskan */
+  input,
+  select,
+  textarea {
+    font-size: 16px !important;
+  }
+
+  input,
+  select {
+    min-height: 38px;
+  }
+}
+
+@media (max-width: 560px) {
+  .ah-tf-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .ah-params-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  /* Kartu radar/trade jadi satu kolom — dua kolom di HP bikin teks wrap jelek. */
+  .ah-narrative-grid,
+  .ah-trade-grid {
+    grid-template-columns: 1fr;
+  }
+}

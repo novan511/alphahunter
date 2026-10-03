@@ -147,18 +147,29 @@ export function autoTuneRisk(
     next.allowShort = false;
     reason = 'de-risk_critical';
   } else if (kpi.status === 'behind') {
+    // Being behind is not a reason to widen stops. Widening the stop after
+    // losses raises per-trade risk precisely when the edge is failing, which is
+    // a martingale response, and moving the stop away from entry invalidates the
+    // R-multiple the whole expectancy model is denominated in. Tighten the
+    // selectivity instead (fewer, better trades) and cut size.
     next.minSignalStrength = clamp(next.minSignalStrength + 0.25, ...BOUNDS.minSignalStrength);
     next.maxConcurrentPositions = clamp(3, ...BOUNDS.maxConcurrentPositions);
-    next.riskPerTrade = clamp(0.005, ...BOUNDS.riskPerTrade);
+    next.riskPerTrade = clamp(0.004, ...BOUNDS.riskPerTrade);
     next.maxExposurePct = 0.35;
     if (win < 0.4) {
-      next.stopLossATR = clamp(next.stopLossATR - 0.1, ...BOUNDS.stopLossATR);
-      next.takeProfitATR = clamp(next.takeProfitATR + 0.15, ...BOUNDS.takeProfitATR);
+      // Tighten the stop (bounded) rather than loosening it, and keep the
+      // reward:risk ratio intact by moving the target with it.
+      const prevSl = next.stopLossATR;
+      next.stopLossATR = clamp(prevSl + 0.1, ...BOUNDS.stopLossATR);
+      next.takeProfitATR = clamp(
+        next.takeProfitATR * (next.stopLossATR / prevSl),
+        ...BOUNDS.takeProfitATR
+      );
     }
     reason = 'catch_up_selective';
   } else if (kpi.status === 'on_track' || kpi.status === 'ahead') {
     if (win >= 0.48 && kpi.paceMonthlyPercent < kpiCfg.monthlyTargetHigh * 100) {
-      next.riskPerTrade = clamp(next.riskPerTrade + 0.001, ...BOUNDS.riskPerTrade);
+      next.riskPerTrade = clamp(next.riskPerTrade + 0.0005, ...BOUNDS.riskPerTrade);
       next.maxConcurrentPositions = clamp(next.maxConcurrentPositions + 1, ...BOUNDS.maxConcurrentPositions);
       next.maxExposurePct = clamp(next.maxExposurePct + 0.05, ...BOUNDS.maxExposurePct);
       reason = 'scale_on_track';

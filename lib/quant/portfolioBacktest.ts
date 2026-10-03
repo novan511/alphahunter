@@ -16,6 +16,9 @@ function clampPositive(n: number | undefined, fallback: number): number {
   return n;
 }
 
+/** Bars to stay flat after a drawdown halt before entries may resume. */
+const DD_HALT_COOLDOWN_BARS = 20;
+
 function barsPerYear(interval: string): number {
   const sec = intervalToSeconds(interval);
   if (sec <= 0) return 365;
@@ -126,9 +129,12 @@ export function runPortfolioBacktest(
   let cash = risk.initialCapital;
   let peakEquity = risk.initialCapital;
   let haltedByDd = false;
+  /** Bar index when the drawdown halt fired; -1 when not halted. */
+  let haltBar = -1;
   let maxConcurrentSeen = 0;
   let signalsSeen = 0;
   let signalsTaken = 0;
+  let ddHaltCount = 0;
 
   const openPositions: PortfolioPosition[] = [];
   const trades: PortfolioTrade[] = [];
@@ -223,9 +229,16 @@ export function runPortfolioBacktest(
       if (reason && exitPrice > 0) {
         closePosition(pos, time, exitPrice, reason);
         openPositions.splice(i, 1);
-      } else if (!isNaN(currentATR) && currentATR > 0 && pos.side === 'long') {
-        const trail = candle.high - risk.stopLossATR * currentATR;
-        if (trail > pos.stopLoss) pos.stopLoss = trail;
+      } else if (!isNaN(currentATR) && currentATR > 0) {
+        // Trailing applies to BOTH directions. Long-only ratcheting meant the
+        // short side never trailed, so the two engines disagreed on behaviour.
+        if (pos.side === 'long') {
+          const trail = candle.high - risk.stopLossATR * currentATR;
+          if (trail > pos.stopLoss) pos.stopLoss = trail;
+        } else {
+          const trail = candle.low + risk.stopLossATR * currentATR;
+          if (trail < pos.stopLoss) pos.stopLoss = trail;
+        }
       }
     }
 
@@ -235,8 +248,10 @@ export function runPortfolioBacktest(
     if (equityNow > peakEquity) peakEquity = equityNow;
     const dd = peakEquity > 0 ? (peakEquity - equityNow) / peakEquity : 0;
 
-    if (dd >= risk.maxPortfolioDrawdownPct && openPositions.length > 0) {
+    if (dd >= risk.maxPortfolioDrawdownPct && openPositions.length > 0 && !haltedByDd) {
       haltedByDd = true;
+      haltBar = t;
+      ddHaltCount++;
       for (let i = openPositions.length - 1; i >= 0; i--) {
         const pos = openPositions[i];
         const tMap = timeIndexMap.get(pos.symbol);
@@ -244,8 +259,33 @@ export function runPortfolioBacktest(
         const ci = tMap?.get(time);
         if (data && ci !== undefined) {
           closePosition(pos, time, data.candles[ci].close, 'dd_halt');
+        } else {
+          // No candle for this bar (suspended / missing data). Splicing without
+          // settling silently destroyed that position's P&L — the cash was never
+          // credited. Fall back to the last known close so equity stays whole.
+          const lastIdx = data ? data.candles.length - 1 : -1;
+          if (data && lastIdx >= 0) {
+            closePosition(pos, data.candles[lastIdx].time, data.candles[lastIdx].close, 'dd_halt');
+          } else {
+            // Truly no data at all — settle flat at entry so we neither create
+            // nor destroy capital.
+            closePosition(pos, time, pos.entryPrice, 'dd_halt');
+          }
         }
         openPositions.splice(i, 1);
+      }
+    }
+
+    // Recovery: a halt used to be permanent, so one breach killed the strategy
+    // for the rest of the run and silently truncated the sample (every reported
+    // metric then described only the pre-halt regime). Re-arm after a cooldown,
+    // but only once drawdown has actually recovered to half the limit.
+    if (haltedByDd && openPositions.length === 0 && haltBar >= 0) {
+      const cooledDown = t - haltBar >= DD_HALT_COOLDOWN_BARS;
+      const recovered = dd < risk.maxPortfolioDrawdownPct * 0.5;
+      if (cooledDown && recovered) {
+        haltedByDd = false;
+        haltBar = -1;
       }
     }
 
@@ -354,6 +394,7 @@ export function runPortfolioBacktest(
     signalsSeen,
     signalsTaken,
     haltedByDd,
+    ddHaltCount,
     barsPerYear: barsPerYear(risk.interval),
   });
 }
@@ -422,6 +463,7 @@ function summarize(
     signalsSeen: number;
     signalsTaken: number;
     haltedByDd: boolean;
+    ddHaltCount: number;
     barsPerYear: number;
   }
 ): PortfolioBacktestResult {
@@ -445,12 +487,10 @@ function summarize(
   const cum = equityCurve.map((p) => p.equity / extras.initialCapital);
   const { maxDD } = maxDrawdown(cum.length ? cum : [1]);
   const maxDrawdownPercent = maxDD * 100;
+  // Calmar is undefined when there is no drawdown. Returning a hardcoded 10
+  // fabricated a top-grade metric on every short or profitable-flat run.
   const calmarRatio =
-    maxDrawdownPercent > 0
-      ? totalPnLPercent / maxDrawdownPercent
-      : totalPnLPercent > 0
-        ? 10
-        : 0;
+    maxDrawdownPercent > 0.01 ? totalPnLPercent / maxDrawdownPercent : 0;
 
   const ann = Math.sqrt(extras.barsPerYear || 365);
   const sharpeAnn = sharpeRatio(returns) * ann;

@@ -18,6 +18,8 @@ export interface LastScanResponse {
   sellSummary?: string;
   regimeLabel?: string;
   source?: 'scan_history' | 'autonomous_scans';
+  /** Universe ordering the persisted scan used. */
+  scanOrder?: 'cap' | 'volume';
 }
 
 interface ScanHistoryRow {
@@ -38,6 +40,7 @@ interface AutonomousScanRow {
   index_symbol: string;
   payload: {
     scannedAt?: number;
+    scanOrder?: 'cap' | 'volume';
     regime?: RegimeResult;
     autonomousParams?: AutonomousParams;
     rankings?: MultiTimeframeResult[];
@@ -157,6 +160,7 @@ export default async function handler(
       rankings,
       totalScanned: payload.totalScanned ?? rankings.length,
       signalsFound: rankings.filter((r) => r.finalSignal !== 'neutral').length,
+      scanOrder: payload.scanOrder,
     });
   } catch (err) {
     return res.status(500).json({

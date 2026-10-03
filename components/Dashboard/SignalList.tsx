@@ -17,12 +17,9 @@ export default function SignalList({ results }: SignalListProps) {
       border: '1px solid #374151',
       overflow: 'hidden',
     }}>
-      <div style={{
+      <div className="ah-panel-head" style={{
         padding: '12px 16px',
         borderBottom: '1px solid #374151',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'space-between',
       }}>
         <h3 style={{ fontSize: '14px', fontWeight: '600', color: '#f9fafb', margin: 0 }}>
           Active Signals
@@ -52,8 +49,8 @@ export default function SignalList({ results }: SignalListProps) {
                   borderLeft: `3px solid ${isBuy ? '#10b981' : '#ef4444'}`,
                 }}
               >
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '6px' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px', flexWrap: 'wrap', marginBottom: '6px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
                     <span style={{
                       padding: '2px 6px',
                       borderRadius: '4px',
@@ -73,7 +70,7 @@ export default function SignalList({ results }: SignalListProps) {
                     ${signal.price.toFixed(4)}
                   </span>
                 </div>
-                <div style={{ display: 'flex', gap: '16px', fontSize: '11px', color: '#9ca3af' }}>
+                <div style={{ display: 'flex', gap: '6px 16px', flexWrap: 'wrap', fontSize: '11px', color: '#9ca3af' }}>
                   <span>RS Z: <strong style={{ color: signal.rsZScore > 0 ? '#10b981' : '#ef4444' }}>{signal.rsZScore.toFixed(2)}</strong></span>
                   <span>Idx: <strong style={{ color: '#ef4444' }}>{signal.indexReturn.toFixed(2)}%</strong></span>
                   <span>Asset: <strong style={{ color: '#10b981' }}>{signal.assetReturn.toFixed(2)}%</strong></span>

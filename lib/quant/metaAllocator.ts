@@ -61,10 +61,10 @@ export function allocateMetaCapital(
     const samplePenalty = d.totalTrades < MIN_SAMPLE ? 0.3 : 1;
     const ddPenalty = (d.maxDrawdownPct / 100) * LAMBDA_DD;
 
-    // Prefer desks closer to their KPI band without huge DD
-    const targetMid =
-      ((profile.kpi.monthlyTargetLow + profile.kpi.monthlyTargetHigh) / 2) * 100;
-    const kpiFit = 1 - clamp(Math.abs(d.pnlPercent - targetMid * 0.05) / 20, 0, 1);
+    // Prefer desks that are actually profitable. The previous expression used
+    // `targetMid * 0.05`, which silently rewrote a 30% monthly target into
+    // "be at +1.5% P&L" — so 20% of the utility rewarded desks for being flat.
+    const kpiFit = clamp(d.pnlPercent / 10, 0, 1);
 
     const u =
       samplePenalty * (0.45 * pnlScore + 0.35 * (win - 0.5) + 0.2 * kpiFit) - ddPenalty;
@@ -81,7 +81,7 @@ export function allocateMetaCapital(
     }
   }
 
-  // Softmax on utilities
+  // Softmax on utilities.
   const exps: Record<string, number> = {};
   let sumExp = 0;
   for (const id of DESKS) {
@@ -89,18 +89,54 @@ export function allocateMetaCapital(
     exps[id] = e;
     sumExp += e;
   }
-  for (const id of DESKS) {
-    // Soft floor so no desk goes fully to 0 while running
-    const raw = exps[id] / (sumExp || 1);
-    const running = byId.get(id)?.running;
-    weights[id] = running ? clamp(raw, 0.15, 0.55) : clamp(raw * 0.3, 0.05, 0.2);
+
+  // Allocate only across RUNNING desks.
+  //
+  // A desk that is not running cannot execute anything, so it gets no capital.
+  // Clamping a small non-zero weight then renormalising gave offline desks ~46%
+  // of the book whenever two were stopped — capital pointed at nothing.
+  const running = DESKS.filter((id) => byId.get(id)?.running);
+
+  if (running.length === 0) {
+    for (const id of DESKS) weights[id] = 0;
+    return {
+      weights,
+      suggestedCapital,
+      reason: 'no desk running — no allocation',
+      utility,
+      generatedAt: Date.now(),
+    };
   }
 
-  // Renormalize
-  const wSum = DESKS.reduce((a, id) => a + weights[id], 0) || 1;
+  // Bounds only matter once there is genuine competition for capital. With one
+  // desk live it must take everything; with two, neither should be starved.
+  const LO = running.length >= 3 ? 0.15 : 0.2;
+  const HI = running.length >= 3 ? 0.55 : 0.7;
+
+  const liveRaw: Record<string, number> = {};
+  let liveSumExp = 0;
+  for (const id of running) {
+    const raw = exps[id] / (sumExp || 1);
+    liveRaw[id] = raw;
+    liveSumExp += raw;
+  }
+
   for (const id of DESKS) {
+    if (!byId.get(id)?.running) {
+      weights[id] = 0;
+      continue;
+    }
+    weights[id] = clamp(liveSumExp > 0 ? liveRaw[id] / liveSumExp : 1 / running.length, LO, HI);
+  }
+
+  // Renormalise within the running set only.
+  const wSum = running.reduce((acc, id) => acc + weights[id], 0) || 1;
+  for (const id of running) {
     weights[id] = Math.round((weights[id] / wSum) * 1000) / 1000;
     suggestedCapital[id] = Math.round(baseCapital * weights[id] * 100) / 100;
+  }
+  for (const id of DESKS) {
+    if (!byId.get(id)?.running) suggestedCapital[id] = 0;
   }
 
   return {

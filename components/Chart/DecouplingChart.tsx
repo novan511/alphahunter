@@ -8,6 +8,15 @@ interface DecouplingChartProps {
   title: string;
 }
 
+/** Chart lebih pendek di layar kecil supaya tidak memakan setengah viewport. */
+function getChartHeight(): number {
+  if (typeof window === 'undefined') return 450;
+  const w = window.innerWidth;
+  if (w < 560) return 280;
+  if (w < 900) return 360;
+  return 450;
+}
+
 export default function DecouplingChart({ assetCandles, signals, title }: DecouplingChartProps) {
   const chartContainerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
@@ -26,7 +35,7 @@ export default function DecouplingChart({ assetCandles, signals, title }: Decoup
 
     const chart = createChart(chartContainerRef.current, {
       width: chartContainerRef.current.clientWidth,
-      height: 450,
+      height: getChartHeight(),
       layout: {
         background: { type: ColorType.Solid, color: '#111827' },
         textColor: '#9ca3af',
@@ -91,7 +100,10 @@ export default function DecouplingChart({ assetCandles, signals, title }: Decoup
 
     const handleResize = () => {
       if (chartContainerRef.current) {
-        chart.applyOptions({ width: chartContainerRef.current.clientWidth });
+        chart.applyOptions({
+          width: chartContainerRef.current.clientWidth,
+          height: getChartHeight(),
+        });
       }
     };
 
@@ -107,12 +119,9 @@ export default function DecouplingChart({ assetCandles, signals, title }: Decoup
 
   return (
     <div style={{ background: '#111827', borderRadius: '12px', border: '1px solid #374151', overflow: 'hidden' }}>
-      <div style={{
+      <div className="ah-panel-head" style={{
         padding: '12px 16px',
         borderBottom: '1px solid #374151',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'space-between',
       }}>
         <h3 style={{ fontSize: '14px', fontWeight: '600', color: '#f9fafb', margin: 0 }}>
           {title}

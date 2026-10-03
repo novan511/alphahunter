@@ -16,18 +16,17 @@ export default function Layout({ children }: LayoutProps) {
       display: 'flex',
       flexDirection: 'column',
     }}>
-      <header style={{
-        background: 'rgba(17, 24, 39, 0.95)',
-        backdropFilter: 'blur(12px)',
-        borderBottom: '1px solid #374151',
-        padding: '12px 24px',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-        position: 'sticky',
-        top: 0,
-        zIndex: 100,
-      }}>
+      <header
+        className="site-header"
+        style={{
+          background: 'rgba(17, 24, 39, 0.95)',
+          backdropFilter: 'blur(12px)',
+          borderBottom: '1px solid #374151',
+          position: 'sticky',
+          top: 0,
+          zIndex: 100,
+        }}
+      >
         <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
           <div style={{
             width: '32px',
@@ -47,7 +46,7 @@ export default function Layout({ children }: LayoutProps) {
             <h1 style={{ fontSize: '16px', fontWeight: '700', color: '#f9fafb', margin: 0 }}>
               Althunter
             </h1>
-            <p style={{ fontSize: '11px', color: '#6b7280', margin: 0 }}>
+            <p className="brand-sub">
               Relative Strength Decoupling Detector
             </p>
           </div>
@@ -96,22 +95,15 @@ export default function Layout({ children }: LayoutProps) {
           </div>
         </div>
       </header>
-      <main style={{
-        flex: 1,
-        padding: '20px 24px',
-        maxWidth: '1400px',
-        width: '100%',
-        margin: '0 auto',
-      }}>
+      <main
+        className="site-main"
+        style={{
+          flex: 1,
+        }}
+      >
         {children}
       </main>
-      <footer style={{
-        padding: '12px 24px',
-        borderTop: '1px solid #374151',
-        textAlign: 'center',
-        fontSize: '11px',
-        color: '#6b7280',
-      }}>
+      <footer className="site-footer">
         Althunter v2.0 — Relative Strength Decoupling Hunter
       </footer>
     </div>

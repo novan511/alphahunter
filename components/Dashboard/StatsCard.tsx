@@ -15,7 +15,8 @@ export default function StatsCard({ label, value, subtext, color = '#f9fafb', ic
       borderRadius: '12px',
       border: '1px solid #374151',
       padding: '16px',
-      minWidth: '140px',
+      minWidth: 0,
+      overflow: 'hidden',
     }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '8px' }}>
         {icon && <span style={{ fontSize: '14px' }}>{icon}</span>}
@@ -23,11 +24,11 @@ export default function StatsCard({ label, value, subtext, color = '#f9fafb', ic
           {label}
         </span>
       </div>
-      <div style={{ fontSize: '22px', fontWeight: '700', color, lineHeight: '1.2' }}>
+      <div style={{ fontSize: '22px', fontWeight: '700', color, lineHeight: '1.2', wordBreak: 'break-word' }}>
         {value}
       </div>
       {subtext && (
-        <div style={{ fontSize: '11px', color: '#6b7280', marginTop: '4px' }}>
+        <div style={{ fontSize: '11px', color: '#6b7280', marginTop: '4px', wordBreak: 'break-word' }}>
           {subtext}
         </div>
       )}

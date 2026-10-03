@@ -5,7 +5,7 @@ import {
   BacktestConfig,
   DecouplingSignal,
 } from '../types';
-import { atr, cumulativeReturn, maxDrawdown, sharpeRatio, sortinoRatio } from './indicators';
+import { atr, maxDrawdown, sharpeRatio, sortinoRatio } from './indicators';
 import { intervalToSeconds } from './signalFreshness';
 
 function clampPositive(value: number | undefined, fallback: number): number {
@@ -36,6 +36,10 @@ export function runBacktest(
   const atrValues = atr(assetCandles, 14);
   const trades: BacktestTrade[] = [];
 
+  // Signals are keyed by the bar that PRODUCED them. A signal computed from
+  // bar T's close cannot be filled at bar T's close — by the time that close is
+  // known the bar is over. We therefore queue the signal and fill at the NEXT
+  // bar's open, which is the earliest price a live trader could actually get.
   const signalMap = new Map<number, DecouplingSignal>();
   for (const sig of signals) {
     signalMap.set(sig.time, sig);
@@ -49,6 +53,24 @@ export function runBacktest(
   let stopLoss = 0;
   let takeProfit = 0;
   let trailingStop = 0;
+  /** Bar index whose signal is waiting to be filled at the next open. */
+  let pendingSignalIndex: number | null = null;
+  let pendingSignal: DecouplingSignal | null = null;
+
+  /** Mark-to-market equity, needed for honest drawdown/Sharpe. */
+  let equityCurve: Array<{ time: number; equity: number }> = [];
+
+  const markEquity = (i: number): number => {
+    if (positionSide === null) return capital;
+    const close = assetCandles[i].close;
+    // Same risk-parity sizing used at settlement: qty = capital*risk / stopDist
+    const riskUnit = stopLossATR * entryATR;
+    if (riskUnit <= 0) return capital;
+    const qty = (capital * riskPerTrade) / riskUnit;
+    const unrealized =
+      positionSide === 'long' ? qty * (close - entryPrice) : qty * (entryPrice - close);
+    return capital + unrealized;
+  };
 
   const applySlippageLongEntry = (price: number) => price * (1 + slippage);
   const applySlippageLongExit = (price: number) => price * (1 - slippage);
@@ -73,10 +95,11 @@ export function runBacktest(
     const feeDrag = 2 * feeRate;
     const netPnlPercent = grossPnlPercent - feeDrag;
 
-    const rMultiple = riskATR > 0 ? riskATR / fillEntry : 0;
+    // riskFraction = stop distance as a fraction of entry price.
+    const riskFraction = riskATR > 0 ? riskATR / fillEntry : 0;
     const pnl =
-      rMultiple > 0
-        ? capital * riskPerTrade * (netPnlPercent / rMultiple)
+      riskFraction > 0
+        ? capital * riskPerTrade * (netPnlPercent / riskFraction)
         : 0;
 
     capital += pnl;
@@ -104,8 +127,38 @@ export function runBacktest(
   for (let i = 1; i < assetCandles.length; i++) {
     const candle = assetCandles[i];
     const currentATR = atrValues[i];
-    if (isNaN(currentATR) || currentATR === 0) continue;
+    const prevATR = atrValues[i - 1];
+    const usableATR = !isNaN(currentATR) && currentATR > 0 ? currentATR : prevATR;
+    if (isNaN(usableATR) || usableATR === 0) continue;
 
+    // ---- 1) Fill any signal queued on the previous bar, at THIS bar's open ----
+    if (positionSide === null && pendingSignal && pendingSignalIndex === i - 1) {
+      const sig = pendingSignal;
+      const openPx = candle.open || candle.close;
+      if (sig.type === 'buy') {
+        const fillEntry = applySlippageLongEntry(openPx);
+        positionSide = 'long';
+        entryPrice = fillEntry;
+        entryATR = usableATR;
+        entryIndex = i;
+        stopLoss = fillEntry - stopLossATR * usableATR;
+        takeProfit = fillEntry + takeProfitATR * usableATR;
+        trailingStop = useTrailingStop ? fillEntry - trailingStopATR * usableATR : 0;
+      } else {
+        const fillEntry = applySlippageShortEntry(openPx);
+        positionSide = 'short';
+        entryPrice = fillEntry;
+        entryATR = usableATR;
+        entryIndex = i;
+        stopLoss = fillEntry + stopLossATR * usableATR;
+        takeProfit = fillEntry - takeProfitATR * usableATR;
+        trailingStop = useTrailingStop ? fillEntry + trailingStopATR * usableATR : 0;
+      }
+      pendingSignal = null;
+      pendingSignalIndex = null;
+    }
+
+    // ---- 2) Manage the open position on this bar ----
     if (positionSide !== null) {
       const barsHeld = i - entryIndex;
       const riskATR = stopLossATR * entryATR;
@@ -129,10 +182,8 @@ export function runBacktest(
         }
 
         if (useTrailingStop && exitPrice === 0) {
-          const newTrailing = candle.high - trailingStopATR * currentATR;
-          if (newTrailing > trailingStop) {
-            trailingStop = newTrailing;
-          }
+          const newTrailing = candle.high - trailingStopATR * usableATR;
+          if (newTrailing > stopLoss) trailingStop = newTrailing;
         }
       } else {
         if (useTrailingStop && candle.high >= trailingStop) {
@@ -150,10 +201,8 @@ export function runBacktest(
         }
 
         if (useTrailingStop && exitPrice === 0) {
-          const newTrailing = candle.low + trailingStopATR * currentATR;
-          if (newTrailing < trailingStop) {
-            trailingStop = newTrailing;
-          }
+          const newTrailing = candle.low + trailingStopATR * usableATR;
+          if (newTrailing < stopLoss) trailingStop = newTrailing;
         }
       }
 
@@ -164,56 +213,71 @@ export function runBacktest(
             : applySlippageShortExit(exitPrice);
 
         settleTrade(positionSide, entryPrice, fillExit, entryIndex, candle.time, exitReason, riskATR);
+        equityCurve.push({ time: candle.time, equity: capital });
+      } else {
+        equityCurve.push({ time: candle.time, equity: markEquity(i) });
       }
+    } else {
+      equityCurve.push({ time: candle.time, equity: capital });
     }
 
+    // ---- 3) Queue today's signal for tomorrow's open ----
     if (positionSide === null) {
-      const signal = signalMap.get(candle.time);
-      if (signal && entryATR === 0) {
-        const rawClose = candle.close;
-
-        if (signal.type === 'buy') {
-          const fillEntry = applySlippageLongEntry(rawClose);
-          positionSide = 'long';
-          entryPrice = fillEntry;
-          entryATR = currentATR;
-          entryIndex = i;
-          stopLoss = fillEntry - stopLossATR * currentATR;
-          takeProfit = fillEntry + takeProfitATR * currentATR;
-          trailingStop = useTrailingStop ? fillEntry - trailingStopATR * currentATR : 0;
-        } else {
-          const fillEntry = applySlippageShortEntry(rawClose);
-          positionSide = 'short';
-          entryPrice = fillEntry;
-          entryATR = currentATR;
-          entryIndex = i;
-          stopLoss = fillEntry + stopLossATR * currentATR;
-          takeProfit = fillEntry - takeProfitATR * currentATR;
-          trailingStop = useTrailingStop ? fillEntry + trailingStopATR * currentATR : 0;
-        }
+      const sig = signalMap.get(candle.time);
+      if (sig && pendingSignalIndex === null) {
+        pendingSignal = sig;
+        pendingSignalIndex = i;
       }
     }
   }
 
   if (positionSide !== null) {
-    const lastCandle = assetCandles[assetCandles.length - 1];
+    const lastIdx = assetCandles.length - 1;
+    const lastCandle = assetCandles[lastIdx];
     const fillExit =
       positionSide === 'long'
         ? applySlippageLongExit(lastCandle.close)
         : applySlippageShortExit(lastCandle.close);
     const riskATR = stopLossATR * entryATR;
     settleTrade(positionSide, entryPrice, fillExit, entryIndex, lastCandle.time, 'end_of_data', riskATR);
+    equityCurve.push({ time: lastCandle.time, equity: capital });
   }
 
   const winningTrades = trades.filter((t) => t.pnl > 0);
   const losingTrades = trades.filter((t) => t.pnl <= 0);
-  const tradePnLs = trades.map((t) => t.pnlPercent / 100);
-  const cumReturns = cumulativeReturn(tradePnLs);
-  const { maxDD } = maxDrawdown(cumReturns.length > 0 ? cumReturns : [1]);
+
+  // ---- Sharpe / Sortino / MaxDD from the EQUITY curve, not the trade vector ----
+  //
+  // Computing these over per-trade returns treats every trade as equally spaced
+  // in time and ignores every flat bar spent in cash. That makes drawdown and
+  // risk ratios materially wrong (and flattering) for a strategy that is idle
+  // most of the time. These are now per-bar returns of the marked-to-market
+  // equity curve, annualised by bars-per-year.
+  const barsPerYear = (() => {
+    const sec = intervalToSeconds(interval);
+    if (sec <= 0) return 365;
+    return (365 * 24 * 3600) / sec;
+  })();
+
+  const barReturns: number[] = [];
+  for (let k = 1; k < equityCurve.length; k++) {
+    const prev = equityCurve[k - 1].equity;
+    if (prev > 0) barReturns.push((equityCurve[k].equity - prev) / prev);
+  }
+
+  const annFactor = Math.sqrt(barsPerYear);
+  const sharpe = barReturns.length > 1 ? sharpeRatio(barReturns) * annFactor : 0;
+  const sortino = barReturns.length > 1 ? sortinoRatio(barReturns) * annFactor : 0;
+
+  const equitySeries = equityCurve.length > 0 ? equityCurve.map((p) => p.equity) : [initialCapital];
+  const { maxDD } = maxDrawdown(equitySeries);
+  const maxDrawdownPercent = maxDD * 100;
 
   const assetCloses = assetCandles.map((c) => c.close);
   const buyHoldReturn =
-    (assetCloses[assetCloses.length - 1] - assetCloses[0]) / assetCloses[0];
+    assetCloses.length > 1 && assetCloses[0] > 0
+      ? (assetCloses[assetCloses.length - 1] - assetCloses[0]) / assetCloses[0]
+      : 0;
 
   const avgWin =
     winningTrades.length > 0
@@ -237,6 +301,9 @@ export function runBacktest(
         }, 0) / trades.length
       : 0;
 
+  const totalPnLPercent =
+    initialCapital > 0 ? ((capital - initialCapital) / initialCapital) * 100 : 0;
+
   return {
     trades,
     totalTrades: trades.length,
@@ -244,16 +311,18 @@ export function runBacktest(
     losingTrades: losingTrades.length,
     winRate: trades.length > 0 ? Math.round((winningTrades.length / trades.length) * 10000) / 100 : 0,
     totalPnL: Math.round((capital - initialCapital) * 100) / 100,
-    totalPnLPercent: Math.round(((capital - initialCapital) / initialCapital) * 10000) / 100,
+    totalPnLPercent: Math.round(totalPnLPercent * 100) / 100,
     avgWin: Math.round(avgWin * 100) / 100,
     avgLoss: Math.round(avgLoss * 100) / 100,
-    profitFactor: Math.round(profitFactor * 100) / 100,
-    maxDrawdown: Math.round(maxDD * 10000) / 100,
-    maxDrawdownPercent: Math.round(maxDD * 10000) / 100,
-    sharpeRatio: Math.round(sharpeRatio(tradePnLs) * 100) / 100,
-    sortinoRatio: Math.round(sortinoRatio(tradePnLs) * 100) / 100,
+    profitFactor: Number.isFinite(profitFactor) ? Math.round(profitFactor * 100) / 100 : 99.99,
+    maxDrawdown: Math.round(maxDrawdownPercent * 100) / 100,
+    maxDrawdownPercent: Math.round(maxDrawdownPercent * 100) / 100,
+    sharpeRatio: Math.round(sharpe * 100) / 100,
+    sortinoRatio: Math.round(sortino * 100) / 100,
     avgHoldBars: Math.round(avgHoldBars * 10) / 10,
     buyHoldReturn: Math.round(buyHoldReturn * 10000) / 100,
-    alpha: Math.round(((capital - initialCapital) / initialCapital - buyHoldReturn) * 10000) / 100,
+    // Excess return vs buy & hold. This is NOT Jensen's alpha — it is not
+    // beta- or volatility-adjusted. Relabelled in the UI accordingly.
+    alpha: Math.round((totalPnLPercent - buyHoldReturn * 100) * 100) / 100,
   };
 }

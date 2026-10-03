@@ -10,6 +10,8 @@ import {
   getUniverse,
 } from '../../lib/universe';
 import { parseRanges } from '../../lib/ranges';
+import { getMarketCaps, lookupCap, CapInfo } from '../../lib/marketCap';
+import { orderId } from '../../lib/universe';
 
 export const config = { maxDuration: 60 };
 
@@ -29,6 +31,46 @@ class ScanBudgetExceeded extends Error {
   }
 }
 
+/**
+ * Bounded retry memory for transient failures.
+ *
+ * A TLS/network blip used to mark a symbol "transient", which made the client
+ * re-queue it in every subsequent chunk. If the venue kept failing (bad TLS
+ * chain, rate limit, delisted pair) the symbol was retried forever, so the
+ * sweep could never report `done: true` and each chunk burned budget on the
+ * same dead symbols. After MAX_TRANSIENT_ATTEMPTS within the retry window the
+ * symbol is retired for the rest of the server's life.
+ *
+ * Module scope is intentional: on serverless this persists across warm
+ * invocations, which is exactly the window we want to suppress retries in.
+ */
+const MAX_TRANSIENT_ATTEMPTS = 3;
+const RETRY_WINDOW_MS = 30 * 60 * 1000;
+
+interface FailureRecord { attempts: number; firstAt: number; }
+const transientFailures = new Map<string, FailureRecord>();
+
+function noteTransientFailure(key: string): number {
+  const now = Date.now();
+  const prev = transientFailures.get(key);
+  if (!prev || now - prev.firstAt > RETRY_WINDOW_MS) {
+    transientFailures.set(key, { attempts: 1, firstAt: now });
+    return 1;
+  }
+  prev.attempts++;
+  return prev.attempts;
+}
+
+function isRetired(key: string): boolean {
+  const rec = transientFailures.get(key);
+  if (!rec) return false;
+  if (Date.now() - rec.firstAt > RETRY_WINDOW_MS) {
+    transientFailures.delete(key);
+    return false;
+  }
+  return rec.attempts >= MAX_TRANSIENT_ATTEMPTS;
+}
+
 interface ChunkResponse {
   universeId: string;
   universeTotal: number;
@@ -37,6 +79,10 @@ interface ChunkResponse {
   sources: Record<UniverseSource, number>;
   /** Universe position of each returned ranking (parallel array). */
   positions: number[];
+  /** Positions permanently abandoned after repeated transient failures. */
+  failedPositions?: number[];
+  /** Which ordering the sweep used for this response. */
+  scanOrder?: 'cap' | 'volume';
   progress: {
     offset: number;
     nextOffset: number;
@@ -162,10 +208,47 @@ export default async function handler(
     const universe = await getUniverse();
     const tIndex = Date.now();
 
-    // Depth slice of the volume-ranked universe, with the benchmark asset removed.
-    const symbols = universe.entries
-      .filter((e) => e.symbol !== indexClean)
-      .slice(0, depthN === Infinity ? undefined : depthN);
+    // Order the universe largest market cap -> smallest before slicing.
+    //
+    // The sweep resumes by absolute position, so the ordering must be computed
+    // before any slicing and must be identical on every chunk. Market cap is the
+    // only size measure available (exchange feeds expose volume, not supply), so
+    // when the aggregator is unavailable we fall back to the universe's default
+    // volume order rather than inventing a size proxy.
+    const order = (req.query.order as string | undefined)?.toLowerCase() ?? 'cap';
+    const wantCapOrder = order !== 'volume';
+
+    let ordered = universe.entries.filter((e) => e.symbol !== indexClean);
+    let capOrderId: string | null = null;
+    let capLookup: Map<string, CapInfo> | null = null;
+
+    if (wantCapOrder) {
+      capLookup = await Promise.race([
+        getMarketCaps(),
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), 3000)),
+      ]).catch(() => null);
+
+      if (capLookup) {
+        // Rank by cap desc. Symbols with no published cap sink to the bottom
+        // rather than being dropped — they are still scannable, just last.
+        const decorated = ordered.map((e) => ({
+          e,
+          cap: lookupCap(capLookup, e.symbol)?.marketCap ?? 0,
+        }));
+        decorated.sort((a, b) => {
+          if (b.cap !== a.cap) return b.cap - a.cap;
+          // Deterministic tie-break so the order is stable across chunks.
+          return a.e.symbol < b.e.symbol ? -1 : a.e.symbol > b.e.symbol ? 1 : 0;
+        });
+        ordered = decorated.map((d) => d.e);
+        capOrderId = orderId(ordered.map((e) => e.symbol));
+      } else {
+        console.warn('[autonomous] cap order unavailable — falling back to volume order');
+      }
+    }
+
+    // Depth slice, with the benchmark asset already removed above.
+    const symbols = ordered.slice(0, depthN === Infinity ? undefined : depthN);
     const total = symbols.length;
 
     // Absolute universe positions covered by this chunk.
@@ -191,6 +274,11 @@ export default async function handler(
     }
     console.log(`[autonomous] index fetch ${Date.now() - tIndex}ms`);
 
+    // Already resolved above for cap ordering; reuse the cached snapshot so a
+    // chunk never pays for two aggregator round-trips.
+    const caps = capLookup ?? null;
+    if (caps) console.log(`[autonomous] market caps ${caps.size} symbols`);
+
     const regime = detectMarketRegime(indexData['4h']?.length ? indexData['4h'] : indexData['1h'], 20);
     const autonomousParams = computeAutonomousParams(
       regime.regime,
@@ -215,6 +303,8 @@ export default async function handler(
 
     const completed = new Set<number>(donePositions);
     const resultsByPos = new Map<number, MultiTimeframeResult>();
+    /** Positions abandoned after exhausting transient retries. */
+    const failedPositions = new Set<number>();
 
     const buckets = SOURCE_ORDER.map((source) => ({
       source,
@@ -231,8 +321,19 @@ export default async function handler(
           deadline,
           async ({ entry, pos }) => {
             try {
+              // Skip work for symbols already known to be permanently unavailable.
+              if (isRetired(entry.symbol)) {
+                failedPositions.add(pos);
+                completed.add(pos);
+                return;
+              }
               const timeframeData = await fetchSymbolTimeframes(entry, indexData, bars, deadline);
-              const result = analyzeMultiTimeframe(entry.symbol, timeframeData, scanConfig);
+              const cap = lookupCap(caps, entry.symbol);
+              const result = analyzeMultiTimeframe(entry.symbol, timeframeData, scanConfig, {
+                quoteVolume: entry.quoteVolume,
+                marketCap: cap?.marketCap,
+                capTier: cap?.tier ?? 'unknown',
+              });
               resultsByPos.set(pos, result);
               completed.add(pos);
             } catch (err) {
@@ -242,15 +343,31 @@ export default async function handler(
                 return;
               }
               const msg = err instanceof Error ? err.message : String(err);
-              if (/transient|429|Max retries|abort|ETIMEDOUT|ECONNRESET|fetch failed|socket/i.test(msg)) {
-                // Transient network/rate-limit issue — retry this position next chunk
-                // instead of silently dropping the coin from coverage.
-                console.warn(`[transient] ${entry.symbol}: ${msg}`);
+              if (/transient|429|Max retries|abort|ETIMEDOUT|ECONNRESET|fetch failed|socket|CERT/i.test(msg)) {
+                // Transient network/rate-limit/TLS issue. Retry a bounded number
+                // of times, then retire the position — otherwise one dead pair
+                // is re-fetched in every chunk and the sweep never completes.
+                const key = `${entry.symbol}`;
+                const attempts = noteTransientFailure(key);
+                if (attempts >= MAX_TRANSIENT_ATTEMPTS) {
+                  failedPositions.add(pos);
+                  completed.add(pos);
+                  console.warn(
+                    `[give-up] ${entry.symbol} after ${attempts} transient failures: ${msg}`
+                  );
+                } else {
+                  console.warn(
+                    `[transient ${attempts}/${MAX_TRANSIENT_ATTEMPTS}] ${entry.symbol}: ${msg}`
+                  );
+                }
                 return;
               }
               console.warn(`scan failed for ${entry.symbol}:`, msg);
-              // Treat hard data failures as scanned-without-result so dead listings don't loop forever.
+              // Treat hard data failures as scanned-without-result so dead
+              // listings don't loop forever. Reported as failed so the client's
+              // cursor advances; it is separate from a transient give-up.
               completed.add(pos);
+              failedPositions.add(pos);
             }
           }
         )
@@ -290,11 +407,15 @@ export default async function handler(
         : null;
 
     return res.status(200).json({
-      universeId: universe.id,
+      // Order-specific id: the client resumes by absolute position, so this must
+      // change when the ORDER changes, not just when the universe membership does.
+      universeId: capOrderId ?? universe.id,
+      scanOrder: capOrderId ? 'cap' : 'volume',
       universeTotal: universe.universeTotal,
       total,
       sources: universe.sourceCounts,
       positions: rankedPositions,
+      failedPositions: Array.from(failedPositions),
       progress: {
         offset,
         nextOffset,

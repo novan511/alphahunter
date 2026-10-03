@@ -56,12 +56,9 @@ export default function MultiTimeframePanel({ result, regime }: MultiTimeframePa
       border: '1px solid #374151',
       overflow: 'hidden',
     }}>
-      <div style={{
+      <div className="ah-panel-head" style={{
         padding: '12px 16px',
         borderBottom: '1px solid #374151',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'space-between',
       }}>
         <h3 style={{ fontSize: '14px', fontWeight: '600', color: '#f9fafb', margin: 0 }}>
           {result.asset.replace('USDT', '')} — Multi-Timeframe
@@ -80,7 +77,7 @@ export default function MultiTimeframePanel({ result, regime }: MultiTimeframePa
       </div>
 
       <div style={{ padding: '16px' }}>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '10px', marginBottom: '16px' }}>
+        <div className="ah-tf-grid" style={{ marginBottom: '16px' }}>
           {result.timeframes.map((tf) => {
             const trendColor = tf.trendDirection === 'bullish' ? '#10b981' : tf.trendDirection === 'bearish' ? '#ef4444' : '#6b7280';
             return (
@@ -156,8 +153,8 @@ export default function MultiTimeframePanel({ result, regime }: MultiTimeframePa
           border: `1px solid ${signalColor}30`,
           marginBottom: explanation || loading ? '12px' : '0',
         }}>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-            <div>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', flexWrap: 'wrap' }}>
+            <div style={{ minWidth: 0, flex: '1 1 180px' }}>
               <div style={{ fontSize: '12px', fontWeight: '600', color: signalColor }}>
                 Confluence Score: {result.confluenceScore}%
               </div>
@@ -170,6 +167,7 @@ export default function MultiTimeframePanel({ result, regime }: MultiTimeframePa
             <div style={{
               width: '48px',
               height: '48px',
+              flexShrink: 0,
               borderRadius: '50%',
               background: `conic-gradient(${signalColor} ${result.confluenceScore * 3.6}deg, #1f2937 0deg)`,
               display: 'flex',

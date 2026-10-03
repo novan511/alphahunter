@@ -48,12 +48,9 @@ export default function BacktestResults({ result, loading }: BacktestResultsProp
       border: '1px solid #374151',
       overflow: 'hidden',
     }}>
-      <div style={{
+      <div className="ah-panel-head" style={{
         padding: '12px 16px',
         borderBottom: '1px solid #374151',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'space-between',
       }}>
         <h3 style={{ fontSize: '14px', fontWeight: '600', color: '#f9fafb', margin: 0 }}>
           Backtest Results
@@ -135,8 +132,8 @@ export default function BacktestResults({ result, loading }: BacktestResultsProp
             <h4 style={{ fontSize: '12px', fontWeight: '600', color: '#9ca3af', marginBottom: '8px' }}>
               Recent Trades
             </h4>
-            <div style={{ maxHeight: '250px', overflowY: 'auto' }}>
-              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '11px' }}>
+            <div style={{ maxHeight: '250px', overflowY: 'auto' }} className="ah-scroll">
+              <table style={{ width: '100%', minWidth: '560px', borderCollapse: 'collapse', fontSize: '11px' }}>
                 <thead>
                   <tr style={{ borderBottom: '1px solid #374151' }}>
                     <th style={thStyle}>Side</th>

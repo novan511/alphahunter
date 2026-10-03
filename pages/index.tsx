@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useEffect, useRef } from 'react';
+import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import Layout from '../components/Layout/Layout';
 import ParameterPanel from '../components/Controls/ParameterPanel';
 import DecouplingChart from '../components/Chart/DecouplingChart';
@@ -9,6 +9,9 @@ import BacktestResults from '../components/Dashboard/BacktestResults';
 import RegimeIndicator from '../components/Dashboard/RegimeIndicator';
 import AutonomousRanking from '../components/Dashboard/AutonomousRanking';
 import MultiTimeframePanel from '../components/Dashboard/MultiTimeframePanel';
+import NarrativeRadar from '../components/Dashboard/NarrativeRadar';
+import TradeableList from '../components/Dashboard/TradeableList';
+import { buildSectorHeat } from '../lib/algorithms/narrativeHeat';
 import { ScanConfig, AssetScanResult, Candle, DecouplingSignal, BacktestResult } from '../lib/types';
 import { DEFAULT_SCAN_CONFIG, ASSET_UNIVERSE } from '../lib/config';
 import { buildRanges, parseRanges } from '../lib/ranges';
@@ -26,6 +29,8 @@ interface AutonomousCache {
   indexSymbol: string;
   depth: Depth;
   universeId?: string;
+  /** Which ordering the sweep used. Changing it invalidates the resume cursor. */
+  scanOrder?: 'cap' | 'volume';
   /** Resume cursor: first universe position not yet scanned. */
   offset: number;
   /** Compact ranges of every position already scanned (enables gap-free resume). */
@@ -70,6 +75,7 @@ async function fetchLastScanFromSupabase(indexSymbol: string): Promise<Autonomou
       scannedAt: data.scannedAt,
       indexSymbol: data.indexSymbol || indexSymbol,
       depth: 'all',
+      scanOrder: data.scanOrder,
       offset: data.rankings.length,
       done: true,
       regime: data.regime,
@@ -105,6 +111,7 @@ export default function Home() {
   const [backtestResult, setBacktestResult] = useState<BacktestResult | null>(null);
 
   const [autoRankings, setAutoRankings] = useState<MultiTimeframeResult[]>([]);
+  const [effectiveOrder, setEffectiveOrder] = useState<'cap' | 'volume' | null>(null);
   const [regime, setRegime] = useState<RegimeResult | null>(null);
   const [autoParams, setAutoParams] = useState<AutonomousParams | null>(null);
   const [totalScanned, setTotalScanned] = useState(0);
@@ -117,8 +124,19 @@ export default function Home() {
   const didAutoScanRef = useRef(false);
 
   const [depth, setDepth] = useState<Depth>('all');
+  /**
+   * Universe ordering for the sweep. 'cap' walks largest market cap first, so a
+   * truncated sweep still covers the most liquid, best-known names instead of
+   * stalling in the long tail.
+   */
+  const [scanOrder, setScanOrder] = useState<'cap' | 'volume'>('cap');
   const [progress, setProgress] = useState<{ offset: number; total: number; etaSec: number | null } | null>(null);
   const [sourceCounts, setSourceCounts] = useState<{ binance: number; gate: number; hyperliquid: number } | null>(null);
+  /**
+   * Sector selected in the narrative radar. Lifted here because it narrows both
+   * panels at once: the radar marks it, and the ranking table filters to it.
+   */
+  const [focusCategory, setFocusCategory] = useState<string | null>(null);
   /** Monotonic run id — a new run (or stop) invalidates any loop still in flight. */
   const runIdRef = useRef(0);
 
@@ -157,6 +175,7 @@ export default function Home() {
     universeId?: string;
     doneRanges?: string;
     rankings?: MultiTimeframeResult[];
+    order?: 'cap' | 'volume';
   }
 
   const runAutonomousScan = useCallback(async (opts: ScanResume = {}) => {
@@ -170,6 +189,16 @@ export default function Home() {
     let universeId = opts.universeId;
     let total: number | null = null;
     let stallCount = 0;
+    let stalled = false;
+    /**
+     * Symbols whose network fetch failed transiently more times than the budget
+     * allows. Without this they are re-queued in every chunk forever and the
+     * sweep can never finish.
+     *
+     * Plain Set, not useRef: hooks cannot be called inside a useCallback body,
+     * which threw React error #321 and left scanning=true permanently.
+     */
+    const giveUp = new Set<number>();
 
     const firstUndone = () => {
       let p = 0;
@@ -194,10 +223,22 @@ export default function Home() {
         const offset = firstUndone();
         if (total !== null && offset >= total) break;
 
-        const windowEnd = offset + 500;
+        // Bound the window by the known universe size. Comparing exhaustion
+        // against the nominal 500-bar span instead made the check unreachable
+        // whenever total < 500, so the loop could never retire a window and the
+        // scan hung at scanning=true forever.
+        const windowEnd = Math.min(offset + 500, total ?? offset + 500);
+        const windowSize = windowEnd - offset;
+
         const skipPositions: number[] = [];
         for (let p = offset; p < windowEnd; p++) {
-          if (donePositions.has(p)) skipPositions.push(p);
+          if (donePositions.has(p) || giveUp.has(p)) skipPositions.push(p);
+        }
+        if (windowSize > 0 && skipPositions.length >= windowSize) {
+          // Whole window retired (all done or abandoned) — close it out so the
+          // cursor advances instead of re-requesting the same range.
+          for (let p = offset; p < windowEnd; p++) donePositions.add(p);
+          continue;
         }
 
         const params = new URLSearchParams({
@@ -206,6 +247,7 @@ export default function Home() {
           offset: String(offset),
           span: '500',
           budgetMs: '15000',
+          order: scanOrder,
         });
         const skipStr = buildRanges(skipPositions);
         if (skipStr) params.set('skip', skipStr);
@@ -219,11 +261,17 @@ export default function Home() {
         }
         const data = await response.json();
 
-        // Universe was rediscovered mid-scan (server restart / TTL) → restart cleanly.
-        const universeChanged = universeId !== undefined && data.universeId !== universeId;
+        // Universe was rediscovered, or the ORDER changed, mid-scan → restart cleanly.
+        // Resuming against a reordered list would splice results from two
+        // different sequences into one ranking.
+        const orderChanged =
+          data.scanOrder != null && data.scanOrder !== scanOrder;
+        const universeChanged =
+          (universeId !== undefined && data.universeId !== universeId) || orderChanged;
         universeId = data.universeId;
         if (universeChanged) {
           donePositions.clear();
+          giveUp.clear();
           merged = [];
         }
 
@@ -231,37 +279,52 @@ export default function Home() {
         for (const r of merged) deduped.set(r.asset, r);
         const positions: number[] = data.positions || [];
         const rankingsChunk: MultiTimeframeResult[] = data.rankings || [];
+        const failed: number[] = data.failedPositions || [];
+
         for (let i = 0; i < rankingsChunk.length; i++) {
           deduped.set(rankingsChunk[i].asset, rankingsChunk[i]);
           if (positions[i] != null) donePositions.add(positions[i]);
         }
+        // Positions the server closed out but produced no ranking for (dead
+        // listings, exhausted retries) must also advance the cursor, otherwise
+        // the sweep keeps re-requesting them and never reports done.
+        for (const p of failed) {
+          giveUp.add(p);
+          donePositions.add(p);
+        }
+
         merged = Array.from(deduped.values()).sort((a, b) => b.confluenceScore - a.confluenceScore);
         total = data.total;
 
-        // Stall guard: three consecutive chunks with zero progress → abort.
-        if (data.progress.scannedInChunk > 0) {
+        // Progress counts symbols retired from the retry queue too, otherwise a
+        // run of dead listings looks exactly like a stall.
+        const exhausted = failed.length;
+        if (data.progress.scannedInChunk > 0 || exhausted > 0) {
           stallCount = 0;
         } else {
           stallCount += 1;
           if (stallCount >= 3) {
-            throw new Error('Scan stalled: no symbols completed within the time budget');
+            stalled = true;
+            break;
           }
         }
 
         setRegime(data.regime);
         setAutoParams(data.autonomousParams);
         setAutoRankings(merged);
+        if (data.scanOrder) setEffectiveOrder(data.scanOrder);
         setTotalScanned(data.total);
         setLastScannedAt(Date.now());
         setSourceCounts(data.sources);
         setProgress({ offset: donePositions.size, total: data.total, etaSec: data.progress.etaSec });
 
-        const done = donePositions.size >= data.total;
+        const done = donePositions.size >= (data.total ?? 0);
         const cachePayload: AutonomousCache = {
           scannedAt: Date.now(),
           indexSymbol: config.indexSymbol,
           depth: runDepth,
           universeId,
+          scanOrder,
           offset: firstUndone(),
           doneRanges: buildRanges(donePositions),
           done,
@@ -278,6 +341,12 @@ export default function Home() {
         }
       }
 
+      if (stalled && merged.length === 0) {
+        throw new Error(
+          'Scan stalled: no symbols completed within the time budget. The data source may be rate-limiting — try again shortly or use a smaller coverage.'
+        );
+      }
+
       if (merged.length > 0) {
         const withSignals = merged.filter((r) => r.finalSignal !== 'neutral');
         setSelectedAsset(withSignals.length > 0 ? withSignals[0].asset : merged[0].asset);
@@ -292,7 +361,7 @@ export default function Home() {
         setProgress(null);
       }
     }
-  }, [config.indexSymbol, depth]);
+  }, [config.indexSymbol, depth, scanOrder]);
 
   const stopAutonomousScan = useCallback(() => {
     runIdRef.current += 1;
@@ -309,6 +378,7 @@ export default function Home() {
     setRegime(cached.regime);
     setAutoParams(cached.autonomousParams);
     setAutoRankings(cached.rankings);
+    setEffectiveOrder(cached.scanOrder ?? null);
     setTotalScanned(cached.totalScanned);
     setLastScannedAt(cached.scannedAt);
     saveAutonomousCache(cached);
@@ -355,23 +425,29 @@ export default function Home() {
       (cached.depth ?? 'all') === depth;
 
     if (matches && cached.done === false) {
-      // Interrupted sweep — resume from the saved cursor instead of starting over.
-      void runAutonomousScan({
-        depth,
-        doneRanges: cached.doneRanges,
-        rankings: cached.rankings,
-        universeId: cached.universeId,
-      });
-      return;
+      // Interrupted sweep — resume only if the ordering still matches, otherwise
+      // the saved cursor points into a differently-sorted list.
+      if ((cached.scanOrder ?? 'volume') === scanOrder) {
+        void runAutonomousScan({
+          depth,
+          doneRanges: cached.doneRanges,
+          rankings: cached.rankings,
+          universeId: cached.universeId,
+        });
+        return;
+      }
     }
 
     const isFresh =
-      matches && Date.now() - cached.scannedAt < AUTO_CACHE_MAX_AGE_MS && cached.done !== false;
+      matches &&
+      (cached.scanOrder ?? 'volume') === scanOrder &&
+      Date.now() - cached.scannedAt < AUTO_CACHE_MAX_AGE_MS &&
+      cached.done !== false;
 
     if (!isFresh) {
       void runAutonomousScan({ depth });
     }
-  }, [isHydrated, config.indexSymbol, depth, runAutonomousScan]);
+  }, [isHydrated, config.indexSymbol, depth, scanOrder, runAutonomousScan]);
 
   const runScan = useCallback(() => {
     if (mode === 'autonomous') {
@@ -403,7 +479,7 @@ export default function Home() {
 
       const data = await response.json();
 
-      const [indexResponse, assetResponse] = await Promise.all([
+        const [indexResponse, assetResponse] = await Promise.all([
         fetch(`/api/klines?symbol=${config.indexSymbol}&interval=${config.interval}&limit=500`),
         fetch(`/api/klines?symbol=${symbol}&interval=${config.interval}&limit=500`),
       ]);
@@ -427,6 +503,8 @@ export default function Home() {
   }, [runBacktest]);
 
   const selectedMTF = autoRankings.find((r) => r.asset === selectedAsset) || null;
+  /** Sector-level read, shared by the narrative radar and the tradeable list. */
+  const sectors = useMemo(() => buildSectorHeat(autoRankings), [autoRankings]);
   const buySignals = mode === 'manual'
     ? scanResults.filter((r) => r.signal?.type === 'buy')
     : autoRankings.filter((r) => r.finalSignal.includes('buy'));
@@ -446,24 +524,19 @@ export default function Home() {
           fontSize: '13px',
           marginBottom: '16px',
           display: 'flex',
-          alignItems: 'center',
+          alignItems: 'flex-start',
           justifyContent: 'space-between',
+          gap: '8px',
         }}>
-          <span>{error}</span>
+          <span style={{ wordBreak: 'break-word' }}>{error}</span>
           <button onClick={() => setError(null)} style={{
             background: 'none', border: 'none', color: '#ef4444', cursor: 'pointer', fontSize: '16px',
           }}>×</button>
         </div>
       )}
 
-      <div style={{
-        display: 'flex',
-        alignItems: 'center',
-        gap: '12px',
-        marginBottom: '20px',
-      }}>
-        <div style={{
-          display: 'flex',
+      <div className="ah-toolbar">
+        <div className="ah-mode-switch" style={{
           background: '#111827',
           borderRadius: '8px',
           border: '1px solid #374151',
@@ -504,8 +577,8 @@ export default function Home() {
         </div>
 
         {mode === 'autonomous' && (
-          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
-            <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '11px', color: '#9ca3af', fontWeight: 600 }}>
+          <div className="ah-toolbar-group" style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+            <label className="ah-field">
               Coverage
               <select
                 value={depth}
@@ -527,6 +600,27 @@ export default function Home() {
                 <option value="100">Top 100 by volume</option>
               </select>
             </label>
+            <label className="ah-field">
+              Order
+              <select
+                value={scanOrder}
+                onChange={(e) => setScanOrder(e.target.value as 'cap' | 'volume')}
+                disabled={scanning}
+                style={{
+                  padding: '7px 10px',
+                  background: '#1f2937',
+                  border: '1px solid #374151',
+                  borderRadius: '6px',
+                  color: '#f9fafb',
+                  fontSize: '12px',
+                  outline: 'none',
+                  cursor: scanning ? 'not-allowed' : 'pointer',
+                }}
+              >
+                <option value="cap">Market cap ↓ (largest first)</option>
+                <option value="volume">Volume ↓</option>
+              </select>
+            </label>
             {lastScannedAt && (
               <span style={{ fontSize: '11px', color: '#6b7280' }}>
                 Last scan: {new Date(lastScannedAt).toLocaleTimeString()}
@@ -535,6 +629,7 @@ export default function Home() {
             {scanning ? (
               <button
                 onClick={stopAutonomousScan}
+                className="ah-action"
                 style={{
                   padding: '8px 20px',
                   background: '#374151',
@@ -580,6 +675,8 @@ export default function Home() {
           <div style={{
             display: 'flex',
             justifyContent: 'space-between',
+            gap: '4px 12px',
+            flexWrap: 'wrap',
             fontSize: '11px',
             color: '#9ca3af',
             marginBottom: '8px',
@@ -596,7 +693,7 @@ export default function Home() {
                 </span>
               )}
             </span>
-            <span style={{ color: '#6b7280' }}>
+            <span style={{ color: '#6b7280', wordBreak: 'break-word' }}>
               {sourceCounts && `Binance ${sourceCounts.binance.toLocaleString()} · Gate ${sourceCounts.gate.toLocaleString()} · Hyperliquid ${sourceCounts.hyperliquid.toLocaleString()}`}
             </span>
           </div>
@@ -623,15 +720,37 @@ export default function Home() {
         </div>
       )}
 
+      {mode === 'autonomous' && autoRankings.length > 0 && (
+        <div style={{ marginBottom: '20px' }}>
+          <NarrativeRadar
+            rankings={autoRankings}
+            focusCategory={focusCategory}
+            onFocusCategoryChange={setFocusCategory}
+          />
+        </div>
+      )}
+
+      {mode === 'autonomous' && autoRankings.length > 0 && (
+        <div style={{ marginBottom: '20px' }}>
+          <TradeableList
+            rankings={autoRankings}
+            sectors={sectors}
+            onSelectAsset={handleSelectAsset}
+            selectedAsset={selectedAsset}
+            loading={scanning}
+          />
+        </div>
+      )}
+
       {mode === 'autonomous' && regime && autoParams && (
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '20px', marginBottom: '20px' }}>
+        <div className="ah-two-col" style={{ marginBottom: '20px' }}>
           <RegimeIndicator regime={regime} params={autoParams} />
           <MultiTimeframePanel result={selectedMTF} regime={regime} />
         </div>
       )}
 
       {mode === 'autonomous' && (autoRankings.length > 0 || (scanning && progress)) && (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '10px', marginBottom: '20px' }}>
+        <div className="ah-stats" style={{ marginBottom: '20px' }}>
           <StatsCard
             label="Assets Scanned"
             value={
@@ -649,11 +768,17 @@ export default function Home() {
           <StatsCard label="BUY Signals" value={buySignals.length} color="#10b981" icon="🟢" />
           <StatsCard label="SELL Signals" value={sellSignals.length} color="#ef4444" icon="🔴" />
           <StatsCard label="Regime" value={regime?.regime?.replace(/_/g, ' ') || '—'} icon="📈" />
+          <StatsCard
+            label="Scan Order"
+            value={effectiveOrder === 'cap' ? 'Cap ↓' : effectiveOrder === 'volume' ? 'Volume ↓' : '—'}
+            subtext={effectiveOrder === 'cap' ? 'Largest first' : effectiveOrder === 'volume' ? 'By 24h turnover' : undefined}
+            icon="🗂"
+          />
         </div>
       )}
 
       {mode === 'manual' && scanResults.length > 0 && (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '10px', marginBottom: '20px' }}>
+        <div className="ah-stats" style={{ marginBottom: '20px' }}>
           <StatsCard label="Assets Scanned" value={scanResults.length} icon="📊" />
           <StatsCard label="BUY Signals" value={buySignals.length} color="#10b981" icon="🟢" />
           <StatsCard label="SELL Signals" value={sellSignals.length} color="#ef4444" icon="🔴" />
@@ -667,10 +792,12 @@ export default function Home() {
             rankings={autoRankings}
             onSelectAsset={handleSelectAsset}
             selectedAsset={selectedAsset}
+            focusCategory={focusCategory}
+            onFocusCategoryChange={setFocusCategory}
           />
         </div>
       ) : (
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '20px', marginBottom: '20px' }}>
+        <div className="ah-two-col" style={{ marginBottom: '20px' }}>
           <div>
             <RankingTable
               results={scanResults}

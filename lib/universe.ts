@@ -62,6 +62,27 @@ function hashId(symbols: string[]): string {
   return `${CACHE_KEY}${h1.toString(36)}${h2.toString(36)}`;
 }
 
+/**
+ * Stable id for a caller-defined ORDERING of a symbol list.
+ *
+ * The scan protocol resumes by absolute position in a sorted list, so the id
+ * must change whenever the order changes — otherwise a client resumes against
+ * a reordered universe and silently mixes results from two different sequences.
+ * Ordering by market cap (rather than the default volume order) therefore needs
+ * its own id, not the volume one.
+ */
+export function orderId(symbols: string[]): string {
+  let h1 = 5381;
+  let h2 = 52711;
+  const joined = symbols.join(',');
+  for (let i = 0; i < joined.length; i++) {
+    const c = joined.charCodeAt(i);
+    h1 = ((h1 << 5) + h1 + c) >>> 0;
+    h2 = ((h2 << 5) + h2 + c) >>> 0;
+  }
+  return `ord${h1.toString(36)}${h2.toString(36)}`;
+}
+
 function isLeveraged(base: string, bases: Set<string>): boolean {
   for (const suffix of ['UP', 'DOWN', 'BULL', 'BEAR']) {
     if (base.length > suffix.length && base.endsWith(suffix)) {

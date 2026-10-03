@@ -37,12 +37,9 @@ export default function RegimeIndicator({ regime, params }: RegimeIndicatorProps
       border: '1px solid #374151',
       overflow: 'hidden',
     }}>
-      <div style={{
+      <div className="ah-panel-head" style={{
         padding: '12px 16px',
         borderBottom: '1px solid #374151',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'space-between',
       }}>
         <h3 style={{ fontSize: '14px', fontWeight: '600', color: '#f9fafb', margin: 0 }}>
           Market Regime
@@ -75,10 +72,12 @@ export default function RegimeIndicator({ regime, params }: RegimeIndicatorProps
           background: `${color}10`,
           borderRadius: '8px',
           border: `1px solid ${color}30`,
+          flexWrap: 'wrap',
         }}>
           <div style={{
             width: '48px',
             height: '48px',
+            flexShrink: 0,
             borderRadius: '10px',
             background: `${color}20`,
             display: 'flex',
@@ -90,17 +89,17 @@ export default function RegimeIndicator({ regime, params }: RegimeIndicatorProps
           }}>
             {regime.adxValue.toFixed(0)}
           </div>
-          <div>
+          <div style={{ minWidth: 0 }}>
             <div style={{ fontSize: '16px', fontWeight: '700', color }}>
               {label}
             </div>
-            <div style={{ fontSize: '11px', color: '#9ca3af' }}>
+            <div style={{ fontSize: '11px', color: '#9ca3af', wordBreak: 'break-word' }}>
               ADX: {regime.adxValue} | Confidence: {regime.confidence}%
             </div>
           </div>
         </div>
 
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '8px', marginBottom: '12px' }}>
+        <div className="ah-stats" style={{ gap: '8px', marginBottom: '12px' }}>
           <StatsCard label="Vol Percentile" value={`${regime.volatilityPercentile}%`} color={
             regime.volatilityPercentile > 75 ? '#ef4444' : regime.volatilityPercentile < 25 ? '#10b981' : '#f59e0b'
           } />
@@ -120,7 +119,7 @@ export default function RegimeIndicator({ regime, params }: RegimeIndicatorProps
           <div style={{ fontSize: '10px', color: '#6b7280', fontWeight: '600', textTransform: 'uppercase', marginBottom: '8px' }}>
             Autonomous Parameters
           </div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '8px', fontSize: '12px' }}>
+          <div className="ah-params-grid">
             <div>
               <span style={{ color: '#6b7280' }}>Threshold: </span>
               <span style={{ color: '#f9fafb', fontWeight: '600' }}>{(params.indexThreshold * 100).toFixed(1)}%</span>

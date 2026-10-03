@@ -39,8 +39,8 @@ export default function RankingTable({ results, onSelectAsset, selectedAsset }: 
           RS Ranking ({results.length} assets)
         </h3>
       </div>
-      <div style={{ overflowX: 'auto' }}>
-        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12px' }}>
+      <div className="ah-scroll">
+        <table style={{ width: '100%', minWidth: '640px', borderCollapse: 'collapse', fontSize: '12px' }}>
           <thead>
             <tr style={{ borderBottom: '1px solid #374151' }}>
               <th style={thStyle}>#</th>
