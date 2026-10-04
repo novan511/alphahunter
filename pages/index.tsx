@@ -1,4 +1,5 @@
 import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react';
+import { useRouter } from 'next/router';
 import Layout from '../components/Layout/Layout';
 import ParameterPanel from '../components/Controls/ParameterPanel';
 import DecouplingChart from '../components/Chart/DecouplingChart';
@@ -7,17 +8,39 @@ import SignalList from '../components/Dashboard/SignalList';
 import RankingTable from '../components/Dashboard/RankingTable';
 import BacktestResults from '../components/Dashboard/BacktestResults';
 import RegimeIndicator from '../components/Dashboard/RegimeIndicator';
-import AutonomousRanking from '../components/Dashboard/AutonomousRanking';
+import AutonomousRanking, {
+  SignalFilter,
+  SortState,
+} from '../components/Dashboard/AutonomousRanking';
 import MultiTimeframePanel from '../components/Dashboard/MultiTimeframePanel';
 import NarrativeRadar from '../components/Dashboard/NarrativeRadar';
+import EarlyWarningFeed from '../components/Dashboard/EarlyWarningFeed';
 import TradeableList from '../components/Dashboard/TradeableList';
+import ScanHistory from '../components/Dashboard/ScanHistory';
+import TopBacktests from '../components/Dashboard/TopBacktests';
+import { SkeletonStats } from '../components/Dashboard/Skeleton';
 import { buildSectorHeat } from '../lib/algorithms/narrativeHeat';
+import { buildEarlyWarnings } from '../lib/algorithms/earlyWarning';
+import { notifyNewWarnings } from '../lib/telegram';
+import {
+  loadSectorHistory,
+  recordSectorSnapshot,
+  type SectorHistory,
+} from '../lib/sectorHistory';
 import { ScanConfig, AssetScanResult, Candle, DecouplingSignal, BacktestResult } from '../lib/types';
 import { DEFAULT_SCAN_CONFIG, ASSET_UNIVERSE } from '../lib/config';
 import { buildRanges, parseRanges } from '../lib/ranges';
 import { RegimeResult } from '../lib/algorithms/marketRegime';
 import { AutonomousParams } from '../lib/algorithms/autonomousParams';
 import { MultiTimeframeResult } from '../lib/algorithms/multiTimeframe';
+import {
+  ScanHistoryEntry,
+  fetchScanHistory,
+  loadLocalScanHistory,
+  mergeHistory,
+  recordScan,
+} from '../lib/scanHistory';
+import { readUrlState, writeUrlState, sameQuery } from '../lib/urlState';
 
 const AUTO_CACHE_KEY = 'althunter:last-autonomous';
 const AUTO_CACHE_MAX_AGE_MS = 30 * 60 * 1000;
@@ -100,7 +123,73 @@ async function saveScanToSupabase(cache: AutonomousCache): Promise<void> {
   }
 }
 
+/**
+ * Compact one-row summary of a completed sweep for the history sparkline.
+ * Deliberately not the full rankings: history only needs counts + top tickers.
+ */
+function toHistoryEntry(cache: AutonomousCache): ScanHistoryEntry {
+  const buys: string[] = [];
+  const sells: string[] = [];
+  for (const r of cache.rankings) {
+    if (r.finalSignal === 'strong_buy' || r.finalSignal === 'buy') {
+      if (buys.length < 40) buys.push(r.asset.replace('USDT', ''));
+    } else if (r.finalSignal === 'strong_sell' || r.finalSignal === 'sell') {
+      if (sells.length < 40) sells.push(r.asset.replace('USDT', ''));
+    }
+  }
+  return {
+    scannedAt: cache.scannedAt,
+    indexSymbol: cache.indexSymbol,
+    regimeLabel: cache.regime?.regime ?? null,
+    signalsCount: buys.length + sells.length,
+    totalScanned: cache.totalScanned,
+    buys,
+    sells,
+  };
+}
+
+const SORT_KEYS: ReadonlySet<string> = new Set([
+  'signal', 'conf', 'rsz', 'conviction', 'agreement', 'liquidity', 'mcap', 'rank', 'category',
+]);
+
+/** One row of the batch backtest result table. */
+interface BatchRow {
+  asset: string;
+  score: number;
+  signal: string;
+  result: BacktestResult | null;
+}
+
+interface BatchState {
+  running: boolean;
+  done: number;
+  total: number;
+  rows: BatchRow[];
+}
+
+/** `{ conf: 'desc', rsz: 'asc' }` → `conf.desc,rsz.asc` */
+function serializeSortParam(sort: SortState): string {
+  return Object.entries(sort)
+    .filter(([key, dir]) => SORT_KEYS.has(key) && (dir === 'asc' || dir === 'desc'))
+    .map(([key, dir]) => `${key}.${dir}`)
+    .join(',');
+}
+
+/** `conf.desc,rsz.asc` → `{ conf: 'desc', rsz: 'asc' }`, junk keys dropped. */
+function parseSortParam(raw: string): SortState {
+  const out: SortState = {};
+  for (const pair of raw.split(',')) {
+    const [key, dir] = pair.split('.');
+    if (!key || !SORT_KEYS.has(key)) continue;
+    if (dir === 'asc' || dir === 'desc') {
+      out[key as keyof SortState] = dir;
+    }
+  }
+  return out;
+}
+
 export default function Home() {
+  const router = useRouter();
   const [mode, setMode] = useState<'manual' | 'autonomous'>('autonomous');
   const [config, setConfig] = useState<ScanConfig>(DEFAULT_SCAN_CONFIG);
 
@@ -137,8 +226,25 @@ export default function Home() {
    * panels at once: the radar marks it, and the ranking table filters to it.
    */
   const [focusCategory, setFocusCategory] = useState<string | null>(null);
+  /** Ranking table's signal filter + sort — lifted so the URL can carry them. */
+  const [rankFilter, setRankFilter] = useState<SignalFilter>('all');
+  const [rankSort, setRankSort] = useState<SortState>({});
+  /** Merged Supabase + local scan timeline for the history sparkline. */
+  const [scanHistory, setScanHistory] = useState<ScanHistoryEntry[]>([]);
+  /** Batch backtest of the top signals — see runTopBacktest. */
+  const [batch, setBatch] = useState<BatchState>({ running: false, done: 0, total: 0, rows: [] });
+  /** Set when a shared link carries `?asset=`, so we know to run its backtest. */
+  const urlAssetRef = useRef<string | null>(null);
+  /** True once the shared link's query params have been applied. */
+  const [urlReady, setUrlReady] = useState(false);
   /** Monotonic run id — a new run (or stop) invalidates any loop still in flight. */
   const runIdRef = useRef(0);
+  /**
+   * Set when a sweep completes. The Telegram effect consumes it (sends fresh
+   * high-severity warnings once) then clears it — so cached history on page
+   * load never triggers a notification.
+   */
+  const scanDoneRef = useRef(false);
 
   const runManualScan = useCallback(async () => {
     if (config.assetSymbols.length === 0) return;
@@ -336,7 +442,11 @@ export default function Home() {
         saveAutonomousCache(cachePayload);
 
         if (done) {
+          scanDoneRef.current = true;
           void saveScanToSupabase(cachePayload);
+          // Local history writes immediately; the Supabase fetch below merges
+          // in the long tail on next load.
+          setScanHistory((prev) => mergeHistory([], [...recordScan(toHistoryEntry(cachePayload)), ...prev]));
           break;
         }
       }
@@ -414,8 +524,68 @@ export default function Home() {
     };
   }, [config.indexSymbol, applyCachedScan]);
 
+  /**
+   * Apply a shared link's query params exactly once, before the auto-scan
+   * effect is allowed to run — otherwise the sweep would kick off with default
+   * coverage/order and the URL would only repaint the toolbar afterwards.
+   */
   useEffect(() => {
-    if (!isHydrated || didAutoScanRef.current) return;
+    if (!router.isReady || urlReady) return;
+    const q = readUrlState(router.query);
+
+    if (q.mode === 'manual') setMode('manual');
+    if (q.depth) setDepth(q.depth as Depth);
+    if (q.order) setScanOrder(q.order as 'cap' | 'volume');
+    if (q.cat) setFocusCategory(q.cat);
+    if (q.filter) setRankFilter(q.filter as SignalFilter);
+    if (q.sort) setRankSort(parseSortParam(q.sort));
+    if (q.asset) {
+      urlAssetRef.current = q.asset;
+      setSelectedAsset(q.asset);
+    }
+    setUrlReady(true);
+  }, [router.isReady, urlReady, router.query]);
+
+  /**
+   * Mirror view state back into the URL so refreshes and pasted links restore
+   * the same screen. `shallow` keeps this off the data path — no re-render of
+   * the page tree, no history entry per asset click.
+   */
+  useEffect(() => {
+    if (!router.isReady || !urlReady) return;
+    const target = writeUrlState({
+      mode,
+      asset: selectedAsset || undefined,
+      cat: focusCategory ?? undefined,
+      depth,
+      order: scanOrder,
+      filter: rankFilter,
+      sort: serializeSortParam(rankSort),
+    });
+    if (sameQuery(router.query, target)) return;
+    void router.replace({ pathname: '/', query: target }, undefined, { shallow: true });
+  }, [
+    router, router.isReady, urlReady, mode, selectedAsset, focusCategory,
+    depth, scanOrder, rankFilter, rankSort,
+  ]);
+
+  /** Load the scan timeline: local buffer first (instant), then Supabase. */
+  useEffect(() => {
+    if (!isHydrated) return;
+    let cancelled = false;
+    setScanHistory(loadLocalScanHistory());
+    (async () => {
+      const remote = await fetchScanHistory(config.indexSymbol);
+      if (cancelled) return;
+      setScanHistory((local) => mergeHistory(remote, local));
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [isHydrated, config.indexSymbol]);
+
+  useEffect(() => {
+    if (!isHydrated || didAutoScanRef.current || !urlReady) return;
     didAutoScanRef.current = true;
 
     const cached = loadAutonomousCache();
@@ -497,14 +667,128 @@ export default function Home() {
     }
   }, [config, autoParams]);
 
+  /**
+   * A shared `?asset=ETHUSDT` should show that asset's chart, not just
+   * highlight its row — so run the backtest once rankings exist.
+   */
+  useEffect(() => {
+    const want = urlAssetRef.current;
+    if (!want || autoRankings.length === 0 || backtesting) return;
+    if (!autoRankings.some((r) => r.asset === want)) {
+      // Not in this universe — the link is stale. Drop the intent silently.
+      urlAssetRef.current = null;
+      return;
+    }
+    urlAssetRef.current = null;
+    runBacktest(want);
+  }, [autoRankings, backtesting, runBacktest]);
+
   const handleSelectAsset = useCallback((symbol: string) => {
     setSelectedAsset(symbol);
     runBacktest(symbol);
   }, [runBacktest]);
 
+  /**
+   * Batch backtest of the top-N signals.
+   *
+   * Backtests normally run one-at-a-time on row click; the common question is
+   * actually "are the *top* calls historically real?" — so this runs them as a
+   * set and reports which survived. Sequential rather than parallel: each call
+   * pulls 1000 candles, and firing five at once just earns a rate limit.
+   */
+  const runTopBacktest = useCallback(async (n: number) => {
+    const candidates = autoRankings
+      .filter((r) => r.finalSignal !== 'neutral')
+      .slice(0, n);
+    if (candidates.length === 0) return;
+
+    setBatch({ running: true, done: 0, total: candidates.length, rows: [] });
+
+    const params = autoParams
+      ? `lookback=${autoParams.lookback}&rsPeriod=${autoParams.rsPeriod}&indexThreshold=${autoParams.indexThreshold}&volumeMultiplier=${autoParams.volumeMultiplier}&volumePeriod=${autoParams.volumePeriod}`
+      : `lookback=${config.lookback}&rsPeriod=${config.rsPeriod}&indexThreshold=${config.indexThreshold}&volumeMultiplier=${config.volumeMultiplier}&volumePeriod=${config.volumePeriod}`;
+
+    const rows: BatchRow[] = [];
+    let failed = 0;
+
+    for (let i = 0; i < candidates.length; i++) {
+      const asset = candidates[i].asset;
+      try {
+        const url = `/api/backtest?indexSymbol=${config.indexSymbol}&assetSymbol=${asset}&interval=${config.interval}&limit=500&${params}`;
+        const response = await fetch(url);
+        if (!response.ok) {
+          const errData = await response.json().catch(() => ({}));
+          throw new Error(errData.error || `HTTP ${response.status}`);
+        }
+        const data = await response.json();
+        rows.push({
+          asset,
+          score: candidates[i].confluenceScore,
+          signal: candidates[i].finalSignal,
+          result: data.backtest as BacktestResult,
+        });
+      } catch {
+        // One dead pair must not abort the batch — record it and continue.
+        failed++;
+        rows.push({
+          asset,
+          score: candidates[i].confluenceScore,
+          signal: candidates[i].finalSignal,
+          result: null,
+        });
+      }
+      setBatch({ running: true, done: i + 1, total: candidates.length, rows: [...rows] });
+    }
+
+    setBatch({ running: false, done: candidates.length, total: candidates.length, rows });
+    if (failed > 0 && rows.every((r) => r.result === null)) {
+      setError(`Backtest batch gagal total (${failed} aset) — coba lagi sebentar lagi.`);
+    }
+  }, [autoRankings, autoParams, config]);
+
   const selectedMTF = autoRankings.find((r) => r.asset === selectedAsset) || null;
   /** Sector-level read, shared by the narrative radar and the tradeable list. */
   const sectors = useMemo(() => buildSectorHeat(autoRankings), [autoRankings]);
+
+  /**
+   * Sector history across scans — the time dimension the early warnings need.
+   * Appended once per completed scan (keyed by lastScannedAt, deduped by
+   * minute inside recordSectorSnapshot), so re-renders never double-count.
+   */
+  const [sectorHistory, setSectorHistory] = useState<SectorHistory>({});
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    setSectorHistory(loadSectorHistory());
+  }, [isHydrated]);
+  useEffect(() => {
+    if (autoRankings.length === 0 || !lastScannedAt) return;
+    setSectorHistory(recordSectorSnapshot(sectors, lastScannedAt));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lastScannedAt]);
+
+  /** Early warnings: phase flips + acceleration + persistence, with coins. */
+  const warnings = useMemo(
+    () => (autoRankings.length === 0 ? [] : buildEarlyWarnings(sectors, sectorHistory, autoRankings)),
+    [sectors, sectorHistory, autoRankings]
+  );
+  const historyDepth = useMemo(() => {
+    let max = 0;
+    for (const pts of Object.values(sectorHistory)) {
+      if (Array.isArray(pts) && pts.length > max) max = pts.length;
+    }
+    return max;
+  }, [sectorHistory]);
+
+  /**
+   * Telegram push: only right after a sweep finishes, only unsent
+   * high-severity warnings. notifyNewWarnings dedupes by warning id and
+   * no-ops when unconfigured/disabled — it never throws.
+   */
+  useEffect(() => {
+    if (warnings.length === 0 || !scanDoneRef.current) return;
+    scanDoneRef.current = false;
+    void notifyNewWarnings(warnings);
+  }, [warnings]);
   const buySignals = mode === 'manual'
     ? scanResults.filter((r) => r.signal?.type === 'buy')
     : autoRankings.filter((r) => r.finalSignal.includes('buy'));
@@ -526,12 +810,47 @@ export default function Home() {
           display: 'flex',
           alignItems: 'flex-start',
           justifyContent: 'space-between',
-          gap: '8px',
+          gap: '10px',
+          flexWrap: 'wrap',
         }}>
-          <span style={{ wordBreak: 'break-word' }}>{error}</span>
-          <button onClick={() => setError(null)} style={{
-            background: 'none', border: 'none', color: '#ef4444', cursor: 'pointer', fontSize: '16px',
-          }}>×</button>
+          <span style={{ wordBreak: 'break-word', flex: '1 1 240px' }}>{error}</span>
+          <span style={{ display: 'flex', gap: '8px', flexShrink: 0 }}>
+            {/* Most failures here are transient (rate limit, connect timeout) —
+                the useful action is "try again", not "dismiss". */}
+            {!scanning && (
+              <button
+                onClick={runScan}
+                style={{
+                  padding: '5px 14px',
+                  background: 'rgba(239, 68, 68, 0.15)',
+                  border: '1px solid rgba(239, 68, 68, 0.45)',
+                  borderRadius: '6px',
+                  color: '#ef4444',
+                  fontSize: '12px',
+                  fontWeight: 600,
+                  cursor: 'pointer',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                ↻ Retry
+              </button>
+            )}
+            <button
+              onClick={() => setError(null)}
+              aria-label="Tutup pesan error"
+              style={{
+                background: 'none',
+                border: 'none',
+                color: '#ef4444',
+                cursor: 'pointer',
+                fontSize: '18px',
+                lineHeight: 1,
+                padding: '0 4px',
+              }}
+            >
+              ×
+            </button>
+          </span>
         </div>
       )}
 
@@ -722,6 +1041,18 @@ export default function Home() {
 
       {mode === 'autonomous' && autoRankings.length > 0 && (
         <div style={{ marginBottom: '20px' }}>
+          <EarlyWarningFeed
+            warnings={warnings}
+            historyDepth={historyDepth}
+            onFocusCategory={setFocusCategory}
+            onSelectAsset={handleSelectAsset}
+            focusedCategory={focusCategory}
+          />
+        </div>
+      )}
+
+      {mode === 'autonomous' && autoRankings.length > 0 && (
+        <div style={{ marginBottom: '20px' }}>
           <NarrativeRadar
             rankings={autoRankings}
             focusCategory={focusCategory}
@@ -777,6 +1108,16 @@ export default function Home() {
         </div>
       )}
 
+      {/* First load has no cached scan yet — placeholder grid instead of a jump.
+          Only when the real stats block is also absent, to avoid a double row. */}
+      {mode === 'autonomous' && scanning && autoRankings.length === 0 && !progress && (
+        <SkeletonStats count={5} />
+      )}
+
+      {mode === 'autonomous' && scanHistory.length > 0 && (
+        <ScanHistory entries={scanHistory} currentRegime={regime?.regime ?? null} />
+      )}
+
       {mode === 'manual' && scanResults.length > 0 && (
         <div className="ah-stats" style={{ marginBottom: '20px' }}>
           <StatsCard label="Assets Scanned" value={scanResults.length} icon="📊" />
@@ -794,6 +1135,11 @@ export default function Home() {
             selectedAsset={selectedAsset}
             focusCategory={focusCategory}
             onFocusCategoryChange={setFocusCategory}
+            filter={rankFilter}
+            onFilterChange={setRankFilter}
+            sort={rankSort}
+            onSortChange={setRankSort}
+            loading={scanning}
           />
         </div>
       ) : (
@@ -809,6 +1155,17 @@ export default function Home() {
             <SignalList results={scanResults} />
           </div>
         </div>
+      )}
+
+      {mode === 'autonomous' && (
+        <TopBacktests
+          rows={batch.rows}
+          running={batch.running}
+          done={batch.done}
+          total={batch.total}
+          onRun={() => void runTopBacktest(5)}
+          disabled={batch.running || autoRankings.length === 0}
+        />
       )}
 
       {(chartCandles.length > 0 || backtesting) && (

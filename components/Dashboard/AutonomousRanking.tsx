@@ -1,6 +1,9 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { MultiTimeframeResult } from '../../lib/algorithms/multiTimeframe';
 import { CATEGORIES, CategoryId, allCategoryIds } from '../../lib/assetCategory';
+import { downloadCsv, csvTimestampedName } from '../../lib/csv';
+import { useWatchlist } from '../../lib/watchlist';
+import { SkeletonPanel } from './Skeleton';
 
 interface AutonomousRankingProps {
   rankings: MultiTimeframeResult[];
@@ -14,6 +17,16 @@ interface AutonomousRankingProps {
   focusCategory?: string | null;
   /** Called when the table's own category chips change, so the radar can follow. */
   onFocusCategoryChange?: (id: string | null) => void;
+  /**
+   * Signal filter + sort are lifted so the URL can carry them: a shared link
+   * should reopen on the same view instead of resetting to "All / default".
+   */
+  filter: SignalFilter;
+  onFilterChange: (f: SignalFilter) => void;
+  sort: SortState;
+  onSortChange: (s: SortState) => void;
+  /** True while a sweep is in flight, so we can show a skeleton instead of an empty box. */
+  loading?: boolean;
 }
 
 const SIGNAL_COLORS: Record<string, string> = {
@@ -39,14 +52,18 @@ const SIGNAL_RANK: Record<MultiTimeframeResult['finalSignal'], number> = {
 };
 
 type SortDir = 'asc' | 'desc';
-type SortKey =
+export type SortKey =
   | 'signal' | 'conf' | 'rsz' | 'conviction' | 'agreement' | 'liquidity'
   | 'mcap' | 'rank' | 'category';
-type SortState = Partial<Record<SortKey, SortDir>>;
+export type SortState = Partial<Record<SortKey, SortDir>>;
 
 const SORT_PRIORITY: SortKey[] = [
   'signal', 'conf', 'conviction', 'agreement', 'category', 'rsz', 'liquidity', 'mcap', 'rank',
 ];
+
+/** Rows painted before the user scrolls, and how many each additional page adds. */
+const INITIAL_VISIBLE = 60;
+const PAGE_SIZE = 120;
 
 /** Which optional column groups the user wants visible. */
 type ViewKey = 'metrics' | 'narrative' | 'cap';
@@ -86,9 +103,9 @@ function formatCap(v?: number | null): string {
 }
 
 /** Quick filters so the trader can isolate conviction calls. */
-type SignalFilter = 'all' | 'strong_buy' | 'buy' | 'strong_sell' | 'sell' | 'non_neutral';
+export type SignalFilter = 'all' | 'strong_buy' | 'buy' | 'strong_sell' | 'sell' | 'non_neutral';
 
-const FILTERS: Array<{ key: SignalFilter; label: string; color: string }> = [
+export const SIGNAL_FILTERS: Array<{ key: SignalFilter; label: string; color: string }> = [
   { key: 'all', label: 'All', color: '#9ca3af' },
   { key: 'non_neutral', label: 'Any Signal', color: '#3b82f6' },
   { key: 'strong_buy', label: 'Strong Buy', color: '#10b981' },
@@ -96,6 +113,8 @@ const FILTERS: Array<{ key: SignalFilter; label: string; color: string }> = [
   { key: 'strong_sell', label: 'Strong Sell', color: '#ef4444' },
   { key: 'sell', label: 'Sell', color: '#f87171' },
 ];
+
+const FILTERS = SIGNAL_FILTERS;
 
 const SIGNAL_STRENGTH: Record<MultiTimeframeResult['finalSignal'], number> = {
   strong_buy: 4,
@@ -123,12 +142,59 @@ export default function AutonomousRanking({
   selectedAsset,
   focusCategory,
   onFocusCategoryChange,
+  filter,
+  onFilterChange,
+  sort,
+  onSortChange,
+  loading,
 }: AutonomousRankingProps) {
-  const [sort, setSort] = useState<SortState>({});
-  const [filter, setFilter] = useState<SignalFilter>('all');
   const [catFilter, setCatFilterState] = useState<string>('all');
-  const [visibleCount, setVisibleCount] = useState(300);
+  /**
+   * Rows rendered so far. Starts small — a full sweep is ~700 rows and painting
+   * all of them at once is what made mid-range phones stutter on first paint.
+   * IntersectionObserver below grows it as the user scrolls.
+   */
+  const [visibleCount, setVisibleCount] = useState(INITIAL_VISIBLE);
   const [view, setView] = useState<ViewState>({ metrics: true, narrative: false, cap: false });
+  const [starredOnly, setStarredOnly] = useState(false);
+  const sentinelRef = useRef<HTMLDivElement | null>(null);
+  const { isWatched, toggle: toggleWatch, ready: watchReady, items: watchItems } = useWatchlist();
+  const watchlistCount = watchItems.length;
+
+  const applyFilter = useCallback(
+    (next: SignalFilter) => {
+      onFilterChange?.(next);
+      setVisibleCount(INITIAL_VISIBLE);
+    },
+    [onFilterChange]
+  );
+
+  const applySort = useCallback(
+    (next: SortState) => {
+      onSortChange?.(next);
+      setVisibleCount(INITIAL_VISIBLE);
+    },
+    [onSortChange]
+  );
+
+  // Auto-load the next page when the sentinel scrolls into view. Kept as an
+  // enhancement over the button — the button stays for keyboard/AT users.
+  useEffect(() => {
+    const node = sentinelRef.current;
+    if (!node || typeof IntersectionObserver === 'undefined') return;
+    if (visibleCount >= rankings.length) return;
+
+    const io = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((e) => e.isIntersecting)) {
+          setVisibleCount((c) => (c === visibleCount ? c + PAGE_SIZE : c));
+        }
+      },
+      { rootMargin: '400px 0px' }
+    );
+    io.observe(node);
+    return () => io.disconnect();
+  }, [visibleCount, rankings.length]);
 
   // Sector picked in the narrative radar becomes this table's filter. The
   // narrative column group is force-enabled, otherwise the selected category
@@ -146,7 +212,7 @@ export default function AutonomousRanking({
    */
   const setCatFilter = (next: string, notify = false) => {
     setCatFilterState(next);
-    setVisibleCount(300);
+    setVisibleCount(INITIAL_VISIBLE);
     if (notify) onFocusCategoryChange?.(next === 'all' ? null : next);
   };
 
@@ -158,6 +224,17 @@ export default function AutonomousRanking({
       return next;
     });
   };
+
+  /**
+   * Asset → position in the full (unfiltered) ranking, for the "#" column.
+   * A Map instead of `findIndex` per row: that was O(n²) over ~700 rows on
+   * every render, which is exactly the kind of thing that janks a phone.
+   */
+  const rankIndex = useMemo(() => {
+    const m = new Map<string, number>();
+    rankings.forEach((r, i) => m.set(r.asset, i));
+    return m;
+  }, [rankings]);
 
   const capTierCounts = useMemo(() => {
     const c: Record<string, number> = { mega: 0, large: 0, mid: 0, small: 0, micro: 0, unknown: 0 };
@@ -203,7 +280,12 @@ export default function AutonomousRanking({
 
   const sortedRankings = useMemo(() => {
     const filtered = rankings.filter(
-      (r) => matchesFilter(r, filter) && (catFilter === 'all' || (r.category ?? 'other') === catFilter)
+      (r) =>
+        matchesFilter(r, filter) &&
+        (catFilter === 'all' || (r.category ?? 'other') === catFilter) &&
+        // Starred-only is a conjunction with the other filters, not a replacement:
+        // "my picks, within this sector" is the query people actually want.
+        (!starredOnly || watchItems.includes(r.asset))
     );
     const active = SORT_PRIORITY.filter((key) => sort[key]).map((key) => ({ key, dir: sort[key]! }));
     if (active.length === 0) return filtered;
@@ -240,9 +322,12 @@ export default function AutonomousRanking({
       }
       return getSignal(b) - getSignal(a);
     });
-  }, [rankings, sort, filter, catFilter]);
+  }, [rankings, sort, filter, catFilter, starredOnly, watchItems]);
 
   if (rankings.length === 0) {
+    // During the first sweep there is nothing to show yet — a skeleton keeps
+    // the layout from collapsing and reads as "working" rather than "broken".
+    if (loading) return <SkeletonPanel rows={8} />;
     return (
       <div style={{
         background: '#111827',
@@ -259,13 +344,11 @@ export default function AutonomousRanking({
   }
 
   const toggleSort = (key: SortKey) => {
-    setSort((prev) => {
-      const next: SortState = { ...prev };
-      const dir = nextSortDir(prev[key]);
-      if (dir) next[key] = dir;
-      else delete next[key];
-      return next;
-    });
+    const next: SortState = { ...sort };
+    const dir = nextSortDir(sort[key]);
+    if (dir) next[key] = dir;
+    else delete next[key];
+    applySort(next);
   };
 
   const sortLabel = (key: SortKey) =>
@@ -280,11 +363,61 @@ export default function AutonomousRanking({
         color: sort[key] ? '#3b82f6' : '#6b7280',
       }}
       onClick={() => toggleSort(key)}
+      // Keyboard parity: a clickable header that cannot be reached by Tab is
+      // unusable for anyone not holding a mouse.
+      tabIndex={0}
+      role="columnheader"
+      aria-sort={
+        sort[key] === 'desc' ? 'descending' : sort[key] === 'asc' ? 'ascending' : 'none'
+      }
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          toggleSort(key);
+        }
+      }}
       title={`Click to sort by ${label} (best → worst → reverse → default). Multiple columns combine.`}
     >
       {label}{sortLabel(key)}
     </th>
   );
+
+  /** Export the current view — same rows the user is looking at, not the raw set. */
+  const exportCsv = () => {
+    const header: (string | number)[] = ['#', 'Asset', 'Signal', 'Score', 'Conviction', 'Agreement', 'Liquidity', 'RS Z (4h)'];
+    if (view.metrics) header.push('Conv', 'Agree', 'Liq');
+    if (view.cap) header.push('Cap Tier', 'Market Cap');
+    if (view.narrative) header.push('Category', 'Read');
+
+    const body = sortedRankings.slice(0, visibleCount).map((r, i) => {
+      const row: (string | number)[] = [
+        i + 1,
+        r.asset,
+        r.finalSignal,
+        r.confluenceScore,
+        Math.round((r.conviction ?? 0) * 100),
+        Math.round((r.agreement ?? 0) * 100),
+        Math.round((r.liquidityFactor ?? 0) * 100),
+        (r.timeframes[1]?.rsZScore ?? 0).toFixed(2),
+      ];
+      if (view.metrics) {
+        row.push(
+          `${Math.round((r.conviction ?? 0) * 100)}%`,
+          `${Math.round((r.agreement ?? 0) * 100)}%`,
+          `${Math.round((r.liquidityFactor ?? 0) * 100)}%`
+        );
+      }
+      if (view.cap) {
+        row.push(TIER_LABEL[r.capTier ?? 'unknown'] ?? '—', formatCap(r.marketCap));
+      }
+      if (view.narrative) {
+        row.push(r.categoryLabel ?? 'Other', r.narrative || '');
+      }
+      return row;
+    });
+
+    downloadCsv(csvTimestampedName('althunter-ranking'), [header, ...body]);
+  };
 
   return (
     <div style={{
@@ -300,11 +433,31 @@ export default function AutonomousRanking({
         <h3 style={{ fontSize: '14px', fontWeight: '600', color: '#f9fafb', margin: 0 }}>
           Autonomous Rankings ({rankings.length} assets)
         </h3>
-        <div style={{ fontSize: '11px', color: '#6b7280' }}>
-          <span style={{ color: '#10b981', fontWeight: '600' }}>{filterCounts.non_neutral}</span> signals
-          {filter !== 'all' && filter !== 'non_neutral' && (
-            <span> · showing {sortedRankings.length}</span>
-          )}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+          <div style={{ fontSize: '11px', color: '#6b7280' }}>
+            <span style={{ color: '#10b981', fontWeight: '600' }}>{filterCounts.non_neutral}</span> signals
+            {filter !== 'all' && filter !== 'non_neutral' && (
+              <span> · showing {sortedRankings.length}</span>
+            )}
+          </div>
+          <button
+            onClick={exportCsv}
+            title="Unduh baris yang sedang tampil sebagai CSV"
+            className="ah-action"
+            style={{
+              padding: '5px 11px',
+              background: 'transparent',
+              border: '1px solid #374151',
+              borderRadius: '6px',
+              color: '#9ca3af',
+              fontSize: '11px',
+              fontWeight: 600,
+              cursor: 'pointer',
+              whiteSpace: 'nowrap',
+            }}
+          >
+            ⬇ CSV
+          </button>
         </div>
       </div>
 
@@ -317,15 +470,11 @@ export default function AutonomousRanking({
         gap: '6px',
         flexWrap: 'wrap',
       }}>
-        <span style={{ fontSize: '9px', fontWeight: '700', color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.5px', marginRight: '2px' }}>
-          Signal
-        </span>
         {/* Column group toggles */}
         <span style={{
           fontSize: '9px', fontWeight: '700', color: '#6b7280',
           textTransform: 'uppercase', letterSpacing: '0.5px',
-          marginLeft: '10px', paddingLeft: '10px',
-          borderLeft: '1px solid #374151',
+          marginRight: '2px',
         }}>
           Columns
         </span>
@@ -430,8 +579,9 @@ export default function AutonomousRanking({
           return (
             <button
               key={f.key}
-              onClick={() => { setFilter(f.key); setVisibleCount(300); }}
+              onClick={() => applyFilter(f.key)}
               disabled={disabled}
+              aria-pressed={activeFilter}
               style={{
                 padding: '4px 10px',
                 borderRadius: '6px',
@@ -449,6 +599,34 @@ export default function AutonomousRanking({
             </button>
           );
         })}
+        {/* User's own pinned assets — separate from the computed signal filters. */}
+        <span style={{
+          fontSize: '9px', fontWeight: '700', color: '#6b7280',
+          textTransform: 'uppercase', letterSpacing: '0.5px',
+          marginLeft: '6px', paddingLeft: '10px', borderLeft: '1px solid #374151',
+        }}>
+          Starred
+        </span>
+        <button
+          onClick={() => setStarredOnly((v) => !v)}
+          disabled={watchReady && !starredOnly && watchlistCount === 0}
+          aria-pressed={starredOnly}
+          title="Tampilkan hanya aset yang Anda tandai ⭐"
+          style={{
+            padding: '4px 10px',
+            borderRadius: '6px',
+            border: `1px solid ${starredOnly ? '#f59e0b66' : '#374151'}`,
+            background: starredOnly ? '#f59e0b22' : 'transparent',
+            color: starredOnly ? '#f59e0b' : '#9ca3af',
+            fontSize: '10px',
+            fontWeight: 600,
+            cursor: watchReady && !starredOnly && watchlistCount === 0 ? 'not-allowed' : 'pointer',
+            opacity: watchReady && !starredOnly && watchlistCount === 0 ? 0.5 : 1,
+          }}
+        >
+          ⭐ {starredOnly ? 'Menampilkan' : 'Saja'}
+          <span style={{ opacity: 0.65, marginLeft: '4px' }}>{watchlistCount}</span>
+        </button>
       </div>
 
       {sortedRankings.length === 0 ? (
@@ -457,9 +635,10 @@ export default function AutonomousRanking({
         </div>
       ) : (
       <div className="ah-scroll">
-        <table style={{ width: '100%', minWidth: '760px', borderCollapse: 'collapse', fontSize: '11px' }}>
+        <table style={{ width: '100%', minWidth: '790px', borderCollapse: 'collapse', fontSize: '11px' }}>
           <thead>
             <tr style={{ borderBottom: '1px solid #374151' }}>
+              <th style={{ ...thStyle, width: '26px' }} aria-label="Watchlist" />
               <th style={thStyle}>#</th>
               <th style={thStyle}>Asset</th>
               <th style={thStyle}>1h</th>
@@ -479,13 +658,27 @@ export default function AutonomousRanking({
           </thead>
           <tbody>
             {sortedRankings.slice(0, visibleCount).map((result) => {
-              const originalIndex = rankings.findIndex((r) => r.asset === result.asset);
+              const originalIndex = rankIndex.get(result.asset) ?? -1;
               const isSelected = result.asset === selectedAsset;
               const signalColor = SIGNAL_COLORS[result.finalSignal] || '#6b7280';
+              const watched = isWatched(result.asset);
+              const ticker = result.asset.replace('USDT', '');
               return (
                 <tr
                   key={result.asset}
                   onClick={() => onSelectAsset(result.asset)}
+                  // A row that only responds to click is unreachable without a mouse.
+                  tabIndex={0}
+                  role="button"
+                  aria-pressed={isSelected}
+                  aria-label={`${ticker}, signal ${result.finalSignal.replace('_', ' ')}, skor ${result.confluenceScore}`}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      onSelectAsset(result.asset);
+                    }
+                  }}
+                  className="ah-row"
                   style={{
                     borderBottom: '1px solid #1f2937',
                     cursor: 'pointer',
@@ -498,9 +691,27 @@ export default function AutonomousRanking({
                     if (!isSelected) e.currentTarget.style.background = 'transparent';
                   }}
                 >
+                  <td style={{ ...tdStyle, padding: '8px 4px' }}>
+                    <button
+                      type="button"
+                      className="ah-star"
+                      aria-pressed={watched}
+                      aria-label={watched ? `Hapus ${ticker} dari watchlist` : `Tambah ${ticker} ke watchlist`}
+                      title={watched ? 'Hapus dari watchlist' : 'Tandai ⭐'}
+                      onClick={(e) => {
+                        // Row also has onClick — without this the star would toggle
+                        // and then immediately re-select the asset.
+                        e.stopPropagation();
+                        toggleWatch(result.asset);
+                      }}
+                      onKeyDown={(e) => e.stopPropagation()}
+                    >
+                      {watched ? '★' : '☆'}
+                    </button>
+                  </td>
                   <td style={tdStyle}>{originalIndex >= 0 ? originalIndex + 1 : '—'}</td>
                   <td style={{ ...tdStyle, fontWeight: '600', color: '#f9fafb' }}>
-                    {result.asset.replace('USDT', '')}
+                    {ticker}
                   </td>
                   {result.timeframes.map((tf) => (
                     <td key={tf.timeframe} style={{ ...tdStyle, textAlign: 'center' }}>
@@ -655,10 +866,12 @@ export default function AutonomousRanking({
             })}
           </tbody>
         </table>
+        {/* Sentinel: IntersectionObserver grows visibleCount as it approaches. */}
+        <div ref={sentinelRef} className="ah-sentinel" aria-hidden="true" />
         {sortedRankings.length > visibleCount && (
           <div style={{ padding: '10px 16px', borderTop: '1px solid #374151', textAlign: 'center' }}>
             <button
-              onClick={() => setVisibleCount((c) => c + 500)}
+              onClick={() => setVisibleCount((c) => c + PAGE_SIZE)}
               style={{
                 padding: '7px 18px',
                 background: '#1f2937',
@@ -672,6 +885,14 @@ export default function AutonomousRanking({
             >
               Show more ({(sortedRankings.length - visibleCount).toLocaleString()} remaining)
             </button>
+          </div>
+        )}
+        {sortedRankings.length > visibleCount && (
+          <div
+            aria-live="polite"
+            style={{ position: 'absolute', width: 1, height: 1, overflow: 'hidden', clip: 'rect(0 0 0 0)' }}
+          >
+            Menampilkan {visibleCount} dari {sortedRankings.length} aset
           </div>
         )}
       </div>

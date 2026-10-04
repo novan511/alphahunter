@@ -1,6 +1,7 @@
 import React, { useMemo, useState } from 'react';
 import { MultiTimeframeResult } from '../../lib/algorithms/multiTimeframe';
 import { SectorHeat } from '../../lib/algorithms/narrativeHeat';
+import { SkeletonPanel } from './Skeleton';
 import {
   TradeableCoin,
   TradeableResult,
@@ -100,6 +101,7 @@ export default function TradeableList({
   );
 
   if (rankings.length === 0) {
+    if (loading) return <SkeletonPanel rows={5} />;
     return (
       <div style={{
         background: '#111827',
@@ -110,7 +112,7 @@ export default function TradeableList({
         color: '#6b7280',
         fontSize: '13px',
       }}>
-        {loading ? 'Menyaring koin yang bisa ditrade…' : 'Menunggu hasil scan untuk menyusun daftar trade.'}
+        Menunggu hasil scan untuk menyusun daftar trade.
       </div>
     );
   }
@@ -248,6 +250,16 @@ export default function TradeableList({
                 <div
                   key={w.asset}
                   onClick={() => onSelectAsset(w.asset)}
+                  tabIndex={0}
+                  role="button"
+                  aria-label={`${w.ticker}, bias ${Math.round(w.netBias * 100)} persen`}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      onSelectAsset(w.asset);
+                    }
+                  }}
+                  className="ah-row"
                   style={{
                     display: 'flex',
                     alignItems: 'center',
@@ -320,11 +332,25 @@ function TradeCard({ trade: t, selected, expanded, onSelect, onToggle }: TradeCa
   return (
     <div
       onClick={onSelect}
+      // Card-level click needs a keyboard equivalent; the expand button inside
+      // stops propagation so it stays an independent control.
+      tabIndex={0}
+      role="button"
+      aria-pressed={selected}
+      aria-label={`${t.ticker}, ${t.direction}, confluence ${t.confluenceScore}`}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          onSelect();
+        }
+      }}
+      className="ah-row"
       style={{
         background: '#0a0e17',
         border: `1px solid ${selected ? dirColor : t.counterTrend ? '#ef444455' : '#374151'}`,
         borderRadius: '10px',
         padding: '12px',
+        cursor: 'pointer',
       }}
     >
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px' }}>

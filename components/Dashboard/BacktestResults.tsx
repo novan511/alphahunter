@@ -1,6 +1,7 @@
 import React from 'react';
 import { BacktestResult } from '../../lib/types';
 import StatsCard from './StatsCard';
+import { Skeleton } from './Skeleton';
 
 interface BacktestResultsProps {
   result: BacktestResult | null;
@@ -9,16 +10,33 @@ interface BacktestResultsProps {
 
 export default function BacktestResults({ result, loading }: BacktestResultsProps) {
   if (loading) {
+    // Mirror the real layout (header + stat grid) so the panel doesn't jump
+    // from a one-line message to eleven cards when the numbers land.
     return (
-      <div style={{
-        background: '#111827',
-        borderRadius: '12px',
-        border: '1px solid #374151',
-        padding: '32px',
-        textAlign: 'center',
-        color: '#6b7280',
-      }}>
-        Running backtest...
+      <div
+        aria-busy="true"
+        aria-live="polite"
+        style={{
+          background: '#111827',
+          borderRadius: '12px',
+          border: '1px solid #374151',
+          padding: '16px',
+        }}
+      >
+        <Skeleton width="170px" height="14px" />
+        <div style={{
+          display: 'grid',
+          gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))',
+          gap: '10px',
+          marginTop: '16px',
+        }}>
+          {Array.from({ length: 8 }).map((_, i) => (
+            <Skeleton key={i} height="66px" radius="12px" />
+          ))}
+        </div>
+        <div style={{ marginTop: '14px' }}>
+          <Skeleton width="130px" height="11px" />
+        </div>
       </div>
     );
   }

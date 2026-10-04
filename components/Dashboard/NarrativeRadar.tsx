@@ -196,6 +196,17 @@ function SectorCard({ sector: s, phaseMeta, focused, onClick }: SectorCardProps)
   return (
     <div
       onClick={onClick}
+      tabIndex={0}
+      role="button"
+      aria-pressed={focused}
+      aria-label={`${s.label}, fase ${phaseMeta.label}, ${s.members} koin`}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          onClick();
+        }
+      }}
+      className="ah-row"
       title={focused ? 'Klik untuk lepas filter tabel di bawah' : 'Klik untuk filter tabel di bawah ke sektor ini'}
       style={{
         background: '#0a0e17',

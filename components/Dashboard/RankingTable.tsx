@@ -23,7 +23,6 @@ export default function RankingTable({ results, onSelectAsset, selectedAsset }: 
       </div>
     );
   }
-
   return (
     <div style={{
       background: '#111827',
@@ -56,10 +55,22 @@ export default function RankingTable({ results, onSelectAsset, selectedAsset }: 
           <tbody>
             {results.map((result) => {
               const isSelected = result.symbol === selectedAsset;
+              const ticker = result.symbol.replace('USDT', '');
               return (
                 <tr
                   key={result.symbol}
                   onClick={() => onSelectAsset(result.symbol)}
+                  tabIndex={0}
+                  role="button"
+                  aria-pressed={isSelected}
+                  aria-label={`${ticker}, RS Z ${result.currentRSZScore.toFixed(2)}, signal ${result.signal?.type ?? 'none'}`}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      onSelectAsset(result.symbol);
+                    }
+                  }}
+                  className="ah-row"
                   style={{
                     borderBottom: '1px solid #1f2937',
                     cursor: 'pointer',
@@ -75,7 +86,7 @@ export default function RankingTable({ results, onSelectAsset, selectedAsset }: 
                 >
                   <td style={tdStyle}>{result.rank}</td>
                   <td style={{ ...tdStyle, fontWeight: '600', color: '#f9fafb' }}>
-                    {result.symbol.replace('USDT', '')}
+                    {ticker}
                   </td>
                   <td style={{ ...tdStyle, color: getZScoreColor(result.currentRSZScore) }}>
                     {result.currentRSZScore.toFixed(2)}

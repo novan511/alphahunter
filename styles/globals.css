@@ -428,3 +428,82 @@ html {
     grid-template-columns: 1fr;
   }
 }
+
+/* ==========================================================================
+   Utility: skeleton loading, focus ring, row controls
+   ========================================================================== */
+
+/* Shimmer — one animation for every placeholder so panels feel consistent. */
+.ah-skel {
+  position: relative;
+  overflow: hidden;
+  background: #1f2937;
+}
+
+.ah-skel::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(255, 255, 255, 0.06),
+    transparent
+  );
+  animation: ah-shimmer 1.4s infinite;
+}
+
+@keyframes ah-shimmer {
+  100% {
+    transform: translateX(100%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ah-skel::after {
+    animation: none;
+  }
+}
+
+/*
+ * Focus ring. The tables and cards are clickable <tr>/<div>, so keyboard users
+ * get the same affordance mouse users already have from hover.
+ */
+.ah-row:focus-visible,
+tr:focus-visible,
+th:focus-visible,
+button:focus-visible,
+a:focus-visible,
+[tabindex]:focus-visible {
+  outline: 2px solid #3b82f6;
+  outline-offset: -2px;
+}
+
+/* Star toggle on ranking rows — needs a stable hit area, not a bare glyph. */
+.ah-star {
+  background: none;
+  border: none;
+  padding: 0;
+  margin: 0;
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+  color: #4b5563;
+  transition: color 0.15s, transform 0.15s;
+}
+
+.ah-star:hover {
+  color: #f59e0b;
+  transform: scale(1.15);
+}
+
+.ah-star[aria-pressed='true'] {
+  color: #f59e0b;
+}
+
+/* Auto-load sentinel for the ranking table's infinite scroll. */
+.ah-sentinel {
+  height: 1px;
+  width: 100%;
+}
