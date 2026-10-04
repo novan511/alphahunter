@@ -62,28 +62,22 @@ function normalizeRankings(rankings: MultiTimeframeResult[] | null | undefined):
   }));
 }
 
-export default async function handler(
-  req: NextApiRequest,
-  res: NextApiResponse<LastScanResponse | { error: string }>
-) {
-  if (req.method !== 'GET') {
-    res.setHeader('Allow', 'GET');
-    return res.status(405).json({ error: 'Method not allowed' });
-  }
-
+/**
+ * Server-side fetch of the latest persisted scan. Extracted so the Telegram
+ * webhook (and any future server consumer) can answer from the same source
+ * the homepage hydrates from — no duplicated queries.
+ */
+export async function getLastScan(
+  indexSymbol: string
+): Promise<LastScanResponse> {
   if (!isSupabaseConfigured()) {
-    return res.status(200).json({ configured: false, found: false });
+    return { configured: false, found: false };
   }
 
   const supabase = getSupabase();
   if (!supabase) {
-    return res.status(500).json({ error: 'Supabase client unavailable' });
+    throw new Error('Supabase client unavailable');
   }
-
-  const indexSymbol =
-    typeof req.query.indexSymbol === 'string'
-      ? req.query.indexSymbol.toUpperCase()
-      : 'BTCUSDT';
 
   try {
     // Prefer the richer scan_history table used by the original app
@@ -104,10 +98,10 @@ export default async function handler(
       const row = historyRows[0] as ScanHistoryRow;
       const rankings = normalizeRankings(row.results);
       if (rankings.length === 0) {
-        return res.status(200).json({ configured: true, found: false });
+        return { configured: true, found: false };
       }
 
-      return res.status(200).json({
+      return {
         configured: true,
         found: true,
         source: 'scan_history',
@@ -121,7 +115,7 @@ export default async function handler(
         buySummary: row.buy_signals_summary ?? undefined,
         sellSummary: row.sell_signals_summary ?? undefined,
         regimeLabel: row.regime_label ?? undefined,
-      });
+      };
     }
 
     // Fallback: older/alternate table
@@ -134,22 +128,22 @@ export default async function handler(
 
     if (autoError) {
       console.warn('autonomous_scans read failed:', autoError.message);
-      return res.status(200).json({ configured: true, found: false });
+      return { configured: true, found: false };
     }
 
     if (!autoRows || autoRows.length === 0) {
-      return res.status(200).json({ configured: true, found: false });
+      return { configured: true, found: false };
     }
 
     const row = autoRows[0] as AutonomousScanRow;
     const payload = row.payload;
     if (!payload) {
-      return res.status(200).json({ configured: true, found: false });
+      return { configured: true, found: false };
     }
 
     const rankings = normalizeRankings(payload.rankings);
 
-    return res.status(200).json({
+    return {
       configured: true,
       found: rankings.length > 0,
       source: 'autonomous_scans',
@@ -161,7 +155,29 @@ export default async function handler(
       totalScanned: payload.totalScanned ?? rankings.length,
       signalsFound: rankings.filter((r) => r.finalSignal !== 'neutral').length,
       scanOrder: payload.scanOrder,
-    });
+    };
+  } catch (err) {
+    throw new Error(err instanceof Error ? err.message : 'Failed to load last scan');
+  }
+}
+
+export default async function handler(
+  req: NextApiRequest,
+  res: NextApiResponse<LastScanResponse | { error: string }>
+) {
+  if (req.method !== 'GET') {
+    res.setHeader('Allow', 'GET');
+    return res.status(405).json({ error: 'Method not allowed' });
+  }
+
+  const indexSymbol =
+    typeof req.query.indexSymbol === 'string'
+      ? req.query.indexSymbol.toUpperCase()
+      : 'BTCUSDT';
+
+  try {
+    const data = await getLastScan(indexSymbol);
+    return res.status(200).json(data);
   } catch (err) {
     return res.status(500).json({
       error: err instanceof Error ? err.message : 'Failed to load last scan',

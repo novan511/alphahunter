@@ -1,4 +1,5 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
+import { sendTelegramMessage, telegramEnv } from '../../lib/serverTelegram';
 
 /**
  * Telegram notifier proxy.
@@ -16,12 +17,8 @@ export default async function handler(
   req: NextApiRequest,
   res: NextApiResponse
 ) {
-  const token = process.env.TELEGRAM_BOT_TOKEN || '';
-  const chatId = process.env.TELEGRAM_CHAT_ID || '';
-  const configured = token.length > 0 && chatId.length > 0;
-
   if (req.method === 'GET') {
-    return res.status(200).json({ configured });
+    return res.status(200).json({ configured: telegramEnv().configured });
   }
 
   if (req.method !== 'POST') {
@@ -29,7 +26,7 @@ export default async function handler(
     return res.status(405).json({ ok: false, error: 'Method not allowed' });
   }
 
-  if (!configured) {
+  if (!telegramEnv().configured) {
     return res.status(200).json({
       ok: false,
       configured: false,
@@ -42,28 +39,9 @@ export default async function handler(
     return res.status(400).json({ ok: false, error: 'text kosong atau > 4000 karakter' });
   }
 
-  try {
-    const resp = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        chat_id: chatId,
-        text,
-        disable_web_page_preview: true,
-      }),
-    });
-    const data = (await resp.json().catch(() => null)) as { ok?: boolean; description?: string } | null;
-    if (!resp.ok || !data?.ok) {
-      return res.status(500).json({
-        ok: false,
-        error: data?.description || `Telegram HTTP ${resp.status}`,
-      });
-    }
-    return res.status(200).json({ ok: true });
-  } catch (err) {
-    return res.status(500).json({
-      ok: false,
-      error: err instanceof Error ? err.message : 'Gagal menghubungi Telegram',
-    });
+  const result = await sendTelegramMessage(text);
+  if (!result.ok) {
+    return res.status(500).json({ ok: false, error: result.error });
   }
+  return res.status(200).json({ ok: true });
 }
