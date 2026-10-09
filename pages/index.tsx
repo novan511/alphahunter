@@ -1,6 +1,7 @@
 import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import { useRouter } from 'next/router';
 import Layout from '../components/Layout/Layout';
+import SectionNav, { Section, SectionId, SectionDef, useHashSection } from '../components/Layout/SectionNav';
 import ParameterPanel from '../components/Controls/ParameterPanel';
 import DecouplingChart from '../components/Chart/DecouplingChart';
 import StatsCard from '../components/Dashboard/StatsCard';
@@ -13,6 +14,7 @@ import AutonomousRanking, {
   SortState,
 } from '../components/Dashboard/AutonomousRanking';
 import MultiTimeframePanel from '../components/Dashboard/MultiTimeframePanel';
+import CorrelationMatrix from '../components/Dashboard/CorrelationMatrix';
 import NarrativeRadar from '../components/Dashboard/NarrativeRadar';
 import EarlyWarningFeed from '../components/Dashboard/EarlyWarningFeed';
 import TradeableList from '../components/Dashboard/TradeableList';
@@ -796,8 +798,72 @@ export default function Home() {
     ? scanResults.filter((r) => r.signal?.type === 'sell')
     : autoRankings.filter((r) => r.finalSignal.includes('sell'));
 
+  // Section switching. A full sweep ranks 2,000+ coins and every panel stacks
+  // vertically, so the single page ran to tens of thousands of pixels. The
+  // active section is mirrored into the URL hash so a view is linkable and
+  // survives a reload.
+  const [section, setSection] = useHashSection('overview');
+
+  // Manual mode has no regime/sector panels, so offering those tabs would show
+  // empty panes. Build the tab list from what this mode actually renders.
+  const sections = useMemo<SectionDef[]>(() => {
+    const isAuto = mode === 'autonomous';
+    const hasScan = autoRankings.length > 0;
+    const defs: SectionDef[] = [];
+
+    defs.push({
+      id: 'overview',
+      label: 'Overview',
+      short: 'Beranda',
+      icon: '📊',
+      badge: autoRankings.length || undefined,
+    });
+
+    // The matrix fetches its own candles, so it is useful before any scan has
+    // completed. Do not gate it on rankings.
+    if (isAuto) {
+      defs.push({ id: 'correlation', label: 'Correlation', short: 'Korelasi', icon: '🔗' });
+    }
+
+    // Sector panels read from the ranking set, so the tab appears only once
+    // there is something for it to show.
+    if (isAuto && hasScan) {
+      defs.push({
+        id: 'sectors',
+        label: 'Sektor',
+        short: 'Sektor',
+        icon: '🧭',
+        badge: warnings.length || undefined,
+      });
+    }
+
+    defs.push({
+      id: 'signals',
+      label: isAuto ? 'Ranking' : 'Hasil Scan',
+      short: 'Sinyal',
+      icon: '📋',
+      badge: isAuto ? autoRankings.length : scanResults.length,
+    });
+
+    defs.push({ id: 'detail', label: 'Detail', short: 'Detail', icon: '🔍' });
+
+    if (isAuto) {
+      defs.push({ id: 'research', label: 'Riset', short: 'Riset', icon: '🧪' });
+    }
+
+    return defs;
+  }, [mode, autoRankings.length, scanResults.length, warnings.length]);
+
+  // If the active section stops existing (e.g. switching autonomous -> manual
+  // while on Correlation), fall back to Overview instead of rendering blank.
+  useEffect(() => {
+    if (!sections.some((s) => s.id === section)) setSection('overview');
+  }, [sections, section, setSection]);
+
   return (
     <Layout>
+      <SectionNav sections={sections} active={section} onChange={setSection} />
+
       {error && (
         <div style={{
           padding: '12px 16px',
@@ -1040,37 +1106,30 @@ export default function Home() {
       )}
 
       {mode === 'autonomous' && autoRankings.length > 0 && (
-        <div style={{ marginBottom: '20px' }}>
-          <EarlyWarningFeed
-            warnings={warnings}
-            historyDepth={historyDepth}
-            onFocusCategory={setFocusCategory}
-            onSelectAsset={handleSelectAsset}
-            focusedCategory={focusCategory}
-          />
-        </div>
+        <Section id="sectors" active={section}>
+          <div style={{ marginBottom: '20px' }}>
+            <EarlyWarningFeed
+              warnings={warnings}
+              historyDepth={historyDepth}
+              onFocusCategory={setFocusCategory}
+              onSelectAsset={handleSelectAsset}
+              focusedCategory={focusCategory}
+            />
+          </div>
+          <div style={{ marginBottom: '20px' }}>
+            <NarrativeRadar
+              rankings={autoRankings}
+              focusCategory={focusCategory}
+              onFocusCategoryChange={setFocusCategory}
+            />
+          </div>
+        </Section>
       )}
 
-      {mode === 'autonomous' && autoRankings.length > 0 && (
-        <div style={{ marginBottom: '20px' }}>
-          <NarrativeRadar
-            rankings={autoRankings}
-            focusCategory={focusCategory}
-            onFocusCategoryChange={setFocusCategory}
-          />
-        </div>
-      )}
-
-      {mode === 'autonomous' && autoRankings.length > 0 && (
-        <div style={{ marginBottom: '20px' }}>
-          <TradeableList
-            rankings={autoRankings}
-            sectors={sectors}
-            onSelectAsset={handleSelectAsset}
-            selectedAsset={selectedAsset}
-            loading={scanning}
-          />
-        </div>
+      {mode === 'autonomous' && (
+        <Section id="correlation" active={section}>
+          <CorrelationMatrix selectedAsset={selectedAsset} />
+        </Section>
       )}
 
       {mode === 'autonomous' && regime && autoParams && (
@@ -1080,7 +1139,8 @@ export default function Home() {
         </div>
       )}
 
-      {mode === 'autonomous' && (autoRankings.length > 0 || (scanning && progress)) && (
+      <Section id="overview" active={section}>
+        {mode === 'autonomous' && (autoRankings.length > 0 || (scanning && progress)) && (
         <div className="ah-stats" style={{ marginBottom: '20px' }}>
           <StatsCard
             label="Assets Scanned"
@@ -1117,6 +1177,7 @@ export default function Home() {
       {mode === 'autonomous' && scanHistory.length > 0 && (
         <ScanHistory entries={scanHistory} currentRegime={regime?.regime ?? null} />
       )}
+      </Section>
 
       {mode === 'manual' && scanResults.length > 0 && (
         <div className="ah-stats" style={{ marginBottom: '20px' }}>
@@ -1127,60 +1188,89 @@ export default function Home() {
         </div>
       )}
 
-      {mode === 'autonomous' ? (
-        <div style={{ marginBottom: '20px' }}>
-          <AutonomousRanking
-            rankings={autoRankings}
-            onSelectAsset={handleSelectAsset}
-            selectedAsset={selectedAsset}
-            focusCategory={focusCategory}
-            onFocusCategoryChange={setFocusCategory}
-            filter={rankFilter}
-            onFilterChange={setRankFilter}
-            sort={rankSort}
-            onSortChange={setRankSort}
-            loading={scanning}
-          />
-        </div>
-      ) : (
-        <div className="ah-two-col" style={{ marginBottom: '20px' }}>
-          <div>
-            <RankingTable
-              results={scanResults}
+      <Section id="signals" active={section}>
+        {mode === 'autonomous' ? (
+          <div style={{ marginBottom: '20px' }}>
+            <AutonomousRanking
+              rankings={autoRankings}
               onSelectAsset={handleSelectAsset}
               selectedAsset={selectedAsset}
+              focusCategory={focusCategory}
+              onFocusCategoryChange={setFocusCategory}
+              filter={rankFilter}
+              onFilterChange={setRankFilter}
+              sort={rankSort}
+              onSortChange={setRankSort}
+              loading={scanning}
+            />
+            <div style={{ marginTop: '20px' }}>
+              <TradeableList
+                rankings={autoRankings}
+                sectors={sectors}
+                onSelectAsset={handleSelectAsset}
+                selectedAsset={selectedAsset}
+                loading={scanning}
+              />
+            </div>
+          </div>
+        ) : (
+          <div className="ah-two-col" style={{ marginBottom: '20px' }}>
+            <div>
+              <RankingTable
+                results={scanResults}
+                onSelectAsset={handleSelectAsset}
+                selectedAsset={selectedAsset}
+              />
+            </div>
+            <div>
+              <SignalList results={scanResults} />
+            </div>
+          </div>
+        )}
+      </Section>
+
+      <Section id="detail" active={section}>
+        {(chartCandles.length > 0 || backtesting) ? (
+          <div style={{ marginBottom: '20px' }}>
+            <DecouplingChart
+              assetCandles={chartCandles}
+              signals={chartSignals}
+              title={`${selectedAsset.replace('USDT', '')}/USDT — ${config.interval} Chart`}
             />
           </div>
-          <div>
-            <SignalList results={scanResults} />
+        ) : (
+          <div style={{
+            background: '#111827',
+            borderRadius: '12px',
+            border: '1px solid #374151',
+            padding: '40px 20px',
+            textAlign: 'center',
+            color: '#6b7280',
+            fontSize: '13px',
+          }}>
+            <div style={{ fontSize: '28px', marginBottom: '10px' }}>📈</div>
+            Pilih satu coin di tab <b style={{ color: '#9ca3af' }}>Ranking</b> untuk melihat chart dan sinyalnya di sini.
           </div>
-        </div>
-      )}
+        )}
+      </Section>
 
-      {mode === 'autonomous' && (
-        <TopBacktests
-          rows={batch.rows}
-          running={batch.running}
-          done={batch.done}
-          total={batch.total}
-          onRun={() => void runTopBacktest(5)}
-          disabled={batch.running || autoRankings.length === 0}
-        />
-      )}
+      <Section id="research" active={section}>
+        {mode === 'autonomous' && (
+          <div style={{ marginBottom: '20px' }}>
+            <TopBacktests
+              rows={batch.rows}
+              running={batch.running}
+              done={batch.done}
+              total={batch.total}
+              onRun={() => void runTopBacktest(5)}
+              disabled={batch.running || autoRankings.length === 0}
+            />
+          </div>
+        )}
 
-      {(chartCandles.length > 0 || backtesting) && (
         <div style={{ marginBottom: '20px' }}>
-          <DecouplingChart
-            assetCandles={chartCandles}
-            signals={chartSignals}
-            title={`${selectedAsset.replace('USDT', '')}/USDT — ${config.interval} Chart`}
-          />
+          <BacktestResults result={backtestResult} loading={backtesting} />
         </div>
-      )}
-
-      <div style={{ marginBottom: '20px' }}>
-        <BacktestResults result={backtestResult} loading={backtesting} />
-      </div>
 
       <div style={{
         background: '#111827',
@@ -1231,6 +1321,7 @@ export default function Home() {
           </div>
         )}
       </div>
+      </Section>
     </Layout>
   );
 }
