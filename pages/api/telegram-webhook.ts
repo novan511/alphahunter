@@ -3,6 +3,12 @@ import { getLastScan } from './scans';
 import { sendTelegramMessage, telegramEnv } from '../../lib/serverTelegram';
 import { buildSectorHeat } from '../../lib/algorithms/narrativeHeat';
 import { buildTradeableList } from '../../lib/algorithms/tradeable';
+import { computeMatrix, classifyStrength } from '../../lib/algorithms/correlationMatrix';
+import { buildPortfolioPlan, buildRotationDigest } from '../../lib/algorithms/portfolioVerdict';
+import { getSupabase } from '../../lib/supabase';
+import { fetchPairRatio, windowStrength } from '../../lib/algorithms/pairRatio';
+import { fetchKlinesRouted } from '../../lib/universe';
+import type { Candle } from '../../lib/types';
 
 /**
  * Incoming Telegram webhook — makes the bot conversational.
@@ -15,11 +21,16 @@ import { buildTradeableList } from '../../lib/algorithms/tradeable';
  * Security: only the configured TELEGRAM_CHAT_ID is answered. Anyone else
  * gets silence — replying "unauthorized" would confirm the bot to strangers.
  *
- * Commands (all reads come from the last persisted scan in Supabase):
+ * Commands:
+ *   Reads from the last persisted scan in Supabase:
+ *     /status         → regime + scan age + early/confirmed sectors
+ *     /top            → top 5 tradeable coins
+ *     /watch          → watchlist near-misses
+ *   Computed live from exchange candles (same math as the web panel):
+ *     /matrix [tf] [window] → pairwise strength ranking, e.g. /matrix 4h 30
+ *     /pair A B [tf]        → A/B ratio read, e.g. /pair SOL BTC
+ *     /hold [tf] [window]    → rotation verdict: what to hold / trim / drop
  *   /start | /help  → command list
- *   /status         → regime + scan age + early/confirmed sectors
- *   /top            → top 5 tradeable coins
- *   /watch          → watchlist near-misses
  */
 
 interface TgMessage {
@@ -38,8 +49,100 @@ const HELP = [
   '/status — ringkasan scan terakhir + sektor early',
   '/top — 5 koin paling tradeable',
   '/watch — koin yang dipantau (tren ada, pemicu belum)',
+  '/matrix [tf] [window] — ranking kekuatan antar-koin, mis. /matrix 4h 30',
+  '/pair A B [tf] — chart ratio A/B dalam kata-kata, mis. /pair SOL BTC',
+  '/hold [tf] [window] — tahan / kurangi / buang, mis. /hold 4h 30',
   '/help — pesan ini',
 ].join('\n');
+
+/** Default basket for /matrix — bare symbols, same set as the web panel. */
+const MATRIX_BASKET = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'XRPUSDT', 'SUIUSDT', 'HYPE'];
+
+function short(sym: string): string {
+  const bare = sym.includes(':') ? sym.slice(sym.indexOf(':') + 1) : sym;
+  return bare.replace(/USDT$|USDC$/, '');
+}
+
+function fmtSigned(x: number, digits = 2): string {
+  return `${x >= 0 ? '+' : ''}${x.toFixed(digits)}`;
+}
+
+function parseTf(raw: string | undefined, fallback: string): string {
+  const v = (raw || '').toLowerCase();
+  return v === '1h' || v === '4h' || v === '1d' ? v : fallback;
+}
+
+function parseWindow(raw: string | undefined, fallback: number): number {
+  const n = parseInt(raw || '', 10);
+  return Number.isFinite(n) ? Math.min(Math.max(n, 10), 200) : fallback;
+}
+
+export async function handleMatrix(args: string[]): Promise<string> {
+  const tf = parseTf(args[0], '4h');
+  const windowBars = parseWindow(args[1], 30);
+
+  const settled = await Promise.allSettled(
+    MATRIX_BASKET.map((s) => fetchKlinesRouted(s, tf, windowBars * 3 + 60)),
+  );
+  const series: Record<string, Candle[]> = {};
+  const failed: string[] = [];
+  settled.forEach((r, i) => {
+    if (r.status === 'fulfilled' && r.value.length > 0) series[MATRIX_BASKET[i]] = r.value;
+    else failed.push(short(MATRIX_BASKET[i]));
+  });
+
+  const available = Object.keys(series);
+  if (available.length < 2) {
+    return `Gagal memuat basket (${failed.join(', ') || 'unknown'}). Coba lagi sebentar.`;
+  }
+
+  const m = computeMatrix(series, available, windowBars, tf);
+  if (!m) {
+    return `Histori overlap kurang untuk window ${windowBars} bar di ${tf}. Coba window lebih kecil, mis. /matrix ${tf} 30.`;
+  }
+
+  const sorted = [...m.coins].sort((a, b) => a.dominanceRank - b.dominanceRank);
+  const lines = [
+    `Matrix ${tf} x${windowBars} (${m.symbols.length} koin, corr rata2 ${m.basketCorr.toFixed(2)})${m.basketCorr > 0.85 ? ' — basket bergerak serempak, rotasi terbatas' : ''}`,
+  ];
+  for (const c of sorted) {
+    const v = classifyStrength(c);
+    lines.push(`${c.dominanceRank + 1}. ${short(c.symbol)} ${fmtSigned(c.dominance)}% ${v.label}`);
+  }
+  const lead = sorted[0];
+  const lag = sorted[sorted.length - 1];
+  lines.push(`Terkuat vs semua: ${short(lead.symbol)} · Terlemah: ${short(lag.symbol)}`);
+  if (failed.length > 0) lines.push(`Skip: ${failed.join(', ')}`);
+  return lines.join('\n');
+}
+
+export async function handlePair(args: string[]): Promise<string> {
+  if (args.length < 2) {
+    return 'Format: /pair A B [tf]\nContoh: /pair SOL BTC  — atau  /pair HYPE SOL 1d';
+  }
+  const tf = parseTf(args[2], '4h');
+
+  let pair;
+  try {
+    pair = await fetchPairRatio(args[0], args[1], tf, 120);
+  } catch (err) {
+    return `Gagal memuat ${args[0].toUpperCase()}/${args[1].toUpperCase()}: ${err instanceof Error ? err.message : 'unknown'}`;
+  }
+
+  const b = short(pair.base);
+  const q = short(pair.quote);
+  const w30 = windowStrength(pair, 30);
+  const ma20 = pair.ratio.slice(-20).reduce((s, x) => s + x, 0) / 20;
+  const last = pair.ratio[pair.ratio.length - 1];
+  const above = last >= ma20;
+  const dir = pair.change > 1 ? 'menguat' : pair.change < -1 ? 'melemah' : 'sideways';
+
+  return [
+    `${b}/${q} ${tf} x${pair.bars}: ${fmtSigned(pair.change)}% — ${b} ${dir} vs ${q}`,
+    `Window 30 bar: ${fmtSigned(w30)}%`,
+    `Ratio ${above ? 'di atas' : 'di bawah'} MA20 (${ma20.toFixed(2)}) — momentum ${above ? 'masih searah tren' : 'berbalik, tren melemah'}.`,
+  ].join('\n');
+}
 
 function timeAgo(ms: number): string {
   const s = Math.max(0, Math.round((Date.now() - ms) / 1000));
@@ -131,6 +234,78 @@ async function handleWatch(): Promise<string> {
   return lines.join('\n');
 }
 
+/**
+ * Rotation verdict over the shared basket — the same computation the cron
+ * push runs, so the phone and the web panel never disagree.
+ *
+ * Reads the basket from correlation_settings (what the panel saved), not from
+ * a hardcoded list, so adding a coin in the UI immediately changes what
+ * /hold recommends.
+ */
+export async function handleHold(args: string[]): Promise<string> {
+  const tf = parseTf(args[0], '4h');
+  const windowBars = parseWindow(args[1], 30);
+
+  const supabase = getSupabase();
+  let basket: string[] = [];
+  let history: Array<{
+    symbol: string;
+    created_at: string;
+    dominance: number | null;
+    dominance_rank: number | null;
+  }> = [];
+
+  if (supabase) {
+    const { data: settings } = await supabase
+      .from('correlation_settings')
+      .select('symbols')
+      .eq('id', 'default')
+      .limit(1)
+      .maybeSingle();
+    const syms = (settings as { symbols?: string[] } | null)?.symbols;
+    if (Array.isArray(syms) && syms.length >= 2) basket = syms.slice(0, 16);
+  }
+
+  // No shared basket configured: fall back to the bot default so the command
+  // always answers something useful.
+  if (basket.length < 2) basket = MATRIX_BASKET;
+
+  const settled = await Promise.allSettled(
+    basket.map((s) => fetchKlinesRouted(s, tf, windowBars * 3 + 60)),
+  );
+  const series: Record<string, Candle[]> = {};
+  const failed: string[] = [];
+  settled.forEach((r, i) => {
+    if (r.status === 'fulfilled' && r.value.length > 0) series[basket[i]] = r.value;
+    else failed.push(basket[i]);
+  });
+  const available = Object.keys(series);
+  if (available.length < 2) {
+    return `Gagal memuat basket (${failed.join(', ') || 'unknown'}). Coba lagi sebentar.`;
+  }
+
+  const matrix = computeMatrix(series, available, windowBars, tf);
+  if (!matrix) {
+    return `Histori overlap kurang untuk window ${windowBars} bar di ${tf}. Coba window lebih kecil, mis. /hold ${tf} 30.`;
+  }
+
+  if (supabase) {
+    const { data } = await supabase
+      .from('correlation_dominance_history')
+      .select('symbol, created_at, dominance, dominance_rank')
+      .in('symbol', matrix.symbols)
+      .eq('interval', tf)
+      .eq('window_bars', windowBars)
+      .order('created_at', { ascending: false })
+      .limit(matrix.symbols.length * 10);
+    history = (data ?? []) as typeof history;
+  }
+
+  const plan = buildPortfolioPlan(matrix, history as Parameters<typeof buildPortfolioPlan>[1]);
+  const digest = buildRotationDigest(plan);
+  return failed.length > 0 ? `${digest}\n\nSkip: ${failed.map(short).join(', ')}` : digest;
+}
+
 export default async function handler(
   req: NextApiRequest,
   res: NextApiResponse
@@ -164,10 +339,15 @@ export default async function handler(
 
     const cmd = text.split(/\s+/)[0].toLowerCase().replace(/@.*$/, '');
 
+    const args = text.split(/\s+/).slice(1);
+
     let reply: string;
     if (cmd === '/status') reply = await handleStatus();
     else if (cmd === '/top') reply = await handleTop();
     else if (cmd === '/watch') reply = await handleWatch();
+    else if (cmd === '/matrix') reply = await handleMatrix(args);
+    else if (cmd === '/pair') reply = await handlePair(args);
+    else if (cmd === '/hold' || cmd === '/buang') reply = await handleHold(args);
     else reply = HELP; // /start, /help, and anything unknown
 
     await sendTelegramMessage(reply, fromChat);

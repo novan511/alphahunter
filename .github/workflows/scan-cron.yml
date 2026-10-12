@@ -1,0 +1,49 @@
+name: Autonomous scan
+
+# Vercel Hobby only allows one cron per day, so the sweep driver lives here
+# instead. Each run advances the server-side cursor by one bounded chunk; the
+# sweep completes after a few ticks and the result lands in scan_history,
+# which is what the web dashboard and the Telegram bot read.
+on:
+  schedule:
+    # Every 30 minutes. Offset by 7 minutes so this does not collide with
+    # other scheduled jobs on the same minute.
+    - cron: '7,37 * * * *'
+  workflow_dispatch:
+    inputs:
+      max_chunks:
+        description: 'Chunks to run this invocation (1-5)'
+        required: false
+        default: '3'
+
+concurrency:
+  # Never let two ticks sweep at once — they would both read the same cursor
+  # and double-write the same universe positions.
+  group: scan-cron
+  cancel-in-progress: false
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Trigger scan chunk
+        env:
+          DEPLOY_URL: ${{ secrets.VERCEL_URL }}
+          SCAN_CRON_SECRET: ${{ secrets.SCAN_CRON_SECRET }}
+        run: |
+          set -euo pipefail
+          if [ -z "${DEPLOY_URL}" ] || [ -z "${SCAN_CRON_SECRET}" ]; then
+            echo "::error::VERCEL_URL and SCAN_CRON_SECRET secrets are required"
+            exit 1
+          fi
+          CHUNKS="${{ github.event.inputs.max_chunks || '1' }}"
+          echo "POST ${DEPLOY_URL}/api/scan-cron (chunks=${CHUNKS})"
+          curl --fail-with-body --silent --show-error --max-time 300 \
+            -X POST "${DEPLOY_URL}/api/scan-cron" \
+            -H "Authorization: Bearer ${SCAN_CRON_SECRET}" \
+            -H "Content-Type: application/json" \
+            -d "{\"budgetMs\":40000,\"maxChunks\":${CHUNKS}}"
+          echo

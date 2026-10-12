@@ -143,7 +143,7 @@ const PRIMARY: Record<string, CategoryId> = {
   // ---- Layer 2 ----
   ARB: 'l2', OP: 'l2', MNT: 'l2', STRK: 'l2', METIS: 'l2', ZK: 'l2',
   SCR: 'l2', BLAST: 'l2', ZRO: 'l2', LINEA: 'l2', SCROLL: 'l2', MANTA: 'l2',
-  TAO: 'l2', CYBER: 'l2', ZETA: 'l2', ZKSYNC: 'l2', SKL: 'l2',
+  TAO: 'ai', CYBER: 'l2', ZETA: 'l2', ZKSYNC: 'l2', SKL: 'l2',
 
   // ---- DeFi core ----
   UNI: 'defi', AAVE: 'defi', CAKE: 'defi', CRV: 'defi', PENDLE: 'defi',
@@ -254,6 +254,11 @@ const PRIMARY: Record<string, CategoryId> = {
   PRL: 'defi', UB: 'defi', WBT: 'exchange', KAS2: 'l1',
   PENGU3: 'meme', FIGR: 'defi', USDE3: 'stablecoin', AKEDO: 'meme',
   AKE: 'meme', MARSCOIN: 'meme', NIGHT2: 'l1', MARS: 'meme',
+  TON: 'l1', KAIA: 'l1', GNO: 'l1', THETA: 'infra', TRAC: 'ai',
+  OGN: 'defi', AMP: 'payments', GTC: 'infra', AUDIO: 'infra',
+  BAT: 'infra', NEO: 'l1', CHZ: 'gaming', EGLD: 'l1', '1INCH': 'defi',
+  XCN: 'defi', SENT: 'infra', GUSD: 'stablecoin',
+  ORDI: 'nft', RSR: 'defi', DODO: 'defi', WAL: 'storage', ELIZAOS: 'ai',
 };
 
 /**

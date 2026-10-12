@@ -45,6 +45,12 @@ import {
 import { readUrlState, writeUrlState, sameQuery } from '../lib/urlState';
 
 const AUTO_CACHE_KEY = 'althunter:last-autonomous';
+/**
+ * Hard ceiling on chunks per sweep. The curated universe needs 1-2; 'all'
+ * needs ~4 for 1890 coins at 500/chunk. The ceiling exists so a universe
+ * whose composition keeps shifting cannot spin the tab indefinitely.
+ */
+const MAX_SWEEP_CHUNKS = 12;
 const AUTO_CACHE_MAX_AGE_MS = 30 * 60 * 1000;
 
 type Depth = 'all' | '100' | '500';
@@ -56,6 +62,12 @@ interface AutonomousCache {
   universeId?: string;
   /** Which ordering the sweep used. Changing it invalidates the resume cursor. */
   scanOrder?: 'cap' | 'volume';
+  /**
+   * Which universe mode the sweep used. Without this, a cache written by an
+   * 'all' sweep looked resumable by a 'curated' sweep (and vice versa) and the
+   * page restarted the wrong sweep on every load.
+   */
+  universe?: 'curated' | 'all';
   /** Resume cursor: first universe position not yet scanned. */
   offset: number;
   /** Compact ranges of every position already scanned (enables gap-free resume). */
@@ -248,6 +260,14 @@ export default function Home() {
    */
   const scanDoneRef = useRef(false);
 
+  /**
+   * Which universe the browser sweep walks. 'curated' (top market cap +
+   * narrative leaders + high-volume outsiders, ~185 coins) is the default —
+   * it scans in well under a minute and covers every narrative. 'all' restores
+   * the full exchange sweep for anyone who wants the tail.
+   */
+  const [universeMode, setUniverseMode] = useState<'curated' | 'all'>('curated');
+
   const runManualScan = useCallback(async () => {
     if (config.assetSymbols.length === 0) return;
     setScanning(true);
@@ -284,10 +304,12 @@ export default function Home() {
     doneRanges?: string;
     rankings?: MultiTimeframeResult[];
     order?: 'cap' | 'volume';
+    universe?: 'curated' | 'all';
   }
 
   const runAutonomousScan = useCallback(async (opts: ScanResume = {}) => {
     const runDepth = opts.depth ?? depth;
+    const runUniverse = opts.universe ?? universeMode;
     const runId = ++runIdRef.current;
     setScanning(true);
     setError(null);
@@ -325,8 +347,20 @@ export default function Home() {
     try {
       // Chunked sweep: each request scans a time-budgeted slice of the universe.
       // Already-scanned positions are sent back as ranges so the server skips them.
+      //
+      // Bounded by MAX_SWEEP_CHUNKS so a universe that keeps changing shape
+      // (or a venue that keeps failing) cannot spin forever: the sweep ends,
+      // and whatever it collected is still shown and cached as a partial.
+      let chunksThisRun = 0;
       while (true) {
         if (runIdRef.current !== runId) break;
+        if (chunksThisRun >= MAX_SWEEP_CHUNKS) {
+          setError(
+            `Scan dihentikan setelah ${chunksThisRun} chunk (${merged.length} koin terkumpul). Basket berubah di tengah jalan.`
+          );
+          break;
+        }
+        chunksThisRun++;
 
         const offset = firstUndone();
         if (total !== null && offset >= total) break;
@@ -356,6 +390,10 @@ export default function Home() {
           span: '500',
           budgetMs: '15000',
           order: scanOrder,
+          // Curated default server-side: top market cap + narrative leaders +
+          // high-volume outsiders, instead of the full exchange tail. Pass
+          // 'all' to restore the exhaustive sweep.
+          universe: runUniverse,
         });
         const skipStr = buildRanges(skipPositions);
         if (skipStr) params.set('skip', skipStr);
@@ -432,6 +470,7 @@ export default function Home() {
           indexSymbol: config.indexSymbol,
           depth: runDepth,
           universeId,
+          universe: runUniverse,
           scanOrder,
           offset: firstUndone(),
           doneRanges: buildRanges(donePositions),
@@ -473,7 +512,7 @@ export default function Home() {
         setProgress(null);
       }
     }
-  }, [config.indexSymbol, depth, scanOrder]);
+  }, [config.indexSymbol, depth, scanOrder, universeMode]);
 
   const stopAutonomousScan = useCallback(() => {
     runIdRef.current += 1;
@@ -485,6 +524,11 @@ export default function Home() {
     setDepth(next);
     void runAutonomousScan({ depth: next });
   }, [runAutonomousScan]);
+
+  const handleUniverseChange = useCallback((next: 'curated' | 'all') => {
+    setUniverseMode(next);
+    void runAutonomousScan({ depth });
+  }, [runAutonomousScan, depth]);
 
   const applyCachedScan = useCallback((cached: AutonomousCache) => {
     setRegime(cached.regime);
@@ -594,7 +638,10 @@ export default function Home() {
     const matches =
       cached &&
       cached.indexSymbol === config.indexSymbol &&
-      (cached.depth ?? 'all') === depth;
+      (cached.depth ?? 'all') === depth &&
+      // A cache from a different universe mode is not resumable: its positions
+      // index a different list entirely.
+      (cached.universe ?? 'curated') === universeMode;
 
     if (matches && cached.done === false) {
       // Interrupted sweep — resume only if the ordering still matches, otherwise
@@ -602,6 +649,7 @@ export default function Home() {
       if ((cached.scanOrder ?? 'volume') === scanOrder) {
         void runAutonomousScan({
           depth,
+          universe: universeMode,
           doneRanges: cached.doneRanges,
           rankings: cached.rankings,
           universeId: cached.universeId,
@@ -856,7 +904,14 @@ export default function Home() {
 
   // If the active section stops existing (e.g. switching autonomous -> manual
   // while on Correlation), fall back to Overview instead of rendering blank.
+  // Skipped on mount: mode settles after the first render, and resetting here
+  // would clobber a valid #hash section before its tab even exists.
+  const sectionsSettled = useRef(false);
   useEffect(() => {
+    if (!sectionsSettled.current) {
+      sectionsSettled.current = true;
+      return;
+    }
     if (!sections.some((s) => s.id === section)) setSection('overview');
   }, [sections, section, setSection]);
 
@@ -983,6 +1038,32 @@ export default function Home() {
                 <option value="all">All coins (full sweep)</option>
                 <option value="500">Top 500 by volume</option>
                 <option value="100">Top 100 by volume</option>
+              </select>
+            </label>
+            <label className="ah-field">
+              Universe
+              <select
+                value={universeMode}
+                onChange={(e) => handleUniverseChange(e.target.value as 'curated' | 'all')}
+                disabled={scanning}
+                style={{
+                  padding: '7px 10px',
+                  background: '#1f2937',
+                  border: '1px solid #374151',
+                  borderRadius: '6px',
+                  color: '#f9fafb',
+                  fontSize: '12px',
+                  outline: 'none',
+                  cursor: scanning ? 'not-allowed' : 'pointer',
+                }}
+                title={
+                  universeMode === 'curated'
+                    ? 'Top 150 market cap + top 4 per narrative + 25 high-volume outsiders (~185 coins). Every narrative covered, fast.'
+                    : 'Every USDT listing across Binance, Gate and Hyperliquid (~1890 coins). Slower, includes the long tail.'
+                }
+              >
+                <option value="curated">Curated (~185, all narratives)</option>
+                <option value="all">All listings (~1890)</option>
               </select>
             </label>
             <label className="ah-field">
@@ -1128,7 +1209,11 @@ export default function Home() {
 
       {mode === 'autonomous' && (
         <Section id="correlation" active={section}>
-          <CorrelationMatrix selectedAsset={selectedAsset} />
+          <CorrelationMatrix
+            selectedAsset={selectedAsset}
+            regimeLabel={regime?.regime ?? null}
+            regimeConfidence={typeof regime?.confidence === 'number' ? regime.confidence : null}
+          />
         </Section>
       )}
 

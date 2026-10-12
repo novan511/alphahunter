@@ -1,11 +1,18 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { CorrMatrix, CoinProfile, classifyStrength } from '../../lib/algorithms/correlationMatrix';
 import PairChartPanel from '../Chart/PairChartPanel';
+import { buildPortfolioPlan, HoldAction } from '../../lib/algorithms/portfolioVerdict';
 
 interface CorrelationMatrixProps {
   /** Currently selected asset from the rest of the dashboard, e.g. "SOLUSDT". */
   selectedAsset?: string | null;
+  /** Market regime at page level, stored alongside snapshots for conditioning. */
+  regimeLabel?: string | null;
+  regimeConfidence?: number | null;
 }
+
+const BASKET_KEY = 'althunter:corr-basket:v1';
+const MAX_BASKET = 16;
 
 /** Default basket. Chosen for liquidity plus narrative spread. */
 export const DEFAULT_PANEL = [
@@ -17,7 +24,11 @@ export const DEFAULT_PANEL = [
   'hyperliquid:HYPE',
 ];
 
-/** Offered for the add-coin picker. Anything in here joins all pairwise cells. */
+/**
+ * Offered for the add-coin picker. Anything in here joins all pairwise cells.
+ * All are liquid Binance spot USDT pairs (HYPE via Hyperliquid). If an entry
+ * ever fails to load it is skipped with a header note, never a broken page.
+ */
 export const CANDIDATE_PANEL = [
   'binance:BTCUSDT',
   'binance:ETHUSDT',
@@ -34,6 +45,22 @@ export const CANDIDATE_PANEL = [
   'binance:ARBUSDT',
   'binance:APTUSDT',
   'binance:INJUSDT',
+  'binance:TONUSDT',
+  'binance:TRXUSDT',
+  'binance:LTCUSDT',
+  'binance:ATOMUSDT',
+  'binance:UNIUSDT',
+  'binance:AAVEUSDT',
+  'binance:OPUSDT',
+  'binance:FILUSDT',
+  'binance:TAOUSDT',
+  'binance:RENDERUSDT',
+  'binance:PEPEUSDT',
+  'binance:WIFUSDT',
+  'binance:ONDOUSDT',
+  'binance:JUPUSDT',
+  'binance:SEIUSDT',
+  'binance:TIAUSDT',
   'hyperliquid:HYPE',
 ];
 
@@ -75,8 +102,23 @@ function fmtSigned(x: number): string {
   return `${x > 0 ? '+' : ''}${x.toFixed(2)}`;
 }
 
-export default function CorrelationMatrix({ selectedAsset }: CorrelationMatrixProps) {
+interface DominanceRow {
+  symbol: string;
+  created_at: string;
+  interval: string;
+  window_bars: number;
+  dominance: number | null;
+  dominance_rank: number | null;
+  extension_z: number | null;
+  regime_label: string | null;
+}
+
+export default function CorrelationMatrix({ selectedAsset, regimeLabel, regimeConfidence }: CorrelationMatrixProps) {
   const [symbols, setSymbols] = useState<string[]>(DEFAULT_PANEL);
+  // False until the shared basket has been attempted (Supabase, then
+  // localStorage). Prevents the default basket from overwriting a saved one.
+  const [basketReady, setBasketReady] = useState(false);
+  const [basketSource, setBasketSource] = useState<'supabase' | 'local' | 'default'>('default');
   const [interval, setInterval_] = useState<string>('4h');
   const [windowBars, setWindowBars] = useState<number>(30);
   const [matrix, setMatrix] = useState<CorrMatrix | null>(null);
@@ -85,6 +127,124 @@ export default function CorrelationMatrix({ selectedAsset }: CorrelationMatrixPr
   const [view, setView] = useState<'strength' | 'corr'>('strength');
   const [hover, setHover] = useState<{ i: number; j: number } | null>(null);
   const [pair, setPair] = useState<{ base: string; quote: string } | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [saveNote, setSaveNote] = useState<string | null>(null);
+  const [history, setHistory] = useState<DominanceRow[] | null>(null);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [historyLoading, setHistoryLoading] = useState(false);
+
+  // Load the shared basket once. Supabase first (cross-device), localStorage
+  // as fallback (works offline / unconfigured), defaults otherwise.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch('/api/correlation/settings');
+        const body = (await res.json().catch(() => null)) as {
+          configured?: boolean;
+          symbols?: string[] | null;
+        } | null;
+        if (!cancelled && body?.configured && Array.isArray(body.symbols) && body.symbols.length >= 2) {
+          setSymbols(body.symbols.slice(0, MAX_BASKET));
+          setBasketSource('supabase');
+          try { window.localStorage.setItem(BASKET_KEY, JSON.stringify(body.symbols)); } catch { /* ignore */ }
+          return;
+        }
+      } catch { /* fall through to local */ }
+      if (cancelled) return;
+      try {
+        const raw = window.localStorage.getItem(BASKET_KEY);
+        const arr = raw ? JSON.parse(raw) : null;
+        if (Array.isArray(arr) && arr.length >= 2) {
+          setSymbols(arr.filter((x): x is string => typeof x === 'string').slice(0, MAX_BASKET));
+          setBasketSource('local');
+          return;
+        }
+      } catch { /* fall through to defaults */ }
+      if (!cancelled) setBasketSource('default');
+    })().finally(() => {
+      if (!cancelled) setBasketReady(true);
+    });
+    return () => { cancelled = true; };
+  }, []);
+
+  // Persist every basket change (debounced): localStorage always, Supabase
+  // when available. Skipped until the initial load resolves so the default
+  // basket never clobbers a saved one.
+  useEffect(() => {
+    if (!basketReady) return;
+    try { window.localStorage.setItem(BASKET_KEY, JSON.stringify(symbols)); } catch { /* ignore */ }
+    const t = setTimeout(() => {
+      void fetch('/api/correlation/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ symbols }),
+      })
+        .then(async (res) => {
+          const body = (await res.json().catch(() => null)) as { configured?: boolean } | null;
+          if (body?.configured) setBasketSource('supabase');
+        })
+        .catch(() => { /* offline — local copy already saved */ });
+    }, 800);
+    return () => clearTimeout(t);
+  }, [symbols, basketReady]);
+
+  const saveSnapshot = useCallback(async () => {
+    if (!matrix || saving) return;
+    setSaving(true);
+    setSaveNote(null);
+    try {
+      const res = await fetch('/api/correlation/snapshots', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          symbols: matrix.symbols,
+          interval: matrix.interval,
+          window: matrix.window,
+          basketCorr: matrix.basketCorr,
+          rs: matrix.rs,
+          corr: matrix.corr,
+          beta: matrix.beta,
+          coins: matrix.coins,
+          missing: [],
+          barsUsed: matrix.bars,
+          regimeLabel: regimeLabel ?? null,
+          regimeConfidence: typeof regimeConfidence === 'number' ? regimeConfidence : null,
+        }),
+      });
+      const body = (await res.json().catch(() => null)) as { ok?: boolean; error?: string } | null;
+      if (!res.ok || !body?.ok) throw new Error(body?.error ?? `HTTP ${res.status}`);
+      setSaveNote(`Snapshot tersimpan ${new Date().toLocaleTimeString()}`);
+      setHistory(null);
+    } catch (err) {
+      setSaveNote(`Gagal menyimpan: ${err instanceof Error ? err.message : 'unknown'}`);
+    } finally {
+      setSaving(false);
+    }
+  }, [matrix, saving, regimeLabel, regimeConfidence]);
+
+  const loadHistory = useCallback(async () => {
+    if (!matrix || historyLoading) return;
+    setHistoryLoading(true);
+    try {
+      const qs = new URLSearchParams({
+        symbols: matrix.symbols.join(','),
+        interval: matrix.interval,
+        window: String(matrix.window),
+        limit: '10',
+      });
+      const res = await fetch(`/api/correlation/snapshots?${qs.toString()}`);
+      const body = (await res.json().catch(() => null)) as {
+        configured?: boolean;
+        rows?: DominanceRow[];
+      } | null;
+      setHistory(body?.configured && Array.isArray(body.rows) ? body.rows : []);
+    } catch {
+      setHistory([]);
+    } finally {
+      setHistoryLoading(false);
+    }
+  }, [matrix, historyLoading]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -116,7 +276,7 @@ export default function CorrelationMatrix({ selectedAsset }: CorrelationMatrixPr
   const available = CANDIDATE_PANEL.filter((s) => !symbols.includes(s));
 
   const addSymbol = (sym: string) => {
-    if (symbols.includes(sym) || symbols.length >= 12) return;
+    if (symbols.includes(sym) || symbols.length >= MAX_BASKET) return;
     setSymbols((prev) => [...prev, sym]);
   };
 
@@ -219,6 +379,34 @@ export default function CorrelationMatrix({ selectedAsset }: CorrelationMatrixPr
           </div>
           <button onClick={() => void load()} style={{ ...toggleStyle(false), cursor: 'pointer' }}>
             Refresh
+          </button>
+          <button
+            onClick={() => void saveSnapshot()}
+            disabled={!matrix || saving}
+            style={{
+              ...toggleStyle(false),
+              cursor: !matrix || saving ? 'not-allowed' : 'pointer',
+              opacity: !matrix || saving ? 0.5 : 1,
+            }}
+            title="Simpan matrix saat ini ke Supabase sebagai snapshot riwayat"
+          >
+            {saving ? 'Menyimpan…' : '💾 Simpan'}
+          </button>
+          <button
+            onClick={() => {
+              const next = !historyOpen;
+              setHistoryOpen(next);
+              if (next && history === null) void loadHistory();
+            }}
+            disabled={!matrix}
+            style={{
+              ...toggleStyle(historyOpen),
+              cursor: !matrix ? 'not-allowed' : 'pointer',
+              opacity: !matrix ? 0.5 : 1,
+            }}
+            title="Lihat riwayat dominance dari snapshot tersimpan"
+          >
+            Riwayat
           </button>
         </div>
       </div>
@@ -407,7 +595,13 @@ export default function CorrelationMatrix({ selectedAsset }: CorrelationMatrixPr
               })}
             </div>
 
-            {/* Action summary */}
+            {/* Rotation verdict: hold / trim / drop on what you already carry.
+                Shares its logic with the Telegram /hold command and the cron
+                push, so the panel and the phone never disagree. */}
+            <RotationPanel matrix={matrix} history={history} />
+
+            {/* Entry candidates — deliberately below the verdict so the two
+                are never read as the same instruction. */}
             {(leaders.length > 0 || laggards.length > 0) && (
               <div style={{
                 marginTop: '16px',
@@ -429,6 +623,22 @@ export default function CorrelationMatrix({ selectedAsset }: CorrelationMatrixPr
                 />
               </div>
             )}
+
+            {saveNote && (
+              <div style={{ marginTop: '12px', fontSize: '11px', color: saveNote.startsWith('Gagal') ? '#fca5a5' : '#34d399' }}>
+                {saveNote}
+              </div>
+            )}
+
+            {/* Dominance history from saved snapshots */}
+            {historyOpen && (
+              <HistoryTable
+                rows={history}
+                loading={historyLoading}
+                symbols={matrix.symbols}
+                onReload={() => void loadHistory()}
+              />
+            )}
           </>
           )}
       </div>
@@ -442,7 +652,17 @@ export default function CorrelationMatrix({ selectedAsset }: CorrelationMatrixPr
         alignItems: 'center',
         flexWrap: 'wrap',
       }}>
-        <span style={{ fontSize: '11px', color: '#6b7280' }}>Basket:</span>
+        <span style={{ fontSize: '11px', color: '#6b7280' }}>
+          Basket {symbols.length}/{MAX_BASKET} · tersimpan di{' '}
+          {basketSource === 'supabase' ? (
+            <b style={{ color: '#34d399' }}>supabase</b>
+          ) : basketSource === 'local' ? (
+            <b style={{ color: '#f59e0b' }}>browser ini</b>
+          ) : (
+            <b style={{ color: '#6b7280' }}>default</b>
+          )}
+          :
+        </span>
         {symbols.map((s) => (
           <button
             key={s}
@@ -459,7 +679,7 @@ export default function CorrelationMatrix({ selectedAsset }: CorrelationMatrixPr
             {short(s)} ×
           </button>
         ))}
-        {available.length > 0 && symbols.length < 12 && (
+        {available.length > 0 && symbols.length < MAX_BASKET && (
           <select
             value=""
             onChange={(e) => e.target.value && addSymbol(e.target.value)}
@@ -488,6 +708,121 @@ function Row({ k, v, tone }: { k: string; v: string; tone: string }) {
     <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', padding: '1px 0' }}>
       <span style={{ color: '#6b7280' }}>{k}</span>
       <span style={{ color: tone, fontVariantNumeric: 'tabular-nums' }}>{v}</span>
+    </div>
+  );
+}
+
+const ACTION_STYLE: Record<HoldAction, { label: string; color: string; icon: string }> = {
+  HOLD_STRONG: { label: 'Tahan', color: '#10b981', icon: '🟢' },
+  HOLD: { label: 'Tahan', color: '#34d399', icon: '🔵' },
+  TRIM: { label: 'Kurangi', color: '#f59e0b', icon: '🟡' },
+  DROP: { label: 'Buang', color: '#ef4444', icon: '🔴' },
+  WATCH: { label: 'Pantau', color: '#9ca3af', icon: '⚪' },
+};
+
+/**
+ * Hold / trim / drop, computed by the same builder the Telegram /hold command
+ * and the cron push use.
+ */
+function RotationPanel({ matrix, history }: { matrix: CorrMatrix; history: DominanceRow[] | null }) {
+  // History is optional: without it the verdict still works, it just cannot
+  // say "weak 3 snapshots running" or report rank movement.
+  const plan = useMemo(
+    () => buildPortfolioPlan(matrix, history ?? []),
+    [matrix, history],
+  );
+
+  const allDown = plan.context.basketDirection === 'all_down';
+  const groups: Array<{ key: HoldAction; title: string; color: string }> = [
+    { key: 'HOLD_STRONG', title: 'Tahan — pemimpin basket', color: '#10b981' },
+    { key: 'HOLD', title: 'Tahan', color: '#34d399' },
+    { key: 'TRIM', title: 'Kurangi porsi', color: '#f59e0b' },
+    { key: 'DROP', title: 'Buang', color: '#ef4444' },
+    { key: 'WATCH', title: 'Pantau — jangan buru-buru', color: '#9ca3af' },
+  ];
+
+  return (
+    <div style={{
+      marginTop: '16px',
+      background: '#0b1220',
+      border: '1px solid #1f2937',
+      borderRadius: '10px',
+      padding: '14px',
+    }}>
+      <div style={{
+        display: 'flex',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        flexWrap: 'wrap',
+        gap: '8px',
+        marginBottom: '4px',
+      }}>
+        <span style={{ fontSize: '13px', fontWeight: 700, color: '#f9fafb' }}>
+          Rotasi — tahan / kurangi / buang
+        </span>
+        <span style={{ fontSize: '11px', color: '#6b7280' }}>
+          basket {plan.context.leader ? short(plan.context.leader) : '—'} terkuat
+          {plan.context.laggard ? ` · ${short(plan.context.laggard)} terlemah` : ''}
+        </span>
+      </div>
+
+      <div style={{ fontSize: '11px', color: '#6b7280', marginBottom: '12px' }}>
+        {allDown
+          ? '⚠ Seluruh basket turun — ini pergerakan market, bukan kegagalan koin. Tidak ada yang ditandai buang.'
+          : `Menilai posisi yang sudah kamu punya, bukan entry baru. Korelasi basket ${plan.context.basketCorr.toFixed(2)}${plan.context.basketCorr > 0.85 ? ' — semua bergerak serempak, rotasi terbatas.' : '.'}`}
+      </div>
+
+      <div style={{ display: 'grid', gap: '10px' }}>
+        {groups.map((g) => {
+          const items = plan.verdicts.filter((v) => v.action === g.key);
+          if (items.length === 0) return null;
+          return (
+            <div key={g.key}>
+              <div style={{
+                fontSize: '11px',
+                fontWeight: 700,
+                color: g.color,
+                marginBottom: '4px',
+              }}>
+                {g.title} ({items.length})
+              </div>
+              {items.map((v) => (
+                <div
+                  key={v.symbol}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'baseline',
+                    gap: '8px',
+                    padding: '3px 0',
+                    fontSize: '12px',
+                    flexWrap: 'wrap',
+                  }}
+                >
+                  <span style={{ fontWeight: 700, color: '#f9fafb', minWidth: '56px' }}>
+                    {ACTION_STYLE[v.action].icon} {short(v.symbol)}
+                  </span>
+                  <span style={{
+                    color: v.dominance >= 0 ? '#10b981' : '#ef4444',
+                    fontVariantNumeric: 'tabular-nums',
+                  }}>
+                    dom {fmtPct(v.dominance)}
+                  </span>
+                  <span style={{ color: '#6b7280' }}>
+                    #{v.rank + 1}
+                    {v.rankDelta ? (v.rankDelta > 0 ? ` (turun ${v.rankDelta})` : ` (naik ${Math.abs(v.rankDelta)})`) : ''}
+                  </span>
+                  {v.weakBars != null && v.weakBars >= 2 && (
+                    <span style={{ color: '#f59e0b' }}>
+                      lemah {v.weakBars}× beruntun
+                    </span>
+                  )}
+                  <span style={{ color: '#9ca3af', flex: '1 1 200px' }}>{v.reason}</span>
+                </div>
+              ))}
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -547,6 +882,123 @@ function VerdictBox({
             </div>
           );
         })}
+      </div>
+    </div>
+  );
+}
+
+function HistoryTable({
+  rows,
+  loading,
+  symbols,
+  onReload,
+}: {
+  rows: DominanceRow[] | null;
+  loading: boolean;
+  symbols: string[];
+  onReload: () => void;
+}) {
+  const box: React.CSSProperties = {
+    marginTop: '16px',
+    background: '#0b1220',
+    border: '1px solid #1f2937',
+    borderRadius: '8px',
+    padding: '12px',
+  };
+
+  if (loading) {
+    return <div style={{ ...box, color: '#6b7280', fontSize: '12px' }}>Memuat riwayat…</div>;
+  }
+  if (!rows) return null;
+  if (rows.length === 0) {
+    return (
+      <div style={{ ...box, color: '#6b7280', fontSize: '12px' }}>
+        Belum ada snapshot tersimpan untuk basket + window ini. Tekan{' '}
+        <b style={{ color: '#9ca3af' }}>💾 Simpan</b> setelah matrix dimuat, lalu buka lagi Riwayat ini.
+      </div>
+    );
+  }
+
+  // Group newest-first by snapshot time, preserving order.
+  const groups: Array<{ at: string; bySymbol: Record<string, DominanceRow> }> = [];
+  const seen = new Map<string, Record<string, DominanceRow>>();
+  const order: string[] = [];
+  for (const r of rows) {
+    if (!seen.has(r.created_at)) {
+      seen.set(r.created_at, {});
+      order.push(r.created_at);
+    }
+    seen.get(r.created_at)![r.symbol] = r;
+  }
+  for (const at of order) groups.push({ at, bySymbol: seen.get(at)! });
+
+  // Streaks: consecutive snapshots (newest-first) where a coin stays on one
+  // side. This answers "sudah lemah N beruntun atau baru saja?"
+  const streaks: Array<{ sym: string; dir: 'kuat' | 'lemah'; n: number }> = [];
+  for (const sym of symbols) {
+    let dir: 'kuat' | 'lemah' | null = null;
+    let n = 0;
+    for (const g of groups) {
+      const d = g.bySymbol[sym]?.dominance;
+      if (d == null) break;
+      const side = d >= 1.5 ? 'kuat' : d <= -1.5 ? 'lemah' : null;
+      if (side === null || (dir !== null && side !== dir)) break;
+      dir = side;
+      n++;
+    }
+    if (dir && n >= 2) streaks.push({ sym, dir, n });
+  }
+
+  return (
+    <div style={box}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+        <span style={{ fontSize: '12px', fontWeight: 700, color: '#f9fafb' }}>
+          Riwayat dominance ({groups.length} snapshot)
+        </span>
+        <button onClick={onReload} style={{ ...toggleStyle(false), cursor: 'pointer' }}>
+          ↻
+        </button>
+      </div>
+      {streaks.length > 0 && (
+        <div style={{ fontSize: '11px', color: '#9ca3af', marginBottom: '10px' }}>
+          {streaks.map((s) => (
+            <span key={s.sym} style={{ marginRight: '12px' }}>
+              {short(s.sym)}{' '}
+              <b style={{ color: s.dir === 'kuat' ? '#10b981' : '#ef4444' }}>
+                {s.dir} {s.n}× beruntun
+              </b>
+            </span>
+          ))}
+        </div>
+      )}
+      <div style={{ overflowX: 'auto' }}>
+        <table style={{ borderCollapse: 'collapse', width: '100%', fontSize: '11px' }}>
+          <thead>
+            <tr>
+              <th style={{ ...labelCellStyle, color: '#6b7280' }}>waktu</th>
+              {symbols.map((s) => (
+                <th key={s} style={{ ...labelCellStyle, textAlign: 'right' }}>{short(s)}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {groups.map((g) => (
+              <tr key={g.at}>
+                <td style={{ ...labelCellStyle, color: '#6b7280', whiteSpace: 'nowrap' }}>
+                  {new Date(g.at).toLocaleString('id-ID', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}
+                </td>
+                {symbols.map((s) => {
+                  const d = g.bySymbol[s]?.dominance;
+                  return (
+                    <td key={s} style={{ ...labelCellStyle, textAlign: 'right', color: d == null ? '#374151' : dominanceTone(d), fontVariantNumeric: 'tabular-nums' }}>
+                      {d == null ? '—' : fmtPct(d)}
+                    </td>
+                  );
+                })}
+              </tr>
+            ))}
+          </tbody>
+        </table>
       </div>
     </div>
   );

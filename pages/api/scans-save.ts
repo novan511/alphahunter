@@ -13,7 +13,7 @@ export interface SaveScanBody {
   totalScanned?: number;
 }
 
-function buildSummaries(rankings: MultiTimeframeResult[]) {
+export function buildSummaries(rankings: MultiTimeframeResult[]) {
   const buys = rankings
     .filter((r) => r.finalSignal === 'buy' || r.finalSignal === 'strong_buy')
     .sort((a, b) => b.confluenceScore - a.confluenceScore)

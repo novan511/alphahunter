@@ -46,7 +46,8 @@ create table if not exists public.correlation_snapshots (
   -- silently shrinks is visible instead of looking like a real result.
   missing text[],
 
-  -- Symbols that produced no usable data at the requested window.
+  -- Bars actually used in the computation (may be fewer than requested when
+  -- alignment drops bars where some asset is missing).
   bars_used int,
 
   -- Regime at capture time, so dominance can be conditioned on market state.
@@ -138,8 +139,14 @@ from public.correlation_snapshots s,
      lateral jsonb_array_elements(s.coins) as c
 where c ? 'symbol' and c ? 'dominance';
 
-create index if not exists correlation_dominance_history_idx
-  on public.correlation_dominance_history (symbol, interval, created_at desc);
+-- NOTE: correlation_dominance_history is a VIEW, and PostgreSQL cannot index
+-- a plain view (ERROR 42809 if attempted). The view reads from
+-- correlation_snapshots, which is already indexed above. For symbol lookups
+-- inside the coins array, a GIN index on the jsonb column lets containment
+-- queries like  coins @> '[{"symbol":"SOL"}]'  use an index instead of
+-- scanning every row.
+create index if not exists correlation_snapshots_coins_gin
+  on public.correlation_snapshots using gin (coins);
 
 
 -- ---------------------------------------------------------------------------

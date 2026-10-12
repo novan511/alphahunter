@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import RatioChart from './RatioChart';
-import type { RatioResponse } from '../../pages/api/ratio';
+import type { PairRatio as RatioResponse } from '../../lib/algorithms/pairRatio';
 
 interface PairChartPanelProps {
   base: string;
