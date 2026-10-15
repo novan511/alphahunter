@@ -199,15 +199,23 @@ async function pushCompletedScan(args: {
   try {
     const { trades } = buildTradeableList(rankings, {});
     if (trades.length > 0) {
-      const lines = [`ENTRY ${interval} · regime ${regime.regime.replace(/_/g, ' ')} · ${trades.length} lolos gate`];
+      const now = new Date().toLocaleString('id-ID', { timeZone: 'Asia/Jakarta', hour: '2-digit', minute: '2-digit' });
+      const lines = [
+        '📊 ENTRY SIGNAL — ALTHUNTER',
+        '━━━━━━━━━━━━━━━━━━━━━━',
+        `⏰ ${now} WIB`,
+        `📈 Timeframe: ${interval}`,
+        `🌍 Regime: ${regime.regime.replace(/_/g, ' ').toUpperCase()}`,
+        `✅ ${trades.length} koin lolos gate`,
+        '',
+      ];
       for (const t of trades.slice(0, 8) as TradeableCoin[]) {
-        const dir = t.direction === 'long' ? 'LONG' : 'SHORT';
-        lines.push(
-          `• ${t.ticker} ${dir} · conf ${t.confluenceScore} · risiko ${t.riskTier} · maks ${t.riskBudgetPct}% ekuitas`,
-        );
+        const dir = t.direction === 'long' ? '🟢 LONG' : '🔴 SHORT';
+        lines.push(`• ${t.ticker} ${dir}`);
+        lines.push(`  Conf: ${t.confluenceScore} | Risiko: ${t.riskTier} | Maks: ${t.riskBudgetPct}% ekuitas`);
       }
       lines.push('');
-      lines.push('Risk per trade maksimal 1% ekuitas. Stop wajib sebelum entry.');
+      lines.push('⚠️ Risk per trade maks 1% ekuitas. Stop wajib sebelum entry.');
       const sent = await sendTelegramMessage(lines.join('\n').slice(0, 3900));
       if (sent.ok) result.sent++;
       else { result.failed++; result.errors.push(`entry: ${sent.error}`); }
@@ -226,13 +234,20 @@ async function pushCompletedScan(args: {
       (w) => w.severity === 'high',
     );
     if (warnings.length > 0) {
-      const lines = ['SEKTOR BERGERAK'];
+      const now = new Date().toLocaleString('id-ID', { timeZone: 'Asia/Jakarta', hour: '2-digit', minute: '2-digit' });
+      const lines = [
+        '🔥 SEKTOR BERGERAK — ALTHUNTER',
+        '━━━━━━━━━━━━━━━━━━━━━━',
+        `⏰ ${now} WIB`,
+        '',
+      ];
       for (const w of warnings.slice(0, 5)) {
         lines.push(`${w.sectorIcon} ${w.title}`);
         lines.push(`  ${w.detail}`);
         if (w.coins.length > 0) {
           lines.push(`  Koin: ${w.coins.slice(0, 5).map((c) => `${c.ticker} (${c.confluenceScore})`).join(', ')}`);
         }
+        lines.push('');
       }
       const sent = await sendTelegramMessage(lines.join('\n').slice(0, 3900));
       if (sent.ok) result.sent++;

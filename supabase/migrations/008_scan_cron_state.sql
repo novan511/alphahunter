@@ -87,7 +87,7 @@ create policy "anon rw scan_cron_rows"
 -- Rolling view: the newest completed cron sweep per symbol.
 create or replace view public.scan_cron_latest as
 select
-  r.symbol,
+  r.asset as symbol,
   r.result->>'finalSignal' as final_signal,
   (r.result->>'confluenceScore')::double precision as confluence_score,
   s.index_symbol,

@@ -52,12 +52,16 @@ export function parseAssetId(raw: string): AssetRef {
   }
 
   if (lower.startsWith('hyperliquid:')) {
-    const symbol = cleaned.slice('hyperliquid:'.length).toUpperCase();
+    // HIP-3 builder perps keep a lowercase dex prefix ("xyz:GOLD"): the venue
+    // rejects the uppercase form with a 500, so the prefix is NOT uppercased.
+    const rest = cleaned.slice('hyperliquid:'.length);
+    const prefix = rest.slice(0, rest.indexOf(':') + 1).toLowerCase();
+    const symbol = prefix + rest.slice(prefix.length).toUpperCase();
     return {
       id: `hyperliquid:${symbol}`,
       symbol,
       source: 'hyperliquid',
-      label: `${symbol} (HL)`,
+      label: `${symbol.slice(prefix.length)} (HL)`,
       klass: 'crypto',
     };
   }
@@ -287,14 +291,21 @@ export async function fetchHyperliquidCandles(
   const ivMs = intervalToMs(interval);
   const start = end - Math.ceil(ivMs * Math.max(limit, 50) * 1.2);
 
+  // HIP-3 builder perps live on their own dex and are addressed as "xyz:GOLD".
+  // Without the dex field the main dex returns []; and the prefix must stay
+  // lowercase or the venue answers 500.
+  const dexPrefix = coin.slice(0, coin.indexOf(':') + 1).toLowerCase();
+  const isBuilder = dexPrefix.endsWith(':');
+  const coinId = isBuilder ? dexPrefix + coin.slice(dexPrefix.length).toUpperCase() : coin.toUpperCase();
   const body = {
     type: 'candleSnapshot',
     req: {
-      coin: coin.toUpperCase(),
+      coin: coinId,
       interval,
       startTime: start,
       endTime: end,
     },
+    ...(isBuilder ? { dex: dexPrefix.slice(0, -1) } : {}),
   };
 
   const res = await fetchWithRetry(`${HYPERLIQUID_URL}/info`, {

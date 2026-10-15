@@ -6,7 +6,8 @@ export type SectionId =
   | 'sectors'
   | 'signals'
   | 'detail'
-  | 'research';
+  | 'research'
+  | 'futures';
 
 export interface SectionDef {
   id: SectionId;

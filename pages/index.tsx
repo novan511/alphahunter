@@ -2,6 +2,7 @@ import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react'
 import { useRouter } from 'next/router';
 import Layout from '../components/Layout/Layout';
 import SectionNav, { Section, SectionId, SectionDef, useHashSection } from '../components/Layout/SectionNav';
+import FuturesTab from '../components/Futures/FuturesTab';
 import ParameterPanel from '../components/Controls/ParameterPanel';
 import DecouplingChart from '../components/Chart/DecouplingChart';
 import StatsCard from '../components/Dashboard/StatsCard';
@@ -852,6 +853,10 @@ export default function Home() {
   // survives a reload.
   const [section, setSection] = useHashSection('overview');
 
+  // Futures tab timeframe. Lives here rather than inside FuturesTab so a tab
+  // switch does not silently reset the timeframe the trader was reading.
+  const [futuresTf, setFuturesTf] = useState('1h');
+
   // Manual mode has no regime/sector panels, so offering those tabs would show
   // empty panes. Build the tab list from what this mode actually renders.
   const sections = useMemo<SectionDef[]>(() => {
@@ -899,6 +904,10 @@ export default function Home() {
       defs.push({ id: 'research', label: 'Riset', short: 'Riset', icon: '🧪' });
     }
 
+    // Fixed book on a public perp venue with its own feed, so it works before
+    // any scan has run and in manual mode where the ranking panels are empty.
+    defs.push({ id: 'futures', label: 'Futures', short: 'Futures', icon: '📈' });
+
     return defs;
   }, [mode, autoRankings.length, scanResults.length, warnings.length]);
 
@@ -914,7 +923,6 @@ export default function Home() {
     }
     if (!sections.some((s) => s.id === section)) setSection('overview');
   }, [sections, section, setSection]);
-
   return (
     <Layout>
       <SectionNav sections={sections} active={section} onChange={setSection} />
@@ -1217,14 +1225,17 @@ export default function Home() {
         </Section>
       )}
 
-      {mode === 'autonomous' && regime && autoParams && (
-        <div className="ah-two-col" style={{ marginBottom: '20px' }}>
-          <RegimeIndicator regime={regime} params={autoParams} />
-          <MultiTimeframePanel result={selectedMTF} regime={regime} />
-        </div>
-      )}
-
       <Section id="overview" active={section}>
+        {/* Regime + MTF belong to Overview. They used to sit outside every
+            <Section>, which made them render on top of whichever tab was
+            active — including Futures. */}
+        {mode === 'autonomous' && regime && autoParams && (
+          <div className="ah-two-col" style={{ marginBottom: '20px' }}>
+            <RegimeIndicator regime={regime} params={autoParams} />
+            <MultiTimeframePanel result={selectedMTF} regime={regime} />
+          </div>
+        )}
+
         {mode === 'autonomous' && (autoRankings.length > 0 || (scanning && progress)) && (
         <div className="ah-stats" style={{ marginBottom: '20px' }}>
           <StatsCard
@@ -1406,6 +1417,14 @@ export default function Home() {
           </div>
         )}
       </div>
+      </Section>
+
+      <Section id="futures" active={section}>
+        <FuturesTab
+          initialTf={futuresTf}
+          onTfChange={setFuturesTf}
+          visible={section === 'futures'}
+        />
       </Section>
     </Layout>
   );

@@ -1,0 +1,61 @@
+name: Futures signals
+
+# Every 30 minutes: price the 13-instrument futures book on 1h and push ONLY
+# what changed (including exits) to Telegram. Offset by 3 minutes so this does
+# not collide with the autonomous scan cron on :7/:37, and because both hit
+# the same Hyperliquid rate limit — two crons in the same minute would 429
+# each other.
+#
+# The route itself enforces the no-miss rules: incomplete book never pushes,
+# failed send never advances dedupe state. This workflow only needs to call it
+# and fail loudly when the route says it could not do its job.
+on:
+  schedule:
+    - cron: '3,33 * * * *'
+  workflow_dispatch:
+    inputs:
+      tf:
+        description: 'Timeframe to scan (5m|15m|1h|4h|1d|1w)'
+        required: false
+        default: '1h'
+      force:
+        description: 'Send full book of live sides once (wiring test)'
+        required: false
+        default: 'false'
+
+concurrency:
+  group: futures-cron
+  cancel-in-progress: false
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Trigger futures scan
+        env:
+          DEPLOY_URL: ${{ secrets.VERCEL_URL }}
+          SCAN_CRON_SECRET: ${{ secrets.SCAN_CRON_SECRET }}
+        run: |
+          set -euo pipefail
+          if [ -z "${DEPLOY_URL}" ] || [ -z "${SCAN_CRON_SECRET}" ]; then
+            echo "::error::VERCEL_URL and SCAN_CRON_SECRET secrets are required"
+            exit 1
+          fi
+          TF="${{ github.event.inputs.tf || '1h' }}"
+          FORCE="${{ github.event.inputs.force || 'false' }}"
+          echo "POST ${DEPLOY_URL}/api/futures-cron (tf=${TF} force=${FORCE})"
+          RESP=$(curl --fail-with-body --silent --show-error --max-time 240 \
+            -X POST "${DEPLOY_URL}/api/futures-cron" \
+            -H "Authorization: Bearer ${SCAN_CRON_SECRET}" \
+            -H "Content-Type: application/json" \
+            -d "{\"tf\":\"${TF}\",\"force\":${FORCE}}")
+          echo "${RESP}"
+          echo "${RESP}" | python3 -c "
+          import json,sys
+          d = json.load(sys.stdin)
+          if not d.get('ok', False):
+              print(f\"::error::futures-cron not ok: {d.get('reason') or d.get('error') or d.get('sendError')}\")
+              sys.exit(1)
+          print(f\"scanned={d.get('scanned')} active={d.get('active')} alerts={d.get('alerts')} sent={d.get('sent')}\")
+          "
