@@ -121,6 +121,20 @@ async function main() {
   });
   expect(bad.source === 'rule_fallback', 'snapshot buruk tidak memanggil model');
 
+  // 11. Overlong playbook prose is clipped instead of discarding the analysis.
+  const verbose = JSON.stringify({
+    ...good,
+    playbook: { ...good.playbook, long: 'Skenario panjang. '.repeat(30) },
+  });
+  const clipped = validatePulseOutput(verbose, numbers);
+  expect(clipped.ok, 'playbook kepanjangan tidak menolak output');
+  expect(
+    clipped.ok && (clipped.value.playbook.long ?? '').length <= 200,
+    'playbook dipotong sampai batas 200 karakter'
+  );
+  const verboseE2e = await analysePulse(snap, { call: async () => verbose });
+  expect(verboseE2e.source === 'llm', 'analisis AI tetap dipakai saat playbook verbose');
+
   if (failures > 0) {
     console.error(`PULSE_SMOKE_FAIL (${failures})`);
     process.exit(1);

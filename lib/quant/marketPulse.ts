@@ -273,9 +273,12 @@ export function validatePulseOutput(
   if (!o.playbook || typeof o.playbook !== 'object') return { ok: false, error: 'playbook wajib ada' };
   const p = o.playbook as Record<string, unknown>;
   for (const key of ['long', 'short', 'invalidation']) {
-    if (p[key] !== null && (typeof p[key] !== 'string' || (p[key] as string).length > MAX_PLAY)) {
-      return { ok: false, error: `playbook.${key} harus string (maks ${MAX_PLAY}) atau null` };
+    if (p[key] !== null && typeof p[key] !== 'string') {
+      return { ok: false, error: `playbook.${key} harus string atau null` };
     }
+    // Dipotong, bukan ditolak: batas ini hanya menjaga panjang pesan, sedangkan
+    // penolakan membuat seluruh analisis AI hilang dan jatuh ke rule-based.
+    if (typeof p[key] === 'string') p[key] = (p[key] as string).slice(0, MAX_PLAY).trim();
   }
 
   const allText = [o.headline, o.marketRegime, o.macroRead, ...(o.crossMarket as string[]), ...(o.caveats as string[])]
@@ -369,9 +372,9 @@ Keluarkan HANYA satu objek JSON, tanpa markdown, tanpa penjelasan. Skema:
   "crossMarket": ["<=4 poin: baca tiap pasar (crypto/komoditas/saham US), masing-masing <=110 karakter"],
   "macroRead": "<=420 karakter, baca makro ATAU nyatakan tidak tersedia",
   "playbook": {
-    "long": "<skenario long lintas-pasar, atau null>",
-    "short": "<skenario short lintas-pasar, atau null>",
-    "invalidation": "<kondisi yang membatalkan tesis>"
+    "long": "<=200 karakter: skenario long lintas-pasar, atau null>",
+    "short": "<=200 karakter: skenario short lintas-pasar, atau null>",
+    "invalidation": "<=200 karakter: kondisi yang membatalkan tesis>"
   },
   "confidence": 0-100,
   "caveats": ["<=3 poin, masing-masing <=110 karakter"]
