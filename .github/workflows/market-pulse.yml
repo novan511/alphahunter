@@ -1,0 +1,65 @@
+name: Market pulse
+
+# Every 2 hours: load the one futures book (crypto perps + commodities + US
+# equities) plus its macro snapshot, and push ONE whole-context stance from the
+# AI. This is a periodic big-picture read, not a change alert — the change
+# alerts live in futures-cron.yml.
+#
+# Offset to :13 so it never shares a minute with the futures scan (:03/:33) or
+# the autonomous scan (:07/:37). All three hit the same Hyperliquid rate limit;
+# two crons in one minute 429 each other.
+#
+# The route enforces the guards itself: schema + enum + length caps, forbidden
+# phrases, hallucinated-number scan, macro guard, direction guard, and a
+# deterministic fallback. This workflow only calls it and fails loudly when the
+# route says it could not do its job.
+on:
+  schedule:
+    - cron: '13 */2 * * *'
+  workflow_dispatch:
+    inputs:
+      tf:
+        description: 'Timeframe to read (5m|15m|1h|4h|1d|1w)'
+        required: false
+        default: '1h'
+      notify:
+        description: 'Send to Telegram (false = dry run)'
+        required: false
+        default: 'true'
+
+concurrency:
+  group: market-pulse
+  cancel-in-progress: false
+
+jobs:
+  pulse:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Trigger market pulse
+        env:
+          DEPLOY_URL: ${{ secrets.VERCEL_URL }}
+          SCAN_CRON_SECRET: ${{ secrets.SCAN_CRON_SECRET }}
+        run: |
+          set -euo pipefail
+          if [ -z "${DEPLOY_URL}" ] || [ -z "${SCAN_CRON_SECRET}" ]; then
+            echo "::error::VERCEL_URL and SCAN_CRON_SECRET secrets are required"
+            exit 1
+          fi
+          TF="${{ github.event.inputs.tf || '1h' }}"
+          NOTIFY="${{ github.event.inputs.notify || 'true' }}"
+          echo "POST ${DEPLOY_URL}/api/market-pulse (tf=${TF} notify=${NOTIFY})"
+          RESP=$(curl --fail-with-body --silent --show-error --max-time 240 \
+            -X POST "${DEPLOY_URL}/api/market-pulse" \
+            -H "Authorization: Bearer ${SCAN_CRON_SECRET}" \
+            -H "Content-Type: application/json" \
+            -d "{\"tf\":\"${TF}\",\"notify\":${NOTIFY}}")
+          echo "${RESP}"
+          echo "${RESP}" | python3 -c "
+          import json,sys
+          d = json.load(sys.stdin)
+          if not d.get('ok', False):
+              print(f\"::error::market-pulse not ok: {d.get('sendError') or d.get('error')}\")
+              sys.exit(1)
+          print(f\"scanned={d.get('scanned')} direction={d.get('direction')} source={d.get('source')} sent={d.get('sent')}\")
+          "
