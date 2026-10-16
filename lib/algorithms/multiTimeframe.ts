@@ -29,22 +29,64 @@ import {
 const TF_WEIGHTS: Record<string, number> = { '1h': 0.2, '4h': 0.35, '1d': 0.45 };
 
 /**
- * Z-score band that maps onto [0,1] evidence.
- *
- * Measured against the live universe (32 majors x 3 timeframes, rsPeriod=20,
- * 200 bars), the RS z-score distribution is far narrower than a textbook
- * assumption suggests: |z|>1.0 occurs ~16-47% of the time depending on
- * timeframe, but |z|>2.0 is essentially never observed (0-3%).
- *
- * So the previous floor of 1.5 / ceiling of 3.5 made `strong_buy` unreachable
- * — real outliers peaked around 1.5-2.0. The band below is calibrated so that
- * |z|=0.8 (the ~66-78th percentile) is the entry floor, |z|=1.0 sits at the
- * low end of meaningful evidence, and |z|>=1.6 saturates. The *gates* in
- * decideStrongSignal() still require multi-timeframe agreement, so a single
- * inflated z-score cannot produce a strong signal on its own.
+ * Semua konstanta yang sebelumnya hardcoded di rumus konfluensi, sekarang
+ * dapat di-override untuk backtest / Monte Carlo. Default = nilai yang sudah
+ * teruji di tab Ranking, sehingga perilaku lama tidak berubah ketika params
+ * tidak dikirim.
  */
-const Z_FLOOR = 0.8;
-const Z_CEILING = 1.6;
+export interface ScoringParams {
+  /** Ambang bawah |RS_Z|: di bawahnya evidence = 0 (difikirkan noise). */
+  zFloor: number;
+  /** |RS_Z| di atasnya evidence sudah saturasi (1.0). */
+  zCeiling: number;
+  /** Bobot signed contribution per timeframe: RS, tren, sinyal eksternal. */
+  wRS: number;
+  wTrend: number;
+  wSignal: number;
+  /** Bobot tiap timeframe saat agregasi ke skor akhir. */
+  tfWeights: Record<string, number>;
+  /** Eksponen conviction: base = conviction ^ exponent. */
+  convictionExponent: number;
+  /** Blend: base * (blendFloor + blendAgreementCoef * agreement). */
+  blendFloor: number;
+  blendAgreementCoef: number;
+  /** Ambang skor konfluensi (0-100). */
+  strongScore: number;
+  buyScore: number;
+  /** Gate sinyal. */
+  minConviction: number;       // minimum conviction untuk sinyal apa pun
+  strongConviction: number;    // strong buy/sell butuh conviction ini
+  strongAgreement: number;     // strong butuh agreement ini
+  buyAgreement: number;        // buy butuh agreement ini
+  /** Trend evidence (kemiringan EMA vs ATR). */
+  trendPeriod: number;
+  trendSlopeSpan: number;      // berapa bar untuk mengukur kemiringan EMA
+  trendSaturation: number;     // slopeAtr di mana trend score mencapai 1.0
+  trendNeutralMult: number;    // pengali score saat arah trend neutral
+}
+
+/** Nilai default identik konstanta lama — Ranking dan sektor tidak berubah. */
+export const defaultScoringParams: ScoringParams = {
+  zFloor: 0.8,
+  zCeiling: 1.6,
+  wRS: 0.40,
+  wTrend: 0.35,
+  wSignal: 0.25,
+  tfWeights: TF_WEIGHTS,
+  convictionExponent: 0.85,
+  blendFloor: 0.45,
+  blendAgreementCoef: 0.55,
+  strongScore: 72,
+  buyScore: 48,
+  minConviction: 0.35,
+  strongConviction: 0.55,
+  strongAgreement: 0.6,
+  buyAgreement: 0.4,
+  trendPeriod: 20,
+  trendSlopeSpan: 5,
+  trendSaturation: 0.25,
+  trendNeutralMult: 0.3,
+};
 
 export interface TimeframeEvidence {
   timeframe: string;
@@ -110,6 +152,8 @@ export interface MultiTimeframeOptions {
   maxSignalAgeBars?: number;
   /** 24h quote volume in USD, used to damp thin books. */
   quoteVolume?: number;
+  /** Override konstanta rumus konfluensi (default = nilai Ranking saat ini). */
+  params?: ScoringParams;
   /** Real 24h market cap in USD, used for cap-tier context. */
   marketCap?: number;
   /** Sector bucket for narrative context. Resolved from the symbol if omitted. */
@@ -142,8 +186,9 @@ export function liquidityFactor(quoteVolume: number | undefined): number {
  */
 function trendEvidence(
   candles: Candle[],
-  period: number = 20
+  p: ScoringParams
 ): { direction: 'bullish' | 'bearish' | 'neutral'; score: number } {
+  const period = p.trendPeriod;
   if (candles.length < period + 10) return { direction: 'neutral', score: 0 };
 
   const closes = candles.map((c) => c.close);
@@ -175,7 +220,7 @@ function trendEvidence(
   // typically spans 0.03-0.25, so the saturation point is 0.25 (a full ATR of
   // drift across the window). Dividing by 0.8 instead left every real coin
   // pinned below 0.3 and suppressed conviction across the board.
-  const magnitude = clamp01(Math.abs(slopeAtr) / 0.25);
+  const magnitude = clamp01(Math.abs(slopeAtr) / p.trendSaturation);
 
   if (slopeAtr > 0 && aboveMa) {
     return { direction: 'bullish', score: magnitude };
@@ -183,17 +228,17 @@ function trendEvidence(
   if (slopeAtr < 0 && belowMa) {
     return { direction: 'bearish', score: magnitude };
   }
-  return { direction: 'neutral', score: magnitude * 0.3 };
+  return { direction: 'neutral', score: magnitude * p.trendNeutralMult };
 }
 
 /**
  * Converts a raw z-score into evidence in [0,1] with a real significance floor.
- * Below Z_FLOOR there is no evidence at all; above Z_CEILING it saturates.
+ * Below zFloor there is no evidence at all; above zCeiling it saturates.
  */
-function zEvidence(z: number): number {
+function zEvidence(z: number, p: ScoringParams): number {
   const mag = Math.abs(z);
-  if (!Number.isFinite(mag) || mag <= Z_FLOOR) return 0;
-  return clamp01((mag - Z_FLOOR) / (Z_CEILING - Z_FLOOR));
+  if (!Number.isFinite(mag) || mag <= p.zFloor) return 0;
+  return clamp01((mag - p.zFloor) / (p.zCeiling - p.zFloor));
 }
 
 /**
@@ -320,11 +365,11 @@ function confluenceDirectionHint(signal: string): 'bullish' | 'bearish' {
  * this blend would silently drift from the score and rank a sector off
  * evidence the score never used.
  */
-export function tfSigned(t: TimeframeEvidence): number {
+export function tfSigned(t: TimeframeEvidence, p: ScoringParams = defaultScoringParams): number {
   return (
-    0.40 * Math.sign(t.rsZScore) * zEvidence(t.rsZScore) +
-    0.35 * (t.trendDirection === 'bullish' ? 1 : t.trendDirection === 'bearish' ? -1 : 0) * t.trendScore +
-    0.25 * (t.signal ? (t.signal.type === 'buy' ? 1 : -1) : 0) * t.signalScore
+    p.wRS * Math.sign(t.rsZScore) * zEvidence(t.rsZScore, p) +
+    p.wTrend * (t.trendDirection === 'bullish' ? 1 : t.trendDirection === 'bearish' ? -1 : 0) * t.trendScore +
+    p.wSignal * (t.signal ? (t.signal.type === 'buy' ? 1 : -1) : 0) * t.signalScore
   );
 }
 
@@ -335,6 +380,7 @@ export function analyzeMultiTimeframe(
   options: MultiTimeframeOptions = {}
 ): MultiTimeframeResult {
   const maxSignalAgeBars = options.maxSignalAgeBars ?? DEFAULT_MAX_SIGNAL_AGE_BARS;
+  const p = options.params ?? defaultScoringParams;
   const timeframes = ['1h', '4h', '1d'];
   const tfSignals: TimeframeEvidence[] = [];
 
@@ -365,7 +411,7 @@ export function analyzeMultiTimeframe(
     const signals = detectDecoupling(trimmedAsset, trimmedIndex, tfConfig);
     const rsData = calculateRSData(trimmedAsset, trimmedIndex, tfConfig.rsPeriod);
     const lastRS = rsData[rsData.length - 1];
-    const trend = trendEvidence(trimmedAsset);
+    const trend = trendEvidence(trimmedAsset, p);
 
     const { signal: latestSignal, ageBars } = getFreshLatestSignal(
       signals,
@@ -377,7 +423,7 @@ export function analyzeMultiTimeframe(
     const z = Number.isFinite(lastRS.rsZScore) ? lastRS.rsZScore : 0;
     const pValue = zScorePValue(z);
 
-    const zEv = zEvidence(z);
+    const zEv = zEvidence(z, p);
     const fresh = freshness(ageBars, maxSignalAgeBars);
 
     // A decoupling signal is only evidence if its own z-score was significant,
@@ -394,9 +440,9 @@ export function analyzeMultiTimeframe(
 
     // Weighted blend; RS leads, then trend, then the explicit signal.
     const signed =
-      0.40 * zSign * zEv +
-      0.35 * dirSign * trend.score +
-      0.25 * sigSign * sigScore;
+      p.wRS * zSign * zEv +
+      p.wTrend * dirSign * trend.score +
+      p.wSignal * sigSign * sigScore;
 
     const evidence = clamp01(Math.abs(signed));
 
@@ -436,13 +482,13 @@ export function analyzeMultiTimeframe(
 
   for (const tfSig of tfSignals) {
     if (!tfSig.active) continue;
-    const w = TF_WEIGHTS[tfSig.timeframe] ?? 0.3;
+    const w = p.tfWeights[tfSig.timeframe] ?? TF_WEIGHTS[tfSig.timeframe] ?? 0.3;
 
     const signed =
-      0.40 * Math.sign(tfSig.rsZScore) * zEvidence(tfSig.rsZScore) +
-      0.35 * (tfSig.trendDirection === 'bullish' ? 1 : tfSig.trendDirection === 'bearish' ? -1 : 0) *
+      p.wRS * Math.sign(tfSig.rsZScore) * zEvidence(tfSig.rsZScore, p) +
+      p.wTrend * (tfSig.trendDirection === 'bullish' ? 1 : tfSig.trendDirection === 'bearish' ? -1 : 0) *
         tfSig.trendScore +
-      0.25 * (tfSig.signal ? (tfSig.signal.type === 'buy' ? 1 : -1) : 0) * tfSig.signalScore;
+      p.wSignal * (tfSig.signal ? (tfSig.signal.type === 'buy' ? 1 : -1) : 0) * tfSig.signalScore;
 
     weighted.push({ weight: w, signed });
   }
@@ -481,12 +527,12 @@ export function analyzeMultiTimeframe(
   // Conviction carries the score; agreement gates how much of it counts.
   // Zero evidence -> 0. Full evidence but only 1/3 of TFs agreeing -> capped
   // well below the strong threshold instead of printing 100.
-  const base = Math.pow(conviction, 0.85);
+  const base = Math.pow(conviction, p.convictionExponent);
   // Single agreement multiplier:
   //   all TFs agree (agreement=1) -> 1.00x
   //   1 of 3 agrees (agreement~0.2) -> 0.56x
   // This is what separates real confluence from a lone timeframe firing.
-  const blended = base * (0.45 + 0.55 * agreement);
+  const blended = base * (p.blendFloor + p.blendAgreementCoef * agreement);
   const rawScore = clamp01(blended);
 
   const liq = liquidityFactor(options.quoteVolume);
@@ -495,23 +541,23 @@ export function analyzeMultiTimeframe(
   let confluenceDirection: 'bullish' | 'bearish' | 'none';
   let finalSignal: MultiTimeframeResult['finalSignal'];
 
-  const STRONG = 72;
-  const BUY = 48;
+  const STRONG = p.strongScore;
+  const BUY = p.buyScore;
 
-  if (bullish && conviction >= 0.35) {
+  if (bullish && conviction >= p.minConviction) {
     confluenceDirection = 'bullish';
-    if (confluenceScore >= STRONG && agreement >= 0.6 && conviction >= 0.55) {
+    if (confluenceScore >= STRONG && agreement >= p.strongAgreement && conviction >= p.strongConviction) {
       finalSignal = 'strong_buy';
-    } else if (confluenceScore >= BUY && agreement >= 0.4) {
+    } else if (confluenceScore >= BUY && agreement >= p.buyAgreement) {
       finalSignal = 'buy';
     } else {
       finalSignal = 'neutral';
     }
-  } else if (bearish && conviction >= 0.35) {
+  } else if (bearish && conviction >= p.minConviction) {
     confluenceDirection = 'bearish';
-    if (confluenceScore >= STRONG && agreement >= 0.6 && conviction >= 0.55) {
+    if (confluenceScore >= STRONG && agreement >= p.strongAgreement && conviction >= p.strongConviction) {
       finalSignal = 'strong_sell';
-    } else if (confluenceScore >= BUY && agreement >= 0.4) {
+    } else if (confluenceScore >= BUY && agreement >= p.buyAgreement) {
       finalSignal = 'sell';
     } else {
       finalSignal = 'neutral';

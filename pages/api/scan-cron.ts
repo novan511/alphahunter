@@ -260,6 +260,148 @@ async function pushCompletedScan(args: {
 
   return result;
 }
+
+/** ---------- Top signals: persist + confident Telegram ---------- */
+
+const SIGNAL_TYPES: Array<'strong_buy' | 'buy' | 'strong_sell' | 'sell'> = [
+  'strong_buy',
+  'buy',
+  'strong_sell',
+  'sell',
+];
+
+/**
+ * Confidence gate agar tidak kirim fakeout.
+ * Strong sinyal butuh agreement & conviction lebih tinggi dari sinyal biasa.
+ */
+function isConfidentSignal(r: MultiTimeframeResult): boolean {
+  if (r.finalSignal === 'strong_buy' || r.finalSignal === 'strong_sell') {
+    return r.confluenceScore >= 72 && r.agreement >= 0.7 && r.conviction >= 0.6;
+  }
+  if (r.finalSignal === 'buy' || r.finalSignal === 'sell') {
+    return r.confluenceScore >= 48 && r.agreement >= 0.5 && r.conviction >= 0.45;
+  }
+  return false;
+}
+
+/** Simpan top 10 per kelas sinyal ke tabel top_signals (Supabase). */
+async function persistTopSignals(
+  supabase: Supa,
+  rankings: MultiTimeframeResult[]
+): Promise<void> {
+  for (const type of SIGNAL_TYPES) {
+    const top10 = rankings
+      .filter((r) => r.finalSignal === type)
+      .sort((a, b) => b.confluenceScore - a.confluenceScore)
+      .slice(0, 10);
+
+    for (const r of top10) {
+      await supabase
+        .from('top_signals')
+        .insert({
+          signal_type: type,
+          asset: r.asset,
+          confluence_score: r.confluenceScore,
+          conviction: r.conviction ?? null,
+          agreement: r.agreement ?? null,
+          timeframe: '4h',
+          sent_to_telegram: false,
+        })
+        .then(() => undefined, () => undefined); // jangan gagalkan scan saat insert gagal
+    }
+  }
+}
+
+/** Ambil asset yang sudah dikirim Telegram dalam 24 jam terakhir (dedup). */
+async function getAlreadySentKeys(supabase: Supa): Promise<Set<string>> {
+  const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+  const { data } = await supabase
+    .from('top_signals')
+    .select('asset, signal_type')
+    .eq('sent_to_telegram', true)
+    .gte('created_at', yesterday);
+
+  const set = new Set<string>();
+  for (const row of data ?? []) {
+    set.add(`${row.signal_type}:${row.asset}`);
+  }
+  return set;
+}
+
+/** Kirim Telegram hanya untuk sinyal confident yang belum pernah dikirim. */
+async function sendConfidentSignals(
+  supabase: Supa,
+  rankings: MultiTimeframeResult[],
+  regime: RegimeResult,
+  indexSymbol: string
+): Promise<void> {
+  const { configured } = telegramEnv();
+  if (!configured) return;
+
+  const alreadySent = await getAlreadySentKeys(supabase);
+  const now = new Date().toLocaleString('id-ID', {
+    timeZone: 'Asia/Jakarta',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+
+  for (const type of SIGNAL_TYPES) {
+    const confident = rankings
+      .filter((r) => r.finalSignal === type && isConfidentSignal(r))
+      .sort((a, b) => b.confluenceScore - a.confluenceScore)
+      .slice(0, 10)
+      .filter((r) => !alreadySent.has(`${type}:${r.asset}`));
+
+    if (confident.length === 0) continue;
+
+    const label =
+      type === 'strong_buy'
+        ? '🚀 STRONG BUY'
+        : type === 'buy'
+        ? '📈 BUY'
+        : type === 'strong_sell'
+        ? '🔻 STRONG SELL'
+        : '📉 SELL';
+
+    const lines: string[] = [
+      `${label} — ALTHUNTER`,
+      '━━━━━━━━━━━━━━━━━━━━━━',
+      `⏰ ${now} WIB`,
+      `📈 TF: 4h | Index: ${indexSymbol} | Regime: ${regime.regime.replace(/_/g, ' ').toUpperCase()}`,
+      `🎯 ${confident.length} koin lolos confidence gate`,
+      '',
+    ];
+
+    for (const r of confident) {
+      lines.push(
+        `• ${r.asset} — Conf: ${r.confluenceScore} | Agr: ${Math.round(
+          r.agreement * 100
+        )}% | Konv: ${Math.round(r.conviction * 100)}%`
+      );
+    }
+
+    lines.push('');
+    lines.push('⚠️ Konfirmasi sendiri sebelum entry. Stop loss wajib.');
+
+    const sent = await sendTelegramMessage(lines.join('\n').slice(0, 3900));
+
+    // Tandai sudah dikirim agar tidak duplikat di scan berikutnya.
+    for (const r of confident) {
+      await supabase
+        .from('top_signals')
+        .update({ sent_to_telegram: true })
+        .eq('asset', r.asset)
+        .eq('signal_type', type)
+        .eq('sent_to_telegram', false)
+        .then(() => undefined, () => undefined);
+    }
+
+    if (!sent.ok) {
+      console.error(`[telegram] ${type}: ${sent.error}`);
+    }
+  }
+}
+
 const DEFAULT_MAX_CHUNKS = 1;
 
 function authorized(req: NextApiRequest): boolean {
@@ -481,6 +623,14 @@ export default async function handler(
             indexSymbol,
             sweepId,
           });
+        }
+
+        // --- Top signals: simpan top 10 per kelas + kirim Telegram yang confident ---
+        try {
+          await persistTopSignals(supabase, rankings);
+          await sendConfidentSignals(supabase, rankings, regime, indexSymbol);
+        } catch (err) {
+          console.error('[top-signals] failed:', err instanceof Error ? err.message : err);
         }
       }
     }
