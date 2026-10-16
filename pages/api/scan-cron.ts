@@ -436,8 +436,7 @@ export default async function handler(
     return res.status(200).json({ ok: false, reason: 'supabase client unavailable' });
   }
 
-  const body: Body = { ...(req.query as Body), ...(req.body as Body) };
-  const indexSymbol = (body.indexSymbol || 'BTCUSDT').toUpperCase();
+  const body: Body = { ...(req.query as Body), ...(req.body as Body) };  const indexSymbol = (body.indexSymbol || 'BTCUSDT').toUpperCase();
   const depth = body.depth || 'all';
   const universeMode = body.universe === 'all' ? 'all' : 'curated';
   const budgetMs = Math.min(Math.max(body.budgetMs ?? DEFAULT_BUDGET_MS, 5_000), 50_000);
@@ -446,6 +445,17 @@ export default async function handler(
   // Escape hatch for the first run while wiring things up.
   const notifyDisabled = body.notify === false;
   let pushResult: PushResult | null = null;
+  const _t0 = Date.now();
+  // DIAGNOSTIC: persist phase timings so they survive the 60s kill.
+  const mark = async (label: string) => {
+    const ms = Date.now() - _t0;
+    console.log(`[timing] ${label} +${ms}ms`);
+    await supabase
+      .from('scan_cron_state')
+      .update({ error: `timing ${label} +${ms}ms`, updated_at: new Date().toISOString() })
+      .eq('id', id)
+      .then(() => undefined, () => undefined);
+  };
 
   try {
     // Load or create the cursor for this target.
@@ -455,6 +465,7 @@ export default async function handler(
       .eq('id', id)
       .maybeSingle();
     if (loadErr) return res.status(500).json({ error: `load state: ${loadErr.message}` });
+    await mark('state loaded');
 
     let state = existing as Record<string, unknown> | null;
     const nowIso = new Date().toISOString();
@@ -527,6 +538,7 @@ export default async function handler(
         skipPositions: skip,
         universeId,
       });
+      await mark('chunk fetched');
 
       // Universe membership or ordering changed mid-sweep → the positional
       // cursor is meaningless against the new ordering. Restart cleanly.
@@ -558,6 +570,7 @@ export default async function handler(
           .upsert(rows, { onConflict: 'sweep_id,asset' });
         if (rowsErr) return res.status(500).json({ error: `persist rows: ${rowsErr.message}` });
         scanned += chunk.rankings.length;
+        await mark('rows upserted');
       }
 
       // Advance the cursor: the chunk covers [nextOffset, nextOffset+span).
@@ -576,6 +589,7 @@ export default async function handler(
     }
 
     const total = state.total ?? undefined;
+    await mark('chunk loop done');
 
     // Assemble and persist the final scan when the sweep completes.
     if (done) {
@@ -659,6 +673,7 @@ export default async function handler(
     if (stateErr) return res.status(500).json({ error: `update state: ${stateErr.message}` });
 
     const digest = createHash('sha1').update(sweepId).digest('hex').slice(0, 8);
+    await mark('finalize done');
     return res.status(200).json({
       ok: true,
       done,
