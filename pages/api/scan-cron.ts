@@ -663,6 +663,11 @@ export default async function handler(
       .from('scan_cron_state')
       .update({
         status: done ? 'done' : 'running',
+        // Persist the working sweep id. Re-basing changes it locally, and if it
+        // never lands here the next tick (and this tick's own finalize) reads a
+        // different id from scan_cron_rows — rankings come back empty and the
+        // save + Telegram push are skipped silently.
+        sweep_id: sweepId,
         universe_id: universeId ?? null,
         next_offset: nextOffset,
         done_ranges: doneRanges,

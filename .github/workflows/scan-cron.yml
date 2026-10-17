@@ -39,7 +39,10 @@ jobs:
             echo "::error::VERCEL_URL and SCAN_CRON_SECRET secrets are required"
             exit 1
           fi
-          CHUNKS="${{ github.event.inputs.max_chunks || '1' }}"
+          # 3 chunks, not 1: the curated composition re-hashes between ticks, so
+          # a tick often has to finish the whole sweep itself (chunk 1 does the
+          # bulk, the rest clean up the tail) inside maxDuration 60.
+          CHUNKS="${{ github.event.inputs.max_chunks || '3' }}"
           echo "POST ${DEPLOY_URL}/api/scan-cron (chunks=${CHUNKS})"
           # 25s, not 40s: the tick also pays for cold start + composition
           # re-base + persistence, and the route dies at maxDuration 60.
