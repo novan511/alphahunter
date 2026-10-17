@@ -1,11 +1,12 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
-import { getLastScan } from './scans';
+import { getLastScan, type LastScanResponse } from './scans';
 import { sendTelegramMessage, telegramEnv } from '../../lib/serverTelegram';
 import { buildSectorHeat } from '../../lib/algorithms/narrativeHeat';
 import { buildTradeableList } from '../../lib/algorithms/tradeable';
 import { computeMatrix, classifyStrength } from '../../lib/algorithms/correlationMatrix';
 import { buildPortfolioPlan, buildRotationDigest } from '../../lib/algorithms/portfolioVerdict';
 import { getSupabase } from '../../lib/supabase';
+import { callLLM } from '../../lib/quant/marketNarrator';
 import { fetchPairRatio, windowStrength } from '../../lib/algorithms/pairRatio';
 import { fetchKlinesRouted } from '../../lib/universe';
 import type { Candle } from '../../lib/types';
@@ -306,6 +307,84 @@ export async function handleHold(args: string[]): Promise<string> {
   return failed.length > 0 ? `${digest}\n\nSkip: ${failed.map(short).join(', ')}` : digest;
 }
 
+/** Ringkasan teks ringan dari scan terakhir untuk dijadikan konteks LLM. */
+function scanContext(scan: LastScanResponse): string {
+  const r = scan.rankings ?? [];
+  const buys = r.filter((x) => x.finalSignal.includes('buy')).slice(0, 8);
+  const sells = r.filter((x) => x.finalSignal.includes('sell')).slice(0, 8);
+  const lines: string[] = [];
+  lines.push(
+    `Scan terakhir: ${scan.source ?? '—'} pada ${new Date(scan.scannedAt ?? Date.now()).toLocaleString(
+      'id-ID',
+      { timeZone: 'Asia/Jakarta', hour: '2-digit', minute: '2-digit' },
+    )} WIB`
+  );
+  lines.push(
+    `Index: ${scan.indexSymbol ?? 'BTCUSDT'} | Regime: ${(
+      scan.regimeLabel ?? scan.regime?.regime ?? '—'
+    ).replace(/_/g, ' ')}`
+  );
+  lines.push(
+    `Koindiakan: ${scan.totalScanned ?? r.length} | Sinyal non-netral: ${
+      scan.signalsFound ?? r.filter((x) => x.finalSignal !== 'neutral').length
+    }`
+  );
+  if (buys.length) {
+    lines.push(
+      'Buy: ' +
+        buys.map((x) => `${x.asset.replace('USDT', '')} (conf ${x.confluenceScore})`).join(', ')
+    );
+  }
+  if (sells.length) {
+    lines.push(
+      'Sell: ' +
+        sells.map((x) => `${x.asset.replace('USDT', '')} (conf ${x.confluenceScore})`).join(', ')
+    );
+  }
+  const sectors = buildSectorHeat(r);
+  const early = sectors.filter((s) => s.phase === 'early' && s.members > 0).slice(0, 3);
+  if (early.length) {
+    lines.push('Sektor early: ' + early.map((s) => s.label).join(', '));
+  }
+  return lines.join('\n');
+}
+
+/** Jawab pertanyaan bahasa natural trader menggunakan LLM + data scan terakhir. */
+async function handleAsk(question: string): Promise<string> {
+  let scan: LastScanResponse;
+  try {
+    scan = await getLastScan('BTCUSDT');
+  } catch {
+    return 'Gagal membaca scan terakhir — Supabase tidak terjangkau.';
+  }
+  if (!scan.configured) return 'Supabase belum dikonfigurasi di server.';
+  if (!scan.found || !scan.rankings?.length) {
+    return 'Belum ada scan tersimpan. Jalankan scan dari web dulu.';
+  }
+
+  const prompt = `Kamu ngobrol dengan teman trader lewat Telegram. Gaya bahasa Indonesia santai, natural, seperti obrolan bareng sekelas — jangan robotis, jangan terlalu formal, jangan bongok. Gunakan data scan terakhir di bawah sebagai konteks, tapi jangan baca langsung seperti daftar.
+
+Data scan terakhir:
+${scanContext(scan)}
+
+Pertanyaan teman: ${question}
+
+Panduan gaya ngobrol:
+- Buka dengan sapaan singkat dan ramah, langsung ke intinya.
+- Maksimal 3 paragraf pendek, gunakan emoji sedikit (1-2) biar tidak kaku.
+- Jangan memberi perintah beli/jual/hold langsung, target harga, stop loss, atau janji profit.
+- Jangan pakai kata "jaminan", "pasti", "100% aman", atau anything yang terdengar seperti nasihat keuangan resmi.
+- Jika data kurang, katakan curhat-jujur saja dan sarankan cek di web.
+- Akhiri dengan disclaimer ringan: "Bukan saran finansial ya, konfirmasi sendiri sebelum entry."`;
+
+  try {
+    const reply = await callLLM(prompt);
+    return reply.slice(0, 3500);
+  } catch {
+    return 'LLM tidak bisa menjawab sekarang. Coba /top, /status, atau /hold.';
+  }
+}
+
 export default async function handler(
   req: NextApiRequest,
   res: NextApiResponse
@@ -348,7 +427,10 @@ export default async function handler(
     else if (cmd === '/matrix') reply = await handleMatrix(args);
     else if (cmd === '/pair') reply = await handlePair(args);
     else if (cmd === '/hold' || cmd === '/buang') reply = await handleHold(args);
-    else reply = HELP; // /start, /help, and anything unknown
+    else if (cmd === '/start' || cmd === '/help') reply = HELP;
+    else if (cmd.startsWith('/'))
+      reply = 'Perintah tidak dikenali. Ketik /help untuk daftar perintah.';
+    else reply = await handleAsk(text);
 
     await sendTelegramMessage(reply, fromChat);
     return res.status(200).json({ ok: true });
