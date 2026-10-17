@@ -445,17 +445,6 @@ export default async function handler(
   // Escape hatch for the first run while wiring things up.
   const notifyDisabled = body.notify === false;
   let pushResult: PushResult | null = null;
-  const _t0 = Date.now();
-  // DIAGNOSTIC: persist phase timings so they survive the 60s kill.
-  const mark = async (label: string) => {
-    const ms = Date.now() - _t0;
-    console.log(`[timing] ${label} +${ms}ms`);
-    await supabase
-      .from('scan_cron_state')
-      .update({ error: `timing ${label} +${ms}ms`, updated_at: new Date().toISOString() })
-      .eq('id', id)
-      .then(() => undefined, () => undefined);
-  };
 
   try {
     // Load or create the cursor for this target.
@@ -465,7 +454,6 @@ export default async function handler(
       .eq('id', id)
       .maybeSingle();
     if (loadErr) return res.status(500).json({ error: `load state: ${loadErr.message}` });
-    await mark('state loaded');
 
     let state = existing as Record<string, unknown> | null;
     const nowIso = new Date().toISOString();
@@ -538,18 +526,23 @@ export default async function handler(
         skipPositions: skip,
         universeId,
       });
-      await mark('chunk fetched');
 
       // Universe membership or ordering changed mid-sweep → the positional
       // cursor is meaningless against the new ordering. Restart cleanly.
       const changed = chunk.universeId !== (universeId ?? chunk.universeId);
       if (universeId && changed) {
+        // Adopt the fresh id and count the tick. Without both, `universeId`
+        // stays stale against a universe that keeps re-hashing, so `changed`
+        // stays true, `chunks` never grows, and the loop re-runs a full chunk
+        // until the platform kills the function (504, sweep never advances).
+        await supabase.from('scan_cron_rows').delete().eq('sweep_id', sweepId);
+        universeId = chunk.universeId;
+        chunks++;
         sweepId = randomUUID();
         nextOffset = 0;
         doneRanges = '';
         scanned = 0;
         failed = 0;
-        await supabase.from('scan_cron_rows').delete().eq('sweep_id', sweepId);
         continue;
       }
 
@@ -570,7 +563,6 @@ export default async function handler(
           .upsert(rows, { onConflict: 'sweep_id,asset' });
         if (rowsErr) return res.status(500).json({ error: `persist rows: ${rowsErr.message}` });
         scanned += chunk.rankings.length;
-        await mark('rows upserted');
       }
 
       // Advance the cursor: the chunk covers [nextOffset, nextOffset+span).
@@ -589,7 +581,6 @@ export default async function handler(
     }
 
     const total = state.total ?? undefined;
-    await mark('chunk loop done');
 
     // Assemble and persist the final scan when the sweep completes.
     if (done) {
@@ -673,7 +664,6 @@ export default async function handler(
     if (stateErr) return res.status(500).json({ error: `update state: ${stateErr.message}` });
 
     const digest = createHash('sha1').update(sweepId).digest('hex').slice(0, 8);
-    await mark('finalize done');
     return res.status(200).json({
       ok: true,
       done,
