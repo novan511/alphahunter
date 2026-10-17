@@ -53,7 +53,9 @@ const HELP = [
   '/matrix [tf] [window] — ranking kekuatan antar-koin, mis. /matrix 4h 30',
   '/pair A B [tf] — chart ratio A/B dalam kata-kata, mis. /pair SOL BTC',
   '/hold [tf] [window] — tahan / kurangi / buang, mis. /hold 4h 30',
+  '/scan — pindai pasar baru + analisis ulang',
   '/help — pesan ini',
+  'Kamu juga bisa mengobrol bahasa natural (tanpa slash) untuk diskusi dengan AI trader.',
 ].join('\n');
 
 /** Default basket for /matrix — bare symbols, same set as the web panel. */
@@ -307,11 +309,13 @@ export async function handleHold(args: string[]): Promise<string> {
   return failed.length > 0 ? `${digest}\n\nSkip: ${failed.map(short).join(', ')}` : digest;
 }
 
-/** Ringkasan teks ringan dari scan terakhir untuk dijadikan konteks LLM. */
+/** Ringkasan lengkap scan terakhir untuk konteks analisis hedge fund manager. */
 function scanContext(scan: LastScanResponse): string {
   const r = scan.rankings ?? [];
-  const buys = r.filter((x) => x.finalSignal.includes('buy')).slice(0, 8);
-  const sells = r.filter((x) => x.finalSignal.includes('sell')).slice(0, 8);
+  const buys = r.filter((x) => x.finalSignal.includes('buy')).slice(0, 12);
+  const sells = r.filter((x) => x.finalSignal.includes('sell')).slice(0, 12);
+  const strongBuys = r.filter((x) => x.finalSignal === 'strong_buy').slice(0, 6);
+  const strongSells = r.filter((x) => x.finalSignal === 'strong_sell').slice(0, 6);
   const lines: string[] = [];
   lines.push(
     `Scan terakhir: ${scan.source ?? '—'} pada ${new Date(scan.scannedAt ?? Date.now()).toLocaleString(
@@ -329,10 +333,26 @@ function scanContext(scan: LastScanResponse): string {
       scan.signalsFound ?? r.filter((x) => x.finalSignal !== 'neutral').length
     }`
   );
+  if (strongBuys.length) {
+    lines.push(
+      'STRONG BUY: ' +
+        strongBuys.map((x) => `${x.asset.replace('USDT', '')} (conf ${x.confluenceScore}, conv ${Math.round(
+          (x.conviction ?? 0) * 100
+        )}%)`).join(', ')
+    );
+  }
   if (buys.length) {
     lines.push(
       'Buy: ' +
         buys.map((x) => `${x.asset.replace('USDT', '')} (conf ${x.confluenceScore})`).join(', ')
+    );
+  }
+  if (strongSells.length) {
+    lines.push(
+      'STRONG SELL: ' +
+        strongSells.map((x) => `${x.asset.replace('USDT', '')} (conf ${x.confluenceScore}, conv ${Math.round(
+          (x.conviction ?? 0) * 100
+        )}%)`).join(', ')
     );
   }
   if (sells.length) {
@@ -342,15 +362,49 @@ function scanContext(scan: LastScanResponse): string {
     );
   }
   const sectors = buildSectorHeat(r);
-  const early = sectors.filter((s) => s.phase === 'early' && s.members > 0).slice(0, 3);
+  const early = sectors.filter((s) => s.phase === 'early' && s.members > 0).slice(0, 4);
   if (early.length) {
-    lines.push('Sektor early: ' + early.map((s) => s.label).join(', '));
+    lines.push(
+      'Sektor early: ' +
+        early.map((s) => `${s.label} (early ${s.earlyScore})`).join(', ')
+    );
+  }
+  const confirmed = sectors.filter((s) => s.phase === 'confirmed' && s.members > 0).slice(0, 4);
+  if (confirmed.length) {
+    lines.push('Sektor terkonfirmasi: ' + confirmed.map((s) => s.label).join(', '));
   }
   return lines.join('\n');
 }
 
-/** Jawab pertanyaan bahasa natural trader menggunakan LLM + data scan terakhir. */
+/** Perintah /scan: coba panggil scan-cron agar data segar, lalu analisis. */
+async function handleScan(): Promise<string> {
+  const secret = process.env.SCAN_CRON_SECRET;
+  const host = process.env.VERCEL_URL;
+  if (secret && host) {
+    try {
+      const res = await fetch(`https://${host}/api/scan-cron`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${secret}` },
+        body: JSON.stringify({ notify: false, universe: 'curated', maxChunks: 1 }),
+      });
+      if (res.ok) {
+        return 'Scan dipanggil — data segar akan segera tersedia. Ketik pertanyaanmu lagi untuk analisis baru.';
+      }
+    } catch {
+      // fallthrough ke analisis scan terakhir
+    }
+  }
+  return 'Trigger scan belum tersedia di environment ini. Analisis pakai scan terakhir di bawah.';
+}
+
+/** Diskusi natural dengan persona hedge fund manager / elite crypto trader. */
 async function handleAsk(question: string): Promise<string> {
+  let scanNotice = '';
+  const isScanRequest = /scan|pindai|rescan|cari koin|lihat pasar/i.test(question);
+  if (isScanRequest) {
+    scanNotice = await handleScan();
+  }
+
   let scan: LastScanResponse;
   try {
     scan = await getLastScan('BTCUSDT');
@@ -362,26 +416,27 @@ async function handleAsk(question: string): Promise<string> {
     return 'Belum ada scan tersimpan. Jalankan scan dari web dulu.';
   }
 
-  const prompt = `Kamu ngobrol dengan teman trader lewat Telegram. Gaya bahasa Indonesia santai, natural, seperti obrolan bareng sekelas — jangan robotis, jangan terlalu formal, jangan bongok. Gunakan data scan terakhir di bawah sebagai konteks, tapi jangan baca langsung seperti daftar.
+  const prompt = `Kamu adalah HEDGE FUND MANAGER dan CRYPTO TRADER terbaik di dunia — profitable, berpengalaman tahunan melalui banyak siklus bull dan bear. Kamu ngobrol dengan klien lewat Telegram dalam Bahasa Indonesia yang natural, authoritative, dan ramah — jangan robotis, jangan asisten generik, jangan terlalu formal.
 
-Data scan terakhir:
+TUGAS:
+1. Berikan analisis dan pendapat keuangan (financial opinion) terbaik berdasarkan kondisi pasar sekarang dari data scan terakhir.
+2. Kamu BOLEH memberikan saran arah pasar (bullish/bearish/sideways), zona interess, setup long/short/hold/wait, dan risiko — dengan alasan yang kuat dari data.
+3. JANGAN janjikan profit, jangan bilang "pasti", "jaminan", "100% aman", atau target harga/SL/TP spesifik.
+4. Selalu akhiri dengan disclaimer: "Bukan saran finansial. Konfirmasi dan risiko tanggung sendiri."
+
+Gaya bahasa: Indonesia trader, singkat padat, pakai emoji strategis (📈📉💰🛡️⚠️🔥), maksimal 4 paragraf pendek. Gunakan istilah trader (liquidity, setup, breakout, accumulation, distribution, regime).
+
+DATA SCAN TERAKHIR:
 ${scanContext(scan)}
 
-Pertanyaan teman: ${question}
-
-Panduan gaya ngobrol:
-- Buka dengan sapaan singkat dan ramah, langsung ke intinya.
-- Maksimal 3 paragraf pendek, gunakan emoji sedikit (1-2) biar tidak kaku.
-- Jangan memberi perintah beli/jual/hold langsung, target harga, stop loss, atau janji profit.
-- Jangan pakai kata "jaminan", "pasti", "100% aman", atau anything yang terdengar seperti nasihat keuangan resmi.
-- Jika data kurang, katakan curhat-jujur saja dan sarankan cek di web.
-- Akhiri dengan disclaimer ringan: "Bukan saran finansial ya, konfirmasi sendiri sebelum entry."`;
+Pertanyaan / Perintah: ${question}`;
 
   try {
     const reply = await callLLM(prompt);
-    return reply.slice(0, 3500);
+    const head = scanNotice ? `${scanNotice}\n\n` : '';
+    return (head + reply).slice(0, 3500);
   } catch {
-    return 'LLM tidak bisa menjawab sekarang. Coba /top, /status, atau /hold.';
+    return (scanNotice ? scanNotice + '\n\n' : '') + 'LLM tidak bisa menjawab sekarang. Coba /top, /status, atau /hold.';
   }
 }
 
@@ -427,6 +482,7 @@ export default async function handler(
     else if (cmd === '/matrix') reply = await handleMatrix(args);
     else if (cmd === '/pair') reply = await handlePair(args);
     else if (cmd === '/hold' || cmd === '/buang') reply = await handleHold(args);
+    else if (cmd === '/scan') reply = await handleScan() + '\n\nKetik pertanyaan untuk analisis scan terbaru.';
     else if (cmd === '/start' || cmd === '/help') reply = HELP;
     else if (cmd.startsWith('/'))
       reply = 'Perintah tidak dikenali. Ketik /help untuk daftar perintah.';
