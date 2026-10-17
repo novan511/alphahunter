@@ -41,9 +41,11 @@ jobs:
           fi
           CHUNKS="${{ github.event.inputs.max_chunks || '1' }}"
           echo "POST ${DEPLOY_URL}/api/scan-cron (chunks=${CHUNKS})"
+          # 25s, not 40s: the tick also pays for cold start + composition
+          # re-base + persistence, and the route dies at maxDuration 60.
           curl --fail-with-body --silent --show-error --max-time 300 \
             -X POST "${DEPLOY_URL}/api/scan-cron" \
             -H "Authorization: Bearer ${SCAN_CRON_SECRET}" \
             -H "Content-Type: application/json" \
-            -d "{\"budgetMs\":40000,\"maxChunks\":${CHUNKS}}"
+            -d "{\"budgetMs\":25000,\"maxChunks\":${CHUNKS}}"
           echo

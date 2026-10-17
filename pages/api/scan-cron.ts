@@ -513,6 +513,29 @@ export default async function handler(
 
     let chunks = 0;
     let done = false;
+    // Re-base BEFORE scanning when the stored composition no longer matches.
+    // The curated id re-hashes whenever market-cap or 24h volume ordering moves,
+    // and discovering that only after a full chunk burns the whole budget twice
+    // (504), while doing it every tick leaves the sweep stuck at offset 0.
+    let resets = 0;
+    if (universeId && universeMode === 'curated') {
+      try {
+        const { buildCuratedUniverse } = await import('../../lib/curatedUniverse');
+        const current = await buildCuratedUniverse();
+        if (current.id !== universeId) {
+          await supabase.from('scan_cron_rows').delete().eq('sweep_id', sweepId);
+          universeId = current.id;
+          sweepId = randomUUID();
+          nextOffset = 0;
+          doneRanges = '';
+          scanned = 0;
+          failed = 0;
+          resets = 1;
+        }
+      } catch {
+        // Composition unavailable — the in-loop guard below still bounds restarts.
+      }
+    }
 
     while (chunks < maxChunks && !done) {
       const skip = parseRanges(doneRanges);
@@ -531,18 +554,14 @@ export default async function handler(
       // cursor is meaningless against the new ordering. Restart cleanly.
       const changed = chunk.universeId !== (universeId ?? chunk.universeId);
       if (universeId && changed) {
-        // Adopt the fresh id and count the tick. Without both, `universeId`
-        // stays stale against a universe that keeps re-hashing, so `changed`
-        // stays true, `chunks` never grows, and the loop re-runs a full chunk
-        // until the platform kills the function (504, sweep never advances).
         await supabase.from('scan_cron_rows').delete().eq('sweep_id', sweepId);
         universeId = chunk.universeId;
-        chunks++;
         sweepId = randomUUID();
         nextOffset = 0;
         doneRanges = '';
         scanned = 0;
         failed = 0;
+        if (++resets > 1) break;
         continue;
       }
 
