@@ -12,6 +12,7 @@
  */
 
 import type { EarlyWarning } from './algorithms/earlyWarning';
+import { tgFrame } from './tgMessage';
 
 const SENT_KEY = 'althunter:telegram-sent:v1';
 const ENABLED_KEY = 'althunter:telegram-enabled:v1';
@@ -104,8 +105,8 @@ function formatWarning(w: EarlyWarning): string {
 }
 
 export function buildTelegramDigest(warnings: EarlyWarning[]): string {
-  const head = 'ALERT ALTHUNTER — sektor mulai naik';
-  return [head, '', ...warnings.map(formatWarning)].join('\n').slice(0, 3900);
+  const body = ['', ...warnings.map(formatWarning)].join('\n');
+  return tgFrame('SEKTOR', body);
 }
 
 /**

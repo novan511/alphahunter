@@ -8,8 +8,10 @@ import { RegimeResult } from '../../lib/algorithms/marketRegime';
 import { AutonomousParams } from '../../lib/algorithms/autonomousParams';
 import { buildSummaries } from './scans-save';
 import { sendTelegramMessage, telegramEnv } from '../../lib/serverTelegram';
+import { tgFrame, TG_FOOTER, signalLabel } from '../../lib/tgMessage';
 import { buildTradeableList, TradeableCoin } from '../../lib/algorithms/tradeable';
 import { computeMatrix } from '../../lib/algorithms/correlationMatrix';
+import { tfSigned } from '../../lib/algorithms/multiTimeframe';
 import { buildPortfolioPlan, buildRotationDigest } from '../../lib/algorithms/portfolioVerdict';
 import { buildEarlyWarnings } from '../../lib/algorithms/earlyWarning';
 import { buildSectorHeat } from '../../lib/algorithms/narrativeHeat';
@@ -144,9 +146,10 @@ async function pushCompletedScan(args: {
   rankings: MultiTimeframeResult[];
   regime: RegimeResult;
   indexSymbol: string;
+  depth: string;
   sweepId: string;
 }): Promise<PushResult> {
-  const { supabase, rankings, regime, indexSymbol } = args;
+  const { supabase, rankings, regime, indexSymbol, depth } = args;
   const result: PushResult = { attempted: false, sent: 0, failed: 0, errors: [] };
 
   const { configured } = telegramEnv();
@@ -158,6 +161,26 @@ async function pushCompletedScan(args: {
 
   const interval = '4h';
   const windowBars = 30;
+  const id = stateId(indexSymbol, depth);
+
+  // Dedup cursor for sector flips: don't re-push the same sector within 24h.
+  // No-op (empty cursor) if the migration hasn't been applied yet, so a missing
+  // column never blocks rotation/entry pushes.
+  const nowIso = new Date().toISOString();
+  let lastNotify: Record<string, string> = {};
+  let freshSectors: Record<string, string> = {};
+  try {
+    const { data: stateRow } = await supabase
+      .from('scan_cron_state')
+      .select('last_notify')
+      .eq('id', id)
+      .maybeSingle();
+    lastNotify = (stateRow as { last_notify?: { sectors?: Record<string, string> } } | null)
+      ?.last_notify?.sectors ?? {};
+    freshSectors = { ...lastNotify };
+  } catch {
+    // Column not yet added — proceed without dedup.
+  }
 
   // ---- 1. Rotation verdict from the shared basket ----
   try {
@@ -185,7 +208,8 @@ async function pushCompletedScan(args: {
         const history = await loadDominanceHistory(supabase, matrix.symbols, interval, windowBars);
         const plan = buildPortfolioPlan(matrix, history);
         const digest = buildRotationDigest(plan);
-        const sent = await sendTelegramMessage(digest);
+        const framed = tgFrame('ROTASI', digest);
+        const sent = await sendTelegramMessage(framed);
         if (sent.ok) result.sent++;
         else { result.failed++; result.errors.push(`rotasi: ${sent.error}`); }
       }
@@ -199,11 +223,7 @@ async function pushCompletedScan(args: {
   try {
     const { trades } = buildTradeableList(rankings, {});
     if (trades.length > 0) {
-      const now = new Date().toLocaleString('id-ID', { timeZone: 'Asia/Jakarta', hour: '2-digit', minute: '2-digit' });
       const lines = [
-        '📊 ENTRY SIGNAL — ALTHUNTER',
-        '━━━━━━━━━━━━━━━━━━━━━━',
-        `⏰ ${now} WIB`,
         `📈 Timeframe: ${interval}`,
         `🌍 Regime: ${regime.regime.replace(/_/g, ' ').toUpperCase()}`,
         `✅ ${trades.length} koin lolos gate`,
@@ -211,12 +231,13 @@ async function pushCompletedScan(args: {
       ];
       for (const t of trades.slice(0, 8) as TradeableCoin[]) {
         const dir = t.direction === 'long' ? '🟢 LONG' : '🔴 SHORT';
-        lines.push(`• ${t.ticker} ${dir}`);
-        lines.push(`  Conf: ${t.confluenceScore} | Risiko: ${t.riskTier} | Maks: ${t.riskBudgetPct}% ekuitas`);
+        lines.push(`• ${t.ticker} ${dir} | Conf ${t.confluenceScore} | ${t.riskTier}`);
+        lines.push(`  Alasan: ${t.why[0]}`);
+        lines.push('');
       }
-      lines.push('');
       lines.push('⚠️ Risk per trade maks 1% ekuitas. Stop wajib sebelum entry.');
-      const sent = await sendTelegramMessage(lines.join('\n').slice(0, 3900));
+      const framed = tgFrame('ENTRY', lines.join('\n'));
+      const sent = await sendTelegramMessage(framed);
       if (sent.ok) result.sent++;
       else { result.failed++; result.errors.push(`entry: ${sent.error}`); }
     }
@@ -233,25 +254,38 @@ async function pushCompletedScan(args: {
     const warnings = buildEarlyWarnings(sectors, {}, rankings).filter(
       (w) => w.severity === 'high',
     );
-    if (warnings.length > 0) {
-      const now = new Date().toLocaleString('id-ID', { timeZone: 'Asia/Jakarta', hour: '2-digit', minute: '2-digit' });
-      const lines = [
-        '🔥 SEKTOR BERGERAK — ALTHUNTER',
-        '━━━━━━━━━━━━━━━━━━━━━━',
-        `⏰ ${now} WIB`,
-        '',
-      ];
-      for (const w of warnings.slice(0, 5)) {
+    const dayAgo = Date.now() - 24 * 60 * 60 * 1000;
+    const toSend = warnings.filter((w) => {
+      const sentAt = lastNotify[w.sectorId];
+      if (!sentAt) return true;
+      return new Date(sentAt).getTime() < dayAgo;
+    });
+
+    if (toSend.length > 0) {
+      const lines: string[] = [];
+      for (const w of toSend.slice(0, 5)) {
         lines.push(`${w.sectorIcon} ${w.title}`);
         lines.push(`  ${w.detail}`);
         if (w.coins.length > 0) {
           lines.push(`  Koin: ${w.coins.slice(0, 5).map((c) => `${c.ticker} (${c.confluenceScore})`).join(', ')}`);
         }
         lines.push('');
+        freshSectors[w.sectorId] = nowIso;
       }
-      const sent = await sendTelegramMessage(lines.join('\n').slice(0, 3900));
-      if (sent.ok) result.sent++;
-      else { result.failed++; result.errors.push(`sektor: ${sent.error}`); }
+      const framed = tgFrame('SEKTOR', lines.join('\n'), { footer: TG_FOOTER });
+      const sent = await sendTelegramMessage(framed);
+      if (sent.ok) {
+        result.sent++;
+        // Persist dedup cursor so the same sector isn't re-pushed within 24h.
+        await supabase
+          .from('scan_cron_state')
+          .update({ last_notify: { sectors: freshSectors } })
+          .eq('id', id)
+          .then(() => undefined, () => undefined);
+      } else {
+        result.failed++;
+        result.errors.push(`sektor: ${sent.error}`);
+      }
     }
   } catch (err) {
     result.failed++;
@@ -331,6 +365,29 @@ async function getAlreadySentKeys(supabase: Supa): Promise<Set<string>> {
   return set;
 }
 
+/** Alasan satu baris mengapa sinyal ini muncul, untuk dibaca di Telegram. */
+function signalReason(r: MultiTimeframeResult): string {
+  const parts: string[] = [];
+  const active = r.timeframes.filter((t) => t.active);
+  if (active.length > 0 && r.confluenceDirection !== 'none') {
+    const sign = r.confluenceDirection === 'bullish' ? 1 : -1;
+    const agreeing = active.filter((t) => tfSigned(t) * sign > 0).length;
+    parts.push(`${agreeing}/${active.length} TF searah`);
+  }
+  if (r.newestSignalAgeBars != null) {
+    parts.push(
+      r.newestSignalAgeBars === 0
+        ? 'trigger this bar'
+        : `trigger ${r.newestSignalAgeBars} bar lalu`
+    );
+  } else {
+    parts.push('tanpa trigger segar');
+  }
+  if (r.liquidityFactor < 0.65) parts.push('volume tipis');
+  if (r.capTier === 'micro') parts.push('micro cap');
+  return parts.join(', ');
+}
+
 /** Kirim Telegram hanya untuk sinyal confident yang belum pernah dikirim. */
 async function sendConfidentSignals(
   supabase: Supa,
@@ -342,11 +399,6 @@ async function sendConfidentSignals(
   if (!configured) return;
 
   const alreadySent = await getAlreadySentKeys(supabase);
-  const now = new Date().toLocaleString('id-ID', {
-    timeZone: 'Asia/Jakarta',
-    hour: '2-digit',
-    minute: '2-digit',
-  });
 
   for (const type of SIGNAL_TYPES) {
     const confident = rankings
@@ -357,36 +409,23 @@ async function sendConfidentSignals(
 
     if (confident.length === 0) continue;
 
-    const label =
-      type === 'strong_buy'
-        ? '🚀 STRONG BUY'
-        : type === 'buy'
-        ? '📈 BUY'
-        : type === 'strong_sell'
-        ? '🔻 STRONG SELL'
-        : '📉 SELL';
-
     const lines: string[] = [
-      `${label} — ALTHUNTER`,
-      '━━━━━━━━━━━━━━━━━━━━━━',
-      `⏰ ${now} WIB`,
-      `📈 TF: 4h | Index: ${indexSymbol} | Regime: ${regime.regime.replace(/_/g, ' ').toUpperCase()}`,
-      `🎯 ${confident.length} koin lolos confidence gate`,
+      `Regime: ${regime.regime.replace(/_/g, ' ').toUpperCase()} | Index: ${bare(indexSymbol)} | TF: 4h`,
       '',
     ];
-
     for (const r of confident) {
       lines.push(
-        `• ${r.asset} — Conf: ${r.confluenceScore} | Agr: ${Math.round(
+        `• ${bare(r.asset)} — ${signalLabel(type)} | Conf ${r.confluenceScore} | Agr ${Math.round(
           r.agreement * 100
-        )}% | Konv: ${Math.round(r.conviction * 100)}%`
+        )}% | Konv ${Math.round(r.conviction * 100)}%`
       );
+      lines.push(`  Alasan: ${signalReason(r)}`);
+      lines.push('');
     }
 
-    lines.push('');
-    lines.push('⚠️ Konfirmasi sendiri sebelum entry. Stop loss wajib.');
-
-    const sent = await sendTelegramMessage(lines.join('\n').slice(0, 3900));
+    const body = lines.join('\n').trimEnd();
+    const framed = tgFrame(signalLabel(type), body, { footer: TG_FOOTER });
+    const sent = await sendTelegramMessage(framed);
 
     // One update per class instead of per signal — same predicate, ~40x fewer
     // round-trips, and this still runs inside the 60s route budget.
@@ -647,6 +686,7 @@ export default async function handler(
             rankings,
             regime,
             indexSymbol,
+            depth,
             sweepId,
           });
         }

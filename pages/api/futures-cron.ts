@@ -7,6 +7,7 @@ import {
   type AlertState,
 } from '../../lib/futuresAlert';
 import { sendTelegramMessage, telegramEnv } from '../../lib/serverTelegram';
+import { tgFrame } from '../../lib/tgMessage';
 import { getSupabase, isSupabaseConfigured } from '../../lib/supabase';
 import { FUTURES_TIMEFRAMES } from '../../lib/futuresBook';
 
@@ -161,7 +162,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     if (!telegramEnv().configured) {
       sendError = 'Telegram belum dikonfigurasi (TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID)';
     } else {
-      const result = await sendTelegramMessage(message);
+      const result = await sendTelegramMessage(tgFrame('FUTURES', message));
       sent = result.ok;
       sendError = result.error;
     }

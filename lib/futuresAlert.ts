@@ -170,7 +170,7 @@ export function buildAlertMessage(
 
   if (alerts.length === 0) return '';
 
-  const lines: string[] = [`📈 FUTURES ${tf.toUpperCase()} · ${new Date().toISOString().slice(11, 16)} UTC`];
+  const lines: string[] = [`📈 FUTURES ${tf.toUpperCase()}`];
   const ml = macroLine(macro);
   if (ml) lines.push(ml);
   lines.push('');

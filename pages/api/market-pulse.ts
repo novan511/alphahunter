@@ -7,6 +7,7 @@ import {
   PulseSnapshot,
 } from '../../lib/quant/marketPulse';
 import { sendTelegramMessage, telegramEnv } from '../../lib/serverTelegram';
+import { tgFrame } from '../../lib/tgMessage';
 import { FUTURES_TIMEFRAMES } from '../../lib/futuresBook';
 
 export const config = { maxDuration: 60 };
@@ -55,9 +56,7 @@ function buildPulseMessage(p: PulseOutput, snap: PulseSnapshot): string {
     minute: '2-digit',
   });
   const lines: string[] = [
-    '🧭 MARKET PULSE — ALTHUNTER',
-    '━━━━━━━━━━━━━━━━━━━━━━',
-    `⏰ ${now} WIB · ${snap.tf.toUpperCase()}`,
+    `📈 TF: ${snap.tf.toUpperCase()}`,
     `🌍 ${p.marketRegime}`,
     '',
   ];
@@ -113,7 +112,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     if (!telegramEnv().configured) {
       sendError = 'Telegram belum dikonfigurasi (TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID)';
     } else {
-      const result = await sendTelegramMessage(message);
+      const result = await sendTelegramMessage(tgFrame('PULSE', message));
       sent = result.ok;
       sendError = result.error;
     }
