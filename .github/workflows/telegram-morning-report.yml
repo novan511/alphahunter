@@ -1,0 +1,36 @@
+name: Telegram morning report
+
+# 00:00 UTC = 07:00 WIB. Laporan pagi otomatis ke TELEGRAM_CHAT_ID via DeepSeek
+# + data scan terakhir dari engine Althunter.
+#
+# Offset :00 UTC sengaja berbeda dari scan-cron (:07/:37), futures-cron
+# (:03/:33), dan market-pulse (:13) agar tidak bentrok rate limit yang sama.
+on:
+  schedule:
+    - cron: '0 0 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: telegram-morning-report
+  cancel-in-progress: false
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Trigger morning report
+        env:
+          DEPLOY_URL: ${{ secrets.VERCEL_URL }}
+          SCAN_CRON_SECRET: ${{ secrets.SCAN_CRON_SECRET }}
+        run: |
+          set -euo pipefail
+          if [ -z "${DEPLOY_URL}" ] || [ -z "${SCAN_CRON_SECRET}" ]; then
+            echo "::error::VERCEL_URL and SCAN_CRON_SECRET secrets are required"
+            exit 1
+          fi
+          echo "GET ${DEPLOY_URL}/api/telegram-webhook?morning_report=1"
+          RESP=$(curl --fail-with-body --silent --show-error --max-time 240 \
+            -X GET "${DEPLOY_URL}/api/telegram-webhook?morning_report=1" \
+            -H "Authorization: Bearer ${SCAN_CRON_SECRET}")
+          echo "${RESP}"

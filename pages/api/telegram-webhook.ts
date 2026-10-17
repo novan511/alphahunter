@@ -309,13 +309,13 @@ export async function handleHold(args: string[]): Promise<string> {
   return failed.length > 0 ? `${digest}\n\nSkip: ${failed.map(short).join(', ')}` : digest;
 }
 
-/** Ringkasan lengkap scan terakhir untuk konteks analisis hedge fund manager. */
+/** Ringkasan lengkap scan terakhir untuk konteks analisis profesional. */
 function scanContext(scan: LastScanResponse): string {
   const r = scan.rankings ?? [];
-  const buys = r.filter((x) => x.finalSignal.includes('buy')).slice(0, 12);
-  const sells = r.filter((x) => x.finalSignal.includes('sell')).slice(0, 12);
-  const strongBuys = r.filter((x) => x.finalSignal === 'strong_buy').slice(0, 6);
-  const strongSells = r.filter((x) => x.finalSignal === 'strong_sell').slice(0, 6);
+  const strongBuys = r.filter((x) => x.finalSignal === 'strong_buy').slice(0, 8);
+  const buys = r.filter((x) => x.finalSignal === 'buy').slice(0, 8);
+  const strongSells = r.filter((x) => x.finalSignal === 'strong_sell').slice(0, 8);
+  const sells = r.filter((x) => x.finalSignal === 'sell').slice(0, 8);
   const lines: string[] = [];
   lines.push(
     `Scan terakhir: ${scan.source ?? '—'} pada ${new Date(scan.scannedAt ?? Date.now()).toLocaleString(
@@ -336,42 +336,55 @@ function scanContext(scan: LastScanResponse): string {
   if (strongBuys.length) {
     lines.push(
       'STRONG BUY: ' +
-        strongBuys.map((x) => `${x.asset.replace('USDT', '')} (conf ${x.confluenceScore}, conv ${Math.round(
-          (x.conviction ?? 0) * 100
-        )}%)`).join(', ')
+        strongBuys
+          .map(
+            (x) =>
+              `${x.asset.replace('USDT', '')} (conf ${x.confluenceScore}, conv ${Math.round(
+                (x.conviction ?? 0) * 100
+              )}%, agree ${Math.round((x.agreement ?? 0) * 100)}%)`
+          )
+          .join(', ')
     );
   }
   if (buys.length) {
     lines.push(
-      'Buy: ' +
+      'BUY: ' +
         buys.map((x) => `${x.asset.replace('USDT', '')} (conf ${x.confluenceScore})`).join(', ')
     );
   }
   if (strongSells.length) {
     lines.push(
       'STRONG SELL: ' +
-        strongSells.map((x) => `${x.asset.replace('USDT', '')} (conf ${x.confluenceScore}, conv ${Math.round(
-          (x.conviction ?? 0) * 100
-        )}%)`).join(', ')
+        strongSells
+          .map(
+            (x) =>
+              `${x.asset.replace('USDT', '')} (conf ${x.confluenceScore}, conv ${Math.round(
+                (x.conviction ?? 0) * 100
+              )}%)`
+          )
+          .join(', ')
     );
   }
   if (sells.length) {
     lines.push(
-      'Sell: ' +
+      'SELL: ' +
         sells.map((x) => `${x.asset.replace('USDT', '')} (conf ${x.confluenceScore})`).join(', ')
     );
   }
   const sectors = buildSectorHeat(r);
-  const early = sectors.filter((s) => s.phase === 'early' && s.members > 0).slice(0, 4);
+  const early = sectors.filter((s) => s.phase === 'early' && s.members > 0).slice(0, 5);
   if (early.length) {
     lines.push(
       'Sektor early: ' +
-        early.map((s) => `${s.label} (early ${s.earlyScore})`).join(', ')
+        early.map((s) => `${s.label} (early ${s.earlyScore}, ${s.buyCount} buy)`).join(', ')
     );
   }
-  const confirmed = sectors.filter((s) => s.phase === 'confirmed' && s.members > 0).slice(0, 4);
+  const confirmed = sectors.filter((s) => s.phase === 'confirmed' && s.members > 0).slice(0, 5);
   if (confirmed.length) {
-    lines.push('Sektor terkonfirmasi: ' + confirmed.map((s) => s.label).join(', '));
+    lines.push(
+      'Sektor terkonfirmasi: ' +
+        confirmed.map((s) => `${s.label} (heat ${s.heat})`).join(', ')
+    );
   }
   return lines.join('\n');
 }
@@ -397,6 +410,49 @@ async function handleScan(): Promise<string> {
   return 'Trigger scan belum tersedia di environment ini. Analisis pakai scan terakhir di bawah.';
 }
 
+/** Laporan pagi otomatis (07:00 WIB) — dikirim ke TELEGRAM_CHAT_ID. */
+async function handleMorningReport(): Promise<string> {
+  let scan: LastScanResponse;
+  try {
+    scan = await getLastScan('BTCUSDT');
+  } catch {
+    return 'Gagal membaca scan terakhir untuk laporan pagi.';
+  }
+  if (!scan.configured || !scan.found || !scan.rankings?.length) {
+    return 'Belum ada scan tersimpan untuk laporan pagi.';
+  }
+
+  const prompt = `Kamu adalah HEDGE FUND MANAGER dan ELITE CRYPTO TRADER terbaik di dunia — profitable selama bertahun-tahun melalui siklus bull dan bear, sangat sensitif terhadap perubahan pasar. Buat LAPORAN PAGI (07:00 WIB) dalam Bahasa Indonesia untuk klien, berdasarkan data scan terakhir dari engine Althunter (jangkar inti yang tidak boleh diabaikan).
+
+FRAMEWORK ANALISIS YANG HARUS DIGUNAKAN:
+1. MAKRO: DXY, VIX, US10Y, likuiditas global, risk-on/risk-off, macro regime (akumulasi / distribusi / ekspansi / kontraksi).
+2. STRUKTUR PASAR: BOS (Break of Structure), CHoCH (Change of Character), liquidity sweep, order block, fair value gap, inducement.
+3. INDIKATOR TEKNIS: RSI (overbought >70 / oversold <30 / divergence), EMA alignment (20/50/200), volume profile, momentum.
+4. POLA HARGA: double top/bottom, head and shoulders, flag/pennant, wedge, cup & handle, ascending/descending triangle.
+5. ICT / SMC: market structure shift, breaker block, mitigation block, optimal trade entry (OTE), premium/discount zone, killzone (Asia/London/NY).
+6. SENTIMEN: funding rate, open interest, long/short ratio, fear & greed context.
+
+ATURAN KERAS (JANGAN DILANGGAR):
+- DATA SCAN ADALAH JANGKAR: Pendapat dan rekomendasi HARUS didasarkan pada data scan terakhir di bawah. Jangan halusinasi indikator yang tidak ada dalam data. Jika data tidak cukup untuk menyimpulkan sesuatu, katakan "data tidak cukup" dan arahkan ke web.
+- BOLEH memberikan arah pasar (bullish/bearish/sideways), zona interess, setup long/short/hold/wait, dan analisis risiko — dengan alasan yang kuat.
+- JANGAN janjikan profit, jangan bilang "pasti", "jaminan", "100% aman", atau target harga / SL / TP spesifik.
+- Selalu akhiri dengan disclaimer: "Bukan saran finansial. Konfirmasi dan risiko tanggung sendiri."
+
+Gaya: Bahasa Indonesia trader, authoritative tapi ramah, pakai emoji strategis (📈📉💰🛡️⚠️🔥🌅), Maksimal 6 paragraf pendek, terstruktur dengan judul paragraf singkat. Gunakan istilah trader profesional.
+
+DATA SCAN TERAKHIR (JANGKAR):
+${scanContext(scan)}
+
+Buat laporan pagi sekarang.`;
+
+  try {
+    const reply = await callLLM(prompt);
+    return reply.slice(0, 4000);
+  } catch {
+    return 'LLM tidak bisa menghasilkan laporan pagi sekarang.';
+  }
+}
+
 /** Diskusi natural dengan persona hedge fund manager / elite crypto trader. */
 async function handleAsk(question: string): Promise<string> {
   let scanNotice = '';
@@ -416,7 +472,15 @@ async function handleAsk(question: string): Promise<string> {
     return 'Belum ada scan tersimpan. Jalankan scan dari web dulu.';
   }
 
-  const prompt = `Kamu adalah HEDGE FUND MANAGER dan CRYPTO TRADER terbaik di dunia — profitable, berpengalaman tahunan melalui banyak siklus bull dan bear. Kamu ngobrol dengan klien lewat Telegram dalam Bahasa Indonesia yang natural, authoritative, dan ramah — jangan robotis, jangan asisten generik, jangan terlalu formal.
+  const prompt = `Kamu adalah HEDGE FUND MANAGER dan ELITE CRYPTO TRADER terbaik di dunia — profitable selama bertahun-tahun melalui banyak siklus bull dan bear, sangat sensitif terhadap perubahan pasar. Kamu ngobrol dengan klien lewat Telegram dalam Bahasa Indonesia yang natural, authoritative, dan ramah — jangan robotis, jangan asisten generik, jangan terlalu formal.
+
+FRAMEWORK ANALISIS YANG HARUS DIGUNAKAN:
+1. MAKRO: DXY, VIX, US10Y, likuiditas global, risk-on/risk-off, macro regime.
+2. STRUKTUR PASAR: BOS, CHoCH, liquidity sweep, order block, fair value gap.
+3. INDIKATOR TEKNIS: RSI, EMA alignment (20/50/200), volume profile, momentum.
+4. POLA HARGA: double top/bottom, head and shoulders, flag/pennant, wedge.
+5. ICT / SMC: market structure shift, breaker block, mitigation block, OTE, premium/discount zone, killzone.
+6. SENTIMEN: funding rate, open interest, long/short ratio.
 
 TUGAS:
 1. Berikan analisis dan pendapat keuangan (financial opinion) terbaik berdasarkan kondisi pasar sekarang dari data scan terakhir.
@@ -424,9 +488,11 @@ TUGAS:
 3. JANGAN janjikan profit, jangan bilang "pasti", "jaminan", "100% aman", atau target harga/SL/TP spesifik.
 4. Selalu akhiri dengan disclaimer: "Bukan saran finansial. Konfirmasi dan risiko tanggung sendiri."
 
-Gaya bahasa: Indonesia trader, singkat padat, pakai emoji strategis (📈📉💰🛡️⚠️🔥), maksimal 4 paragraf pendek. Gunakan istilah trader (liquidity, setup, breakout, accumulation, distribution, regime).
+ATURAN KERAS: DATA SCAN ADALAH JANGKAR. Pendapat HARUS didasarkan pada data scan terakhir. Jangan halusinasi indikator yang tidak ada. Jika data tidak cukup, katakan "data tidak cukup" dan arahkan ke web.
 
-DATA SCAN TERAKHIR:
+Gaya bahasa: Indonesia trader, singkat padat, pakai emoji strategis (📈📉💰🛡️⚠️🔥), maksimal 4 paragraf pendek. Gunakan istilah trader profesional.
+
+DATA SCAN TERAKHIR (JANGKAR):
 ${scanContext(scan)}
 
 Pertanyaan / Perintah: ${question}`;
@@ -445,6 +511,22 @@ export default async function handler(
   res: NextApiResponse
 ) {
   if (req.method === 'GET') {
+    // Morning-report endpoint for cron (07:00 WIB = 00:00 UTC). Protected like
+    // the other cron routes: SCAN_CRON_SECRET bearer or x-vercel-cron header.
+    if (req.query.morning_report === '1') {
+      const secret = process.env.SCAN_CRON_SECRET;
+      if (!secret) return res.status(500).json({ ok: false, reason: 'SCAN_CRON_SECRET not set' });
+      const header = req.headers.authorization;
+      const ok =
+        (header && header.startsWith('Bearer ') && header.slice(7) === secret) ||
+        req.headers['x-vercel-cron'] != null;
+      if (!ok) return res.status(401).json({ error: 'unauthorized' });
+      const { chatId } = telegramEnv();
+      if (!chatId) return res.status(200).json({ ok: false, reason: 'TELEGRAM_CHAT_ID not set' });
+      const report = await handleMorningReport();
+      await sendTelegramMessage(report, String(chatId));
+      return res.status(200).json({ ok: true, sent: true });
+    }
     // Health check for the operator (browser), not for Telegram.
     return res.status(200).json({ ok: true, usage: 'Telegram POSTs updates here; set via setWebhook' });
   }
