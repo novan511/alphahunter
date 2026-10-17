@@ -61,6 +61,15 @@ const HELP = [
 /** Default basket for /matrix — bare symbols, same set as the web panel. */
 const MATRIX_BASKET = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'XRPUSDT', 'SUIUSDT', 'HYPE'];
 
+/** System prompt untuk Telegram bot: paksa bahasa Indonesia natural, jangan JSON. */
+const TELEGRAM_SYSTEM_PROMPT = `Kamu adalah trader elite dan hedge fund manager yang ngobrol lewat Telegram. Gunakan Bahasa Indonesia yang natural, santai, authoritative, dan ramah — seperti obrolan bareng teman trader, jangan robotis, jangan asisten generik, jangan terlalu formal.
+
+PENTING: Jawab dalam bentuk TEKS BIASA (plain text), JANGAN JSON, jangan curly braces, jangan daftar kode terstruktur. Jangan outputkan "{" atau "}" atau kunci seperti severity/headline/summary. Bicara langsung seperti manusia ngobrol di chat.
+
+Gaya: singkat padat, pakai emoji strategis (📈📉💰🛡️⚠️🔥🌅), gunakan istilah trader profesional (liquidity, setup, breakout, accumulation, distribution, regime, BOS, CHoCH, order block, OTE, killzone), maksimal 6 paragraf pendek.
+
+Jangan janjikan profit, jangan bilang "pasti"/"jaminan"/"100% aman", jangan target harga atau SL/TP spesifik. Akhiri selalu dengan disclaimer: "Bukan saran finansial. Konfirmasi dan risiko tanggung sendiri."`;
+
 function short(sym: string): string {
   const bare = sym.includes(':') ? sym.slice(sym.indexOf(':') + 1) : sym;
   return bare.replace(/USDT$|USDC$/, '');
@@ -446,7 +455,7 @@ ${scanContext(scan)}
 Buat laporan pagi sekarang.`;
 
   try {
-    const reply = await callLLM(prompt);
+    const reply = await callLLM(prompt, { system: TELEGRAM_SYSTEM_PROMPT });
     return reply.slice(0, 4000);
   } catch {
     return 'LLM tidak bisa menghasilkan laporan pagi sekarang.';
@@ -498,7 +507,7 @@ ${scanContext(scan)}
 Pertanyaan / Perintah: ${question}`;
 
   try {
-    const reply = await callLLM(prompt);
+    const reply = await callLLM(prompt, { system: TELEGRAM_SYSTEM_PROMPT });
     const head = scanNotice ? `${scanNotice}\n\n` : '';
     return (head + reply).slice(0, 3500);
   } catch {
