@@ -59,7 +59,7 @@ const HELP = [
 ].join('\n');
 
 /** Default basket for /matrix — bare symbols, same set as the web panel. */
-const MATRIX_BASKET = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'XRPUSDT', 'SUIUSDT', 'HYPE'];
+const MATRIX_BASKET = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'XRPUSDT', 'SUIUSDT', 'HYPEUSDT'];
 
 /** System prompt untuk Telegram bot: paksa bahasa Indonesia natural, jangan JSON. */
 const TELEGRAM_SYSTEM_PROMPT = `Kamu adalah trader elite dan hedge fund manager yang ngobrol lewat Telegram. Gunakan Bahasa Indonesia yang natural, santai, authoritative, dan ramah — seperti obrolan bareng teman trader, jangan robotis, jangan asisten generik, jangan terlalu formal.
@@ -69,6 +69,28 @@ PENTING: Jawab dalam bentuk TEKS BIASA (plain text), JANGAN JSON, jangan curly b
 Gaya: singkat padat, pakai emoji strategis (📈📉💰🛡️⚠️🔥🌅), gunakan istilah trader profesional (liquidity, setup, breakout, accumulation, distribution, regime, BOS, CHoCH, order block, OTE, killzone), maksimal 6 paragraf pendek.
 
 Jangan janjikan profit, jangan bilang "pasti"/"jaminan"/"100% aman", jangan target harga atau SL/TP spesifik. Akhiri selalu dengan disclaimer: "Bukan saran finansial. Konfirmasi dan risiko tanggung sendiri."`;
+
+/** Simple in-memory rate limiter for AI chat to prevent DeepSeek spam.
+ *  Key = chatId, value = last request timestamp. Cooldown: 30 seconds.
+ */
+const AI_RATE_LIMIT_MS = 30_000;
+const aiLastAsk: Map<string, number> = new Map();
+
+function aiRateLimited(chatId: string): { limited: boolean; retryAfter?: number } {
+  const now = Date.now();
+  const last = aiLastAsk.get(chatId);
+  if (last != null && now - last < AI_RATE_LIMIT_MS) {
+    return { limited: true, retryAfter: Math.ceil((AI_RATE_LIMIT_MS - (now - last)) / 1000) };
+  }
+  aiLastAsk.set(chatId, now);
+  // Trim old entries to prevent unbounded growth.
+  if (aiLastAsk.size > 500) {
+    aiLastAsk.forEach((v, k) => {
+      if (now - v > AI_RATE_LIMIT_MS * 10) aiLastAsk.delete(k);
+    });
+  }
+  return { limited: false };
+}
 
 function short(sym: string): string {
   const bare = sym.includes(':') ? sym.slice(sym.indexOf(':') + 1) : sym;
@@ -457,13 +479,20 @@ Buat laporan pagi sekarang.`;
   try {
     const reply = await callLLM(prompt, { system: TELEGRAM_SYSTEM_PROMPT });
     return reply.slice(0, 4000);
-  } catch {
-    return 'LLM tidak bisa menghasilkan laporan pagi sekarang.';
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : 'unknown error';
+    return `Laporan pagi gagal dihasilkan (${msg}). Coba lagi nanti atau cek /status.`;
   }
 }
 
 /** Diskusi natural dengan persona hedge fund manager / elite crypto trader. */
-async function handleAsk(question: string): Promise<string> {
+async function handleAsk(chatId: string, question: string): Promise<string> {
+  // Rate limit: mencegah spam DeepSeek API.
+  const limit = aiRateLimited(chatId);
+  if (limit.limited) {
+    return `Tunggu sebentar dulu ya (${limit.retryAfter} detik lagi) sebelum tanya lagi — biar API-nya tidak overlimit.`;
+  }
+
   let scanNotice = '';
   const isScanRequest = /scan|pindai|rescan|cari koin|lihat pasar/i.test(question);
   if (isScanRequest) {
@@ -510,8 +539,10 @@ Pertanyaan / Perintah: ${question}`;
     const reply = await callLLM(prompt, { system: TELEGRAM_SYSTEM_PROMPT });
     const head = scanNotice ? `${scanNotice}\n\n` : '';
     return (head + reply).slice(0, 3500);
-  } catch {
-    return (scanNotice ? scanNotice + '\n\n' : '') + 'LLM tidak bisa menjawab sekarang. Coba /top, /status, atau /hold.';
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : 'unknown error';
+    return (scanNotice ? scanNotice + '\n\n' : '') +
+      `AI trader sedang sibuk atau error (${msg}). Coba lagi sebentar, atau gunakan /top, /status, /hold.`;
   }
 }
 
@@ -577,7 +608,7 @@ export default async function handler(
     else if (cmd === '/start' || cmd === '/help') reply = HELP;
     else if (cmd.startsWith('/'))
       reply = 'Perintah tidak dikenali. Ketik /help untuk daftar perintah.';
-    else reply = await handleAsk(text);
+    else reply = await handleAsk(fromChat, text);
 
     await sendTelegramMessage(reply, fromChat);
     return res.status(200).json({ ok: true });
