@@ -289,27 +289,30 @@ async function persistTopSignals(
   supabase: Supa,
   rankings: MultiTimeframeResult[]
 ): Promise<void> {
+  // One insert for all classes: this runs inside the 60s route budget, and a
+  // row-per-round-trip costs ~0.3s each.
+  const rows: Record<string, unknown>[] = [];
   for (const type of SIGNAL_TYPES) {
-    const top10 = rankings
-      .filter((r) => r.finalSignal === type)
+    for (const r of rankings
+      .filter((x) => x.finalSignal === type)
       .sort((a, b) => b.confluenceScore - a.confluenceScore)
-      .slice(0, 10);
-
-    for (const r of top10) {
-      await supabase
-        .from('top_signals')
-        .insert({
-          signal_type: type,
-          asset: r.asset,
-          confluence_score: r.confluenceScore,
-          conviction: r.conviction ?? null,
-          agreement: r.agreement ?? null,
-          timeframe: '4h',
-          sent_to_telegram: false,
-        })
-        .then(() => undefined, () => undefined); // jangan gagalkan scan saat insert gagal
+      .slice(0, 10)) {
+      rows.push({
+        signal_type: type,
+        asset: r.asset,
+        confluence_score: r.confluenceScore,
+        conviction: r.conviction ?? null,
+        agreement: r.agreement ?? null,
+        timeframe: '4h',
+        sent_to_telegram: false,
+      });
     }
   }
+  if (rows.length === 0) return;
+  await supabase
+    .from('top_signals')
+    .insert(rows)
+    .then(() => undefined, () => undefined); // jangan gagalkan scan saat insert gagal
 }
 
 /** Ambil asset yang sudah dikirim Telegram dalam 24 jam terakhir (dedup). */
@@ -385,16 +388,15 @@ async function sendConfidentSignals(
 
     const sent = await sendTelegramMessage(lines.join('\n').slice(0, 3900));
 
-    // Tandai sudah dikirim agar tidak duplikat di scan berikutnya.
-    for (const r of confident) {
-      await supabase
-        .from('top_signals')
-        .update({ sent_to_telegram: true })
-        .eq('asset', r.asset)
-        .eq('signal_type', type)
-        .eq('sent_to_telegram', false)
-        .then(() => undefined, () => undefined);
-    }
+    // One update per class instead of per signal — same predicate, ~40x fewer
+    // round-trips, and this still runs inside the 60s route budget.
+    await supabase
+      .from('top_signals')
+      .update({ sent_to_telegram: true })
+      .in('asset', confident.map((r) => r.asset))
+      .eq('signal_type', type)
+      .eq('sent_to_telegram', false)
+      .then(() => undefined, () => undefined);
 
     if (!sent.ok) {
       console.error(`[telegram] ${type}: ${sent.error}`);
