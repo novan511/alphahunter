@@ -16,6 +16,7 @@ interface CacheEntry {
 const klineCache = new Map<string, CacheEntry>();
 
 function formatBinanceKline(raw: BinanceKline): Candle {
+  const taker = parseFloat(raw[9]);
   return {
     time: Math.floor(raw[0] / 1000),
     open: parseFloat(raw[1]),
@@ -23,6 +24,7 @@ function formatBinanceKline(raw: BinanceKline): Candle {
     low: parseFloat(raw[3]),
     close: parseFloat(raw[4]),
     volume: parseFloat(raw[5]),
+    takerBuyVolume: Number.isFinite(taker) ? taker : undefined,
   };
 }
 

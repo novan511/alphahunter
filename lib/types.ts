@@ -5,6 +5,8 @@ export interface Candle {
   low: number;
   close: number;
   volume: number;
+  /** Taker buy base volume. Binance spot only — absent on other venues. */
+  takerBuyVolume?: number;
 }
 
 export interface RSDataPoint {

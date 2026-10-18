@@ -9,7 +9,12 @@ import { getSupabase } from '../../lib/supabase';
 import { callLLM } from '../../lib/quant/marketNarrator';
 import { fetchPairRatio, windowStrength } from '../../lib/algorithms/pairRatio';
 import { fetchKlinesRouted } from '../../lib/universe';
+import { fetchCoinFlow, flowLine } from '../../lib/quant/derivatives';
 import type { Candle } from '../../lib/types';
+
+// The morning-report GET runs a live data fetch + an LLM round trip; the
+// default 10s budget is not enough on a cold function.
+export const config = { maxDuration: 60 };
 
 /**
  * Incoming Telegram webhook — makes the bot conversational.
@@ -341,7 +346,7 @@ export async function handleHold(args: string[]): Promise<string> {
 }
 
 /** Ringkasan lengkap scan terakhir untuk konteks analisis profesional. */
-function scanContext(scan: LastScanResponse): string {
+async function scanContext(scan: LastScanResponse): Promise<string> {
   const r = scan.rankings ?? [];
   const strongBuys = r.filter((x) => x.finalSignal === 'strong_buy').slice(0, 8);
   const buys = r.filter((x) => x.finalSignal === 'buy').slice(0, 8);
@@ -417,6 +422,30 @@ function scanContext(scan: LastScanResponse): string {
         confirmed.map((s) => `${s.label} (heat ${s.heat})`).join(', ')
     );
   }
+
+  // Live derivatives + spot order flow for the coins that matter. Fetched
+  // separately because the scan itself only sees candles — labelled as live so
+  // the model never mixes it with the persisted scan timestamp.
+  const flowCoins = Array.from(
+    new Set([
+      scan.indexSymbol ?? 'BTCUSDT',
+      ...strongBuys.map((x) => x.asset),
+      ...buys.map((x) => x.asset),
+      ...strongSells.map((x) => x.asset),
+      ...sells.map((x) => x.asset),
+    ])
+  );
+  try {
+    const flow = await fetchCoinFlow(flowCoins);
+    const flowLines = Array.from(flow.values())
+      .map(flowLine)
+      .filter((l): l is string => Boolean(l));
+    if (flowLines.length) {
+      lines.push('', 'FUNDING & CVD SPOT (data live, bukan bagian scan):', ...flowLines);
+    }
+  } catch {
+    // Data live gagal — analisis tetap jalan dengan data scan saja.
+  }
   return lines.join('\n');
 }
 
@@ -461,7 +490,7 @@ FRAMEWORK ANALISIS YANG HARUS DIGUNAKAN:
 3. INDIKATOR TEKNIS: RSI (overbought >70 / oversold <30 / divergence), EMA alignment (20/50/200), volume profile, momentum.
 4. POLA HARGA: double top/bottom, head and shoulders, flag/pennant, wedge, cup & handle, ascending/descending triangle.
 5. ICT / SMC: market structure shift, breaker block, mitigation block, optimal trade entry (OTE), premium/discount zone, killzone (Asia/London/NY).
-6. SENTIMEN: funding rate, open interest, long/short ratio, fear & greed context.
+6. SENTIMEN & ORDER FLOW: funding rate, spot CVD (taker delta), open interest, long/short ratio, fear & greed context. Bagian "FUNDING & CVD SPOT" di bawah adalah data live — pakai untuk membaca siapa yang agresif (buyer atau seller) dan apakah crowd sedang long/short.
 
 ATURAN KERAS (JANGAN DILANGGAR):
 - DATA SCAN ADALAH JANGKAR: Pendapat dan rekomendasi HARUS didasarkan pada data scan terakhir di bawah. Jangan halusinasi indikator yang tidak ada dalam data. Jika data tidak cukup untuk menyimpulkan sesuatu, katakan "data tidak cukup" dan arahkan ke web.
@@ -472,7 +501,7 @@ ATURAN KERAS (JANGAN DILANGGAR):
 Gaya: Bahasa Indonesia trader, authoritative tapi ramah, pakai emoji strategis (📈📉💰🛡️⚠️🔥🌅), Maksimal 6 paragraf pendek, terstruktur dengan judul paragraf singkat. Gunakan istilah trader profesional.
 
 DATA SCAN TERAKHIR (JANGKAR):
-${scanContext(scan)}
+${await scanContext(scan)}
 
 Buat laporan pagi sekarang.`;
 
@@ -518,7 +547,7 @@ FRAMEWORK ANALISIS YANG HARUS DIGUNAKAN:
 3. INDIKATOR TEKNIS: RSI, EMA alignment (20/50/200), volume profile, momentum.
 4. POLA HARGA: double top/bottom, head and shoulders, flag/pennant, wedge.
 5. ICT / SMC: market structure shift, breaker block, mitigation block, OTE, premium/discount zone, killzone.
-6. SENTIMEN: funding rate, open interest, long/short ratio.
+6. SENTIMEN & ORDER FLOW: funding rate, spot CVD (taker delta), open interest, long/short ratio. Bagian "FUNDING & CVD SPOT" di bawah adalah data live — pakai untuk membaca siapa yang agresif (buyer atau seller) dan apakah crowd sedang long/short.
 
 TUGAS:
 1. Berikan analisis dan pendapat keuangan (financial opinion) terbaik berdasarkan kondisi pasar sekarang dari data scan terakhir.
@@ -531,7 +560,7 @@ ATURAN KERAS: DATA SCAN ADALAH JANGKAR. Pendapat HARUS didasarkan pada data scan
 Gaya bahasa: Indonesia trader, singkat padat, pakai emoji strategis (📈📉💰🛡️⚠️🔥), maksimal 4 paragraf pendek. Gunakan istilah trader profesional.
 
 DATA SCAN TERAKHIR (JANGKAR):
-${scanContext(scan)}
+${await scanContext(scan)}
 
 Pertanyaan / Perintah: ${question}`;
 
