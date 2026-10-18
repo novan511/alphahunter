@@ -146,6 +146,15 @@ export interface MultiTimeframeResult {
   /** Category label, e.g. "Layer 1". */
   categoryLabel?: string;
   rationale: string;
+  /**
+   * Live last close of the emission series (4h, falling back to 1h then 1d),
+   * snapshotted when the result is assembled. This is the price the operator
+   * sees at emit; the signal ledger stores it verbatim so the number is never
+   * re-derived from a later candle.
+   */
+  price?: number | null;
+  /** Timeframe `price` was taken from: '4h' | '1h' | '1d', null when no data. */
+  priceTf?: string | null;
 }
 
 export interface MultiTimeframeOptions {
@@ -598,6 +607,15 @@ export function analyzeMultiTimeframe(
     `liq=${(liq * 100).toFixed(0)}%`,
   ].join(' · ');
 
+  // Emission snapshot price: the live last close of the 4h series, falling back
+  // to 1h then 1d. Additive — no scoring path reads it.
+  const priceTf = (['4h', '1h', '1d'] as const).find(
+    (tf) => (timeframeData[tf]?.asset.length ?? 0) > 0
+  );
+  const price = priceTf
+    ? timeframeData[priceTf].asset[timeframeData[priceTf].asset.length - 1].close
+    : null;
+
   return {
     asset: assetSymbol,
     timeframes: tfSignals,
@@ -617,5 +635,7 @@ export function analyzeMultiTimeframe(
     category: catId,
     categoryLabel: catMeta.label,
     rationale,
+    price: price ?? null,
+    priceTf: priceTf ?? null,
   };
 }

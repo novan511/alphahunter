@@ -17,6 +17,8 @@ import { buildEarlyWarnings } from '../../lib/algorithms/earlyWarning';
 import { buildSectorHeat } from '../../lib/algorithms/narrativeHeat';
 import { fetchPairRatio } from '../../lib/algorithms/pairRatio';
 import { fetchKlinesRouted } from '../../lib/universe';
+import { recordSignals, scoreLedger } from '../../lib/signalLedger';
+import { getSupabaseAdmin } from '../../lib/supabaseAdmin';
 import type { Candle } from '../../lib/types';
 
 export const config = { maxDuration: 60 };
@@ -388,24 +390,35 @@ function signalReason(r: MultiTimeframeResult): string {
   return parts.join(', ');
 }
 
+/** Which signals this tick actually sent, and which the 24h dedup held back. */
+interface SendInfo {
+  pushed: Set<string>;
+  deduped: Set<string>;
+}
+
 /** Kirim Telegram hanya untuk sinyal confident yang belum pernah dikirim. */
 async function sendConfidentSignals(
   supabase: Supa,
   rankings: MultiTimeframeResult[],
   regime: RegimeResult,
   indexSymbol: string
-): Promise<void> {
+): Promise<SendInfo> {
+  const info: SendInfo = { pushed: new Set(), deduped: new Set() };
   const { configured } = telegramEnv();
-  if (!configured) return;
+  if (!configured) return info;
 
   const alreadySent = await getAlreadySentKeys(supabase);
 
   for (const type of SIGNAL_TYPES) {
-    const confident = rankings
+    const dup = (asset: string) => alreadySent.has(`${type}:${asset}`);
+    const confidentAll = rankings
       .filter((r) => r.finalSignal === type && isConfidentSignal(r))
       .sort((a, b) => b.confluenceScore - a.confluenceScore)
-      .slice(0, 10)
-      .filter((r) => !alreadySent.has(`${type}:${r.asset}`));
+      .slice(0, 10);
+    const confident = confidentAll.filter((r) => !dup(r.asset));
+    for (const r of confidentAll) {
+      if (dup(r.asset)) info.deduped.add(`${type}:${r.asset}`);
+    }
 
     if (confident.length === 0) continue;
 
@@ -437,10 +450,14 @@ async function sendConfidentSignals(
       .eq('sent_to_telegram', false)
       .then(() => undefined, () => undefined);
 
-    if (!sent.ok) {
+    if (sent.ok) {
+      for (const r of confident) info.pushed.add(`${type}:${r.asset}`);
+    } else {
       console.error(`[telegram] ${type}: ${sent.error}`);
     }
   }
+
+  return info;
 }
 
 const DEFAULT_MAX_CHUNKS = 1;
@@ -694,11 +711,40 @@ export default async function handler(
         // --- Top signals: simpan top 10 per kelas + kirim Telegram yang confident ---
         try {
           await persistTopSignals(supabase, rankings);
-          await sendConfidentSignals(supabase, rankings, regime, indexSymbol);
+          const sendInfo = await sendConfidentSignals(supabase, rankings, regime, indexSymbol);
+
+          // Signal ledger: record every confident signal at emit. Deliberately
+          // outside sendConfidentSignals() — recording must not depend on
+          // Telegram being configured. `pushed` comes from the send result.
+          //
+          // Writes use the service-role client: the anon key is public, and a
+          // publicly writable track record is not a track record.
+          const ledgerWriter = getSupabaseAdmin();
+          if (ledgerWriter) {
+            await recordSignals(ledgerWriter, {
+              signals: rankings.filter(isConfidentSignal),
+              indexSymbol,
+              regime: regime.regime,
+              pushed: sendInfo.pushed,
+              deduped: sendInfo.deduped,
+            });
+          } else {
+            console.error('[ledger] record disabled: SUPABASE_SERVICE_ROLE_KEY is not set');
+          }
         } catch (err) {
           console.error('[top-signals] failed:', err instanceof Error ? err.message : err);
         }
       }
+    }
+
+    // Signal ledger scoring: one bounded batch per tick, whether or not this
+    // tick completed a sweep. Never touches an already-filled horizon.
+    const ledgerScorer = getSupabaseAdmin();
+    try {
+      if (ledgerScorer) await scoreLedger(ledgerScorer);
+      else console.error('[ledger] scoring disabled: SUPABASE_SERVICE_ROLE_KEY is not set');
+    } catch (err) {
+      console.error('[ledger] score failed:', err instanceof Error ? err.message : err);
     }
 
     const { data: final, error: stateErr } = await supabase

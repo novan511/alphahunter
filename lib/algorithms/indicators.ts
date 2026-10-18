@@ -177,6 +177,35 @@ export function atr(candles: Candle[], period: number): number[] {
   return result;
 }
 
+/**
+ * Wilder's RSI, seeded the canonical way (simple average of the first `period`
+ * gains/losses, then Wilder smoothing) so the values are comparable to what a
+ * chart shows rather than an approximation of it. Entries before the first
+ * computable bar are NaN — callers must guard instead of treating 0 as neutral.
+ */
+export function rsi(closes: number[], period: number = 14): number[] {
+  const out = new Array<number>(closes.length).fill(NaN);
+  if (closes.length <= period) return out;
+  const gains: number[] = [];
+  const losses: number[] = [];
+  for (let i = 1; i < closes.length; i++) {
+    const d = closes[i] - closes[i - 1];
+    gains.push(Math.max(d, 0));
+    losses.push(Math.max(-d, 0));
+  }
+  const avgGain = wilderSmooth(gains, period);
+  const avgLoss = wilderSmooth(losses, period);
+  for (let i = 0; i < avgGain.length; i++) {
+    const idx = i + 1;
+    if (idx >= closes.length) break;
+    if (!Number.isFinite(avgGain[i]) || !Number.isFinite(avgLoss[i])) continue;
+    if (avgLoss[i] === 0 && avgGain[i] === 0) out[idx] = 50; // flat: no impetus either way
+    else if (avgLoss[i] === 0) out[idx] = 100;
+    else out[idx] = 100 - 100 / (1 + avgGain[i] / avgLoss[i]);
+  }
+  return out;
+}
+
 export function volumeMA(candles: Candle[], period: number): number[] {
   return sma(
     candles.map((c) => c.volume),

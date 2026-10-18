@@ -5,7 +5,11 @@ interface LayoutProps {
   children: React.ReactNode;
 }
 
-const NAV_ITEMS = [{ href: '/', label: 'Scanner', icon: '₿' }];
+const NAV_ITEMS = [
+  { href: '/', label: 'Scanner', icon: '₿' },
+  { href: '/record', label: 'Rekam Jejak', icon: '📒' },
+  { href: '/backtest', label: 'Backtest', icon: '📈' },
+];
 
 export default function Layout({ children }: LayoutProps) {
   const router = useRouter();

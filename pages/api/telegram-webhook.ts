@@ -11,6 +11,7 @@ import { fetchPairRatio, windowStrength } from '../../lib/algorithms/pairRatio';
 import { fetchKlinesRouted } from '../../lib/universe';
 import { fetchCoinFlow, flowLine } from '../../lib/quant/derivatives';
 import { signalLabel } from '../../lib/tgMessage';
+import { analyzeStructure } from '../../lib/algorithms/marketStructure';
 import type { Candle } from '../../lib/types';
 
 // The morning-report GET runs a live data fetch + an LLM round trip; the
@@ -346,6 +347,47 @@ export async function handleHold(args: string[]): Promise<string> {
   return failed.length > 0 ? `${digest}\n\nSkip: ${failed.map(short).join(', ')}` : digest;
 }
 
+/**
+ * Structure and patterns for the coins already in the context.
+ *
+ * Only 4h and 1d are read. The 200-bar window is ~33 days on 4h and ~200 days on
+ * 1d, which is what multi-pivot shapes need; on 1h the same 200 bars are ~8 days,
+ * where "no pattern" and "no history" cannot be told apart. Reporting 1h would
+ * mean reporting absence we cannot actually claim, so it is left out.
+ */
+async function structureLinesFor(assets: string[], max = 4): Promise<string[]> {
+  const out: string[] = [];
+  const perCoin = await Promise.all(
+    assets.slice(0, max).map(async (asset) => {
+      const reads: { tf: string; summary: string; trend: string }[] = [];
+      const results = await Promise.all(
+        ['4h', '1d'].map(async (tf) => {
+          try {
+            const s = analyzeStructure(await fetchKlinesRouted(asset, tf, 200));
+            return s ? { tf, summary: s.summary, trend: s.trend.label } : null;
+          } catch {
+            return null; // best-effort: structure never blocks the analysis
+          }
+        })
+      );
+      for (const r of results) if (r) reads.push(r);
+      return { asset, reads };
+    })
+  );
+
+  for (const { asset, reads } of perCoin) {
+    if (reads.length === 0) continue;
+    out.push(`• ${asset.replace('USDT', '')}`);
+    for (const r of reads) out.push(`  ${r.tf}: ${r.summary.replace(/\n/g, ' | ')}`);
+    if (reads.length === 2 && reads[0].trend !== reads[1].trend) {
+      out.push(
+        `  ⚠ KONFLIK TIMEFRAME: ${reads[0].tf} ${reads[0].trend} vs ${reads[1].tf} ${reads[1].trend}`
+      );
+    }
+  }
+  return out;
+}
+
 /** Ringkasan lengkap scan terakhir untuk konteks analisis profesional. */
 async function scanContext(scan: LastScanResponse): Promise<string> {
   const r = scan.rankings ?? [];
@@ -452,6 +494,19 @@ async function scanContext(scan: LastScanResponse): Promise<string> {
     }
   }
 
+  // Market structure: where price sits relative to prior price action, and any
+  // pattern the engine can actually define. Candles are fetched here because
+  // structure is not part of the persisted scan payload — labelled live, like
+  // the flow data below, so the model never mixes it with the scan timestamp.
+  try {
+    const structure = await structureLinesFor(topCoins.map((c) => c.asset));
+    if (structure.length) {
+      lines.push('', 'STRUKTUR & POLA (dihitung dari candle 4h & 1d, live):', ...structure);
+    }
+  } catch {
+    // Structure failed — the analysis still runs without it.
+  }
+
   const sectors = buildSectorHeat(r);
   const early = sectors.filter((s) => s.phase === 'early' && s.members > 0).slice(0, 5);
   if (early.length) {
@@ -533,12 +588,13 @@ FRAMEWORK ANALISIS YANG HARUS DIGUNAKAN:
 1. MAKRO: DXY, VIX, US10Y, likuiditas global, risk-on/risk-off, macro regime (akumulasi / distribusi / ekspansi / kontraksi).
 2. STRUKTUR PASAR: BOS (Break of Structure), CHoCH (Change of Character), liquidity sweep, order block, fair value gap, inducement.
 3. INDIKATOR TEKNIS: RSI (overbought >70 / oversold <30 / divergence), EMA alignment (20/50/200), volume profile, momentum.
-4. POLA HARGA: double top/bottom, head and shoulders, flag/pennant, wedge, cup & handle, ascending/descending triangle.
+4. POLA HARGA — daftar ini KOSAKATA, bukan tugas mencari: double top/bottom, head and shoulders, wedge, triangle, flag, divergence. Kamu HANYA boleh menyebut pola yang ada di bagian "STRUKTUR & POLA" di bawah. Cup & handle tidak dihitung engine — jangan pernah menyebutnya.
 5. ICT / SMC: market structure shift, breaker block, mitigation block, optimal trade entry (OTE), premium/discount zone, killzone (Asia/London/NY).
 6. SENTIMEN & ORDER FLOW: funding rate, spot CVD (taker delta), open interest, long/short ratio, fear & greed context. Bagian "FUNDING & CVD SPOT" di bawah adalah data live — pakai untuk membaca siapa yang agresif (buyer atau seller) dan apakah crowd sedang long/short.
 
 ATURAN KERAS (JANGAN DILANGGAR):
 - DATA SCAN ADALAH JANGKAR: Pendapat dan rekomendasi HARUS didasarkan pada data scan terakhir di bawah. Jangan halusinasi indikator yang tidak ada dalam data. Jika data tidak cukup untuk menyimpulkan sesuatu, katakan "data tidak cukup" dan arahkan ke web.
+- STRUKTUR ADALAH DATA, BUKAN TEMA: sebut level/pola HANYA dari bagian "STRUKTUR & POLA". Kalau di situ tertulis polanya tidak ada, katakan tidak ada — jangan mencarinya sendiri. Pola berlabel "BELUM terkonfirmasi" wajib kamu sebut belum terkonfirmasi.
 - BOLEH memberikan arah pasar (bullish/bearish/sideways), zona interess, setup long/short/hold/wait, dan analisis risiko — dengan alasan yang kuat.
 - JANGAN janjikan profit, jangan bilang "pasti", "jaminan", "100% aman", atau target harga / SL / TP spesifik.
 - Selalu akhiri dengan disclaimer: "Bukan saran finansial. Konfirmasi dan risiko tanggung sendiri."
@@ -547,7 +603,7 @@ URUTAN REASONING (WAJIB, jangan dilompati):
 1. MAKRO & REGIME — kondisi pasar sekarang dan artinya untuk agresivitas (pakai angka regime + alasan detektor disetel).
 2. BREADTH & ROTASI — berapa koin long vs short, sektor mana yang memimpin/memudar.
 3. RELATIVE STRENGTH — dari engine: siapa kuat/lemah terhadap index dan sebesar apa.
-4. STRUKTUR & ORDER FLOW — funding/CVD live: siapa yang agresif (buyer atau seller).
+4. STRUKTUR & ORDER FLOW — posisi harga vs support/resistance dan pola dari bagian "STRUKTUR & POLA" (kalau ada konflik timeframe, sebut konfliknya), lalu funding/CVD live: siapa yang agresif (buyer atau seller).
 5. RISIKO & INVALIDASI — pakai bagian "ALASAN & RISIKO PER KOIN" apa adanya, jangan dikarang.
 6. SKENARIO — base / bull / bear, dan apa yang mengonfirmasi tiap skenario.
 7. AKSI — per koin teratas: MASUK SEKARANG / TUNGGU TRIGGER / SUDAH TELAT.
@@ -603,7 +659,7 @@ FRAMEWORK ANALISIS YANG HARUS DIGUNAKAN:
 1. MAKRO: DXY, VIX, US10Y, likuiditas global, risk-on/risk-off, macro regime.
 2. STRUKTUR PASAR: BOS, CHoCH, liquidity sweep, order block, fair value gap.
 3. INDIKATOR TEKNIS: RSI, EMA alignment (20/50/200), volume profile, momentum.
-4. POLA HARGA: double top/bottom, head and shoulders, flag/pennant, wedge.
+4. POLA HARGA — kosakata, bukan tugas mencari: double top/bottom, head and shoulders, wedge, triangle, flag, divergence. Sebut hanya yang ADA di bagian "STRUKTUR & POLA" di bawah. Cup & handle tidak dihitung engine — jangan menyebutnya.
 5. ICT / SMC: market structure shift, breaker block, mitigation block, OTE, premium/discount zone, killzone.
 6. SENTIMEN & ORDER FLOW: funding rate, spot CVD (taker delta), open interest, long/short ratio. Bagian "FUNDING & CVD SPOT" di bawah adalah data live — pakai untuk membaca siapa yang agresif (buyer atau seller) dan apakah crowd sedang long/short.
 
@@ -613,13 +669,13 @@ TUGAS:
 3. JANGAN janjikan profit, jangan bilang "pasti", "jaminan", "100% aman", atau target harga/SL/TP spesifik.
 4. Selalu akhiri dengan disclaimer: "Bukan saran finansial. Konfirmasi dan risiko tanggung sendiri."
 
-ATURAN KERAS: DATA SCAN ADALAH JANGKAR. Pendapat HARUS didasarkan pada data scan terakhir. Jangan halusinasi indikator yang tidak ada. Jika data tidak cukup, katakan "data tidak cukup" dan arahkan ke web.
+ATURAN KERAS: DATA SCAN ADALAH JANGKAR. Pendapat HARUS didasarkan pada data scan terakhir. Jangan halusinasi indikator yang tidak ada. Jika data tidak cukup, katakan "data tidak cukup" dan arahkan ke web. Sebut level/pola HANYA dari bagian "STRUKTUR & POLA"; kalau di situ tertulis tidak ada, katakan tidak ada. Pola "BELUM terkonfirmasi" wajib disebut belum terkonfirmasi.
 
 URUTAN REASONING (WAJIB, jangan dilompati):
 1. MAKRO & REGIME — kondisi pasar dan artinya untuk agresivitas.
 2. BREADTH & ROTASI — long vs short, sektor yang memimpin.
 3. RELATIVE STRENGTH — dari engine: siapa kuat/lemah vs index.
-4. STRUKTUR & ORDER FLOW — funding/CVD: siapa yang agresif.
+4. STRUKTUR & ORDER FLOW — posisi harga vs level dan pola dari "STRUKTUR & POLA" (sebut konflik timeframe bila ada), lalu funding/CVD: siapa yang agresif.
 5. RISIKO & INVALIDASI — pakai bagian "ALASAN & RISIKO PER KOIN" apa adanya, jangan dikarang.
 6. SKENARIO — base / bull / bear, apa yang mengonfirmasi tiap skenario.
 7. AKSI — MASUK SEKARANG / TUNGGU TRIGGER / SUDAH TELAT untuk koin teratas.
