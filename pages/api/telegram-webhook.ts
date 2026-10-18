@@ -10,6 +10,7 @@ import { callLLM } from '../../lib/quant/marketNarrator';
 import { fetchPairRatio, windowStrength } from '../../lib/algorithms/pairRatio';
 import { fetchKlinesRouted } from '../../lib/universe';
 import { fetchCoinFlow, flowLine } from '../../lib/quant/derivatives';
+import { signalLabel } from '../../lib/tgMessage';
 import type { Candle } from '../../lib/types';
 
 // The morning-report GET runs a live data fetch + an LLM round trip; the
@@ -359,11 +360,20 @@ async function scanContext(scan: LastScanResponse): Promise<string> {
       { timeZone: 'Asia/Jakarta', hour: '2-digit', minute: '2-digit' },
     )} WIB`
   );
+  const regime = scan.regime;
   lines.push(
     `Index: ${scan.indexSymbol ?? 'BTCUSDT'} | Regime: ${(
-      scan.regimeLabel ?? scan.regime?.regime ?? '—'
-    ).replace(/_/g, ' ')}`
+      scan.regimeLabel ?? regime?.regime ?? '—'
+    ).replace(/_/g, ' ')}${
+      regime
+        ? ` (conf ${regime.confidence}%, ADX ${regime.adxValue}, ATR ${regime.atrPercent}%, vol pct ${regime.volatilityPercentile})`
+        : ''
+    }`
   );
+  // Why the detector was tuned the way it was — the regime cause, not just its name.
+  if (scan.autonomousParams?.reason) {
+    lines.push(`Detektor disetel: ${scan.autonomousParams.reason}`);
+  }
   lines.push(
     `Koindiakan: ${scan.totalScanned ?? r.length} | Sinyal non-netral: ${
       scan.signalsFound ?? r.filter((x) => x.finalSignal !== 'neutral').length
@@ -407,6 +417,41 @@ async function scanContext(scan: LastScanResponse): Promise<string> {
         sells.map((x) => `${x.asset.replace('USDT', '')} (conf ${x.confluenceScore})`).join(', ')
     );
   }
+
+  // The engine's own reasoning, which used to be thrown away before reaching the
+  // model: per-coin narrative, trigger freshness and invalidation. Trigger age
+  // is what tells "masih segar" from "sudah telat" — the difference between
+  // acting and chasing.
+  const tradeByAsset = new Map(buildTradeableList(r, {}).trades.map((t) => [t.asset, t]));
+  const topCoins = [...strongBuys, ...strongSells, ...buys, ...sells].slice(0, 6);
+  if (topCoins.length) {
+    lines.push('', 'ALASAN & RISIKO PER KOIN (dari engine):');
+    for (const c of topCoins) {
+      const t = tradeByAsset.get(c.asset);
+      const age = c.newestSignalAgeBars;
+      const timing =
+        age == null
+          ? 'tanpa trigger segar — murni continuation'
+          : age === 0
+            ? 'trigger BAR INI (segar)'
+            : `trigger ${age} bar lalu (${age >= 4 ? 'SUDAH TELAT, jangan kejar' : 'masih segar'})`;
+      lines.push(
+        `• ${c.asset.replace('USDT', '')} ${signalLabel(c.finalSignal)} | konv ${Math.round(
+          (c.conviction ?? 0) * 100
+        )}% | ${timing}`
+      );
+      if (c.narrative) lines.push(`  ${c.narrative}`);
+      if (t) {
+        lines.push(
+          `  Risiko ${t.riskTier} (budget maks ${t.riskBudgetPct}%) | horizon ${t.horizon}${
+            t.counterTrend ? ' | MELAWAN tren harian' : ''
+          }`
+        );
+      }
+      if (t?.invalidation?.length) lines.push(`  Invalidasi: ${t.invalidation.join(' ')}`);
+    }
+  }
+
   const sectors = buildSectorHeat(r);
   const early = sectors.filter((s) => s.phase === 'early' && s.members > 0).slice(0, 5);
   if (early.length) {
@@ -498,6 +543,19 @@ ATURAN KERAS (JANGAN DILANGGAR):
 - JANGAN janjikan profit, jangan bilang "pasti", "jaminan", "100% aman", atau target harga / SL / TP spesifik.
 - Selalu akhiri dengan disclaimer: "Bukan saran finansial. Konfirmasi dan risiko tanggung sendiri."
 
+URUTAN REASONING (WAJIB, jangan dilompati):
+1. MAKRO & REGIME — kondisi pasar sekarang dan artinya untuk agresivitas (pakai angka regime + alasan detektor disetel).
+2. BREADTH & ROTASI — berapa koin long vs short, sektor mana yang memimpin/memudar.
+3. RELATIVE STRENGTH — dari engine: siapa kuat/lemah terhadap index dan sebesar apa.
+4. STRUKTUR & ORDER FLOW — funding/CVD live: siapa yang agresif (buyer atau seller).
+5. RISIKO & INVALIDASI — pakai bagian "ALASAN & RISIKO PER KOIN" apa adanya, jangan dikarang.
+6. SKENARIO — base / bull / bear, dan apa yang mengonfirmasi tiap skenario.
+7. AKSI — per koin teratas: MASUK SEKARANG / TUNGGU TRIGGER / SUDAH TELAT.
+
+- WAJIB sebut status timing tiap koin dari engine (trigger bar ini = segar; >=4 bar = sudah telat). Klien sering ragu lalu telat masuk — jangan biarkan itu terjadi.
+- WAJIB pilih SATU alasan terkuat dan SATU hal yang paling bisa membatalkan tesis. Jangan menyamaratakan semua alasan.
+- Kalau masih segar, dorong bertindak tegas; kalau sudah telat, katakan tunggu pullback. Jangan menyamarkan.
+
 Gaya: Bahasa Indonesia trader, authoritative tapi ramah, pakai emoji strategis (📈📉💰🛡️⚠️🔥🌅), Maksimal 6 paragraf pendek, terstruktur dengan judul paragraf singkat. Gunakan istilah trader profesional.
 
 DATA SCAN TERAKHIR (JANGKAR):
@@ -557,7 +615,20 @@ TUGAS:
 
 ATURAN KERAS: DATA SCAN ADALAH JANGKAR. Pendapat HARUS didasarkan pada data scan terakhir. Jangan halusinasi indikator yang tidak ada. Jika data tidak cukup, katakan "data tidak cukup" dan arahkan ke web.
 
-Gaya bahasa: Indonesia trader, singkat padat, pakai emoji strategis (📈📉💰🛡️⚠️🔥), maksimal 4 paragraf pendek. Gunakan istilah trader profesional.
+URUTAN REASONING (WAJIB, jangan dilompati):
+1. MAKRO & REGIME — kondisi pasar dan artinya untuk agresivitas.
+2. BREADTH & ROTASI — long vs short, sektor yang memimpin.
+3. RELATIVE STRENGTH — dari engine: siapa kuat/lemah vs index.
+4. STRUKTUR & ORDER FLOW — funding/CVD: siapa yang agresif.
+5. RISIKO & INVALIDASI — pakai bagian "ALASAN & RISIKO PER KOIN" apa adanya, jangan dikarang.
+6. SKENARIO — base / bull / bear, apa yang mengonfirmasi tiap skenario.
+7. AKSI — MASUK SEKARANG / TUNGGU TRIGGER / SUDAH TELAT untuk koin teratas.
+
+- WAJIB sebut status timing tiap koin dari engine (trigger bar ini = segar; >=4 bar = sudah telat). Klien sering ragu lalu telat masuk — jangan biarkan itu terjadi.
+- WAJIB pilih SATU alasan terkuat dan SATU hal yang paling bisa membatalkan tesis.
+- Kalau masih segar, dorong bertindak tegas; kalau sudah telat, katakan tunggu pullback. Jangan menyamarkan.
+
+Gaya bahasa: Indonesia trader, singkat padat, pakai emoji strategis (📈📉💰🛡️⚠️🔥), maksimal 5 paragraf pendek. Gunakan istilah trader profesional.
 
 DATA SCAN TERAKHIR (JANGKAR):
 ${await scanContext(scan)}
