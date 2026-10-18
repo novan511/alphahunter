@@ -17,7 +17,7 @@ import { buildEarlyWarnings } from '../../lib/algorithms/earlyWarning';
 import { buildSectorHeat } from '../../lib/algorithms/narrativeHeat';
 import { fetchPairRatio } from '../../lib/algorithms/pairRatio';
 import { fetchKlinesRouted } from '../../lib/universe';
-import { recordSignals, scoreLedger } from '../../lib/signalLedger';
+import { recordSignals, scoreLedger, scoreLedgerR } from '../../lib/signalLedger';
 import { getSupabaseAdmin } from '../../lib/supabaseAdmin';
 import type { Candle } from '../../lib/types';
 
@@ -737,14 +737,23 @@ export default async function handler(
       }
     }
 
-    // Signal ledger scoring: one bounded batch per tick, whether or not this
-    // tick completed a sweep. Never touches an already-filled horizon.
+    // Signal ledger scoring: two bounded batches per tick, whether or not this
+    // tick completed a sweep. Alpha and R are independent; neither ever touches
+    // a value that is already filled.
     const ledgerScorer = getSupabaseAdmin();
-    try {
-      if (ledgerScorer) await scoreLedger(ledgerScorer);
-      else console.error('[ledger] scoring disabled: SUPABASE_SERVICE_ROLE_KEY is not set');
-    } catch (err) {
-      console.error('[ledger] score failed:', err instanceof Error ? err.message : err);
+    if (!ledgerScorer) {
+      console.error('[ledger] scoring disabled: SUPABASE_SERVICE_ROLE_KEY is not set');
+    } else {
+      try {
+        await scoreLedger(ledgerScorer);
+      } catch (err) {
+        console.error('[ledger] score failed:', err instanceof Error ? err.message : err);
+      }
+      try {
+        await scoreLedgerR(ledgerScorer);
+      } catch (err) {
+        console.error('[ledger] scoreR failed:', err instanceof Error ? err.message : err);
+      }
     }
 
     const { data: final, error: stateErr } = await supabase

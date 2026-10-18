@@ -155,6 +155,12 @@ export interface MultiTimeframeResult {
   price?: number | null;
   /** Timeframe `price` was taken from: '4h' | '1h' | '1d', null when no data. */
   priceTf?: string | null;
+  /**
+   * ATR(14) of the same series `price` came from. Snapshotted at emit and stored
+   * verbatim: the ledger places a stop from it, so it must never be re-derived
+   * from a later candle.
+   */
+  atr?: number | null;
 }
 
 export interface MultiTimeframeOptions {
@@ -616,6 +622,13 @@ export function analyzeMultiTimeframe(
     ? timeframeData[priceTf].asset[timeframeData[priceTf].asset.length - 1].close
     : null;
 
+  // Same-series ATR, for the ledger's stop distance. Additive — no scoring path
+  // reads it.
+  const atrSeries = priceTf ? atr(timeframeData[priceTf].asset, 14) : [];
+  const lastAtr = atrSeries.length > 0 ? atrSeries[atrSeries.length - 1] : null;
+  const atrSnapshot =
+    lastAtr !== null && Number.isFinite(lastAtr) && lastAtr > 0 ? lastAtr : null;
+
   return {
     asset: assetSymbol,
     timeframes: tfSignals,
@@ -637,5 +650,6 @@ export function analyzeMultiTimeframe(
     rationale,
     price: price ?? null,
     priceTf: priceTf ?? null,
+    atr: atrSnapshot,
   };
 }

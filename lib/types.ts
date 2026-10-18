@@ -1,4 +1,10 @@
 export interface Candle {
+  /**
+   * Bar open time in **seconds**, not milliseconds. Every source normalises to
+   * this (Binance/Gate/Hyperliquid all divide their ms payload by 1000). Comparing
+   * this against a millisecond timestamp silently matches nothing, so score
+   * helpers take seconds too.
+   */
   time: number;
   open: number;
   high: number;

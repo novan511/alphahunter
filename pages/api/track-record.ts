@@ -6,6 +6,7 @@ import {
   type LedgerRow,
   type LedgerStats,
 } from '../../lib/signalLedger';
+import type { BucketStats } from '../../lib/calibration';
 
 export interface TrackRecordResponse {
   configured: boolean;
@@ -14,6 +15,10 @@ export interface TrackRecordResponse {
   all: LedgerStats;
   /** Stats over the signals actually pushed to Telegram. */
   pushed: LedgerStats;
+  /** R-multiple per setup, pushed only — the headline calibration view. */
+  buckets: BucketStats[];
+  /** Same, over every confident signal. Never mixed with `buckets`. */
+  bucketsAll: BucketStats[];
   error?: string;
 }
 
@@ -33,16 +38,26 @@ export default async function handler(
   }
 
   if (!isSupabaseConfigured()) {
-    return res
-      .status(200)
-      .json({ configured: false, rows: [], all: emptyStats(), pushed: emptyStats() });
+    return res.status(200).json({
+      configured: false,
+      rows: [],
+      all: emptyStats(),
+      pushed: emptyStats(),
+      buckets: [],
+      bucketsAll: [],
+    });
   }
 
   const supabase = getSupabase();
   if (!supabase) {
-    return res
-      .status(200)
-      .json({ configured: false, rows: [], all: emptyStats(), pushed: emptyStats() });
+    return res.status(200).json({
+      configured: false,
+      rows: [],
+      all: emptyStats(),
+      pushed: emptyStats(),
+      buckets: [],
+      bucketsAll: [],
+    });
   }
 
   const raw = typeof req.query.limit === 'string' ? parseInt(req.query.limit, 10) : NaN;
@@ -58,6 +73,8 @@ export default async function handler(
       rows: [],
       all: emptyStats(),
       pushed: emptyStats(),
+      buckets: [],
+      bucketsAll: [],
       error: err instanceof Error ? err.message : 'Failed to load ledger',
     });
   }

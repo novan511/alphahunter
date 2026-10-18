@@ -6,6 +6,8 @@ import { buildTradeableList } from '../../lib/algorithms/tradeable';
 import { computeMatrix, classifyStrength } from '../../lib/algorithms/correlationMatrix';
 import { buildPortfolioPlan, buildRotationDigest } from '../../lib/algorithms/portfolioVerdict';
 import { getSupabase } from '../../lib/supabase';
+import { calibrationLines } from '../../lib/calibration';
+import { readCalibration } from '../../lib/signalLedger';
 import { callLLM } from '../../lib/quant/marketNarrator';
 import { fetchPairRatio, windowStrength } from '../../lib/algorithms/pairRatio';
 import { fetchKlinesRouted } from '../../lib/universe';
@@ -74,6 +76,8 @@ const TELEGRAM_SYSTEM_PROMPT = `Kamu adalah trader elite dan hedge fund manager 
 PENTING: Jawab dalam bentuk TEKS BIASA (plain text), JANGAN JSON, jangan curly braces, jangan daftar kode terstruktur. Jangan outputkan "{" atau "}" atau kunci seperti severity/headline/summary. Bicara langsung seperti manusia ngobrol di chat.
 
 Gaya: singkat padat, pakai emoji strategis (📈📉💰🛡️⚠️🔥🌅), gunakan istilah trader profesional (liquidity, setup, breakout, accumulation, distribution, regime, BOS, CHoCH, order block, OTE, killzone), maksimal 6 paragraf pendek.
+
+Kalau di konteks ada "REKAM JEJAK LIVE": itu hasil NYATA dari sinyal yang sudah lewat, bukan prediksi, bukan backtest. Sebut angkanya HANYA kalau barisnya konklusif (ada n dan rentang CI). Kalau tertulis "sampel belum cukup", jangan karang angka apa pun dan jangan mengarang statistik dari ingatan — bilang saja rekam jejaknya belum cukup untuk menyimpulkan, sambil tetap menilai setup di depan mata dengan engine.
 
 Jangan janjikan profit, jangan bilang "pasti"/"jaminan"/"100% aman", jangan target harga atau SL/TP spesifik. Akhiri selalu dengan disclaimer: "Bukan saran finansial. Konfirmasi dan risiko tanggung sendiri."`;
 
@@ -545,6 +549,27 @@ async function scanContext(scan: LastScanResponse): Promise<string> {
     }
   } catch {
     // Data live gagal — analisis tetap jalan dengan data scan saja.
+  }
+
+  // Forward record: what actually happened to signals already emitted. Reads are
+  // anonymous (RLS select); nothing here is a forecast. The gate lives in
+  // calibration.ts — a bucket below the sample floor prints words, not a number,
+  // so the model cannot quote an edge the record does not support.
+  try {
+    const supabase = getSupabase();
+    if (supabase) {
+      const { pushed: buckets } = await readCalibration(supabase);
+      const recordLines = calibrationLines(buckets);
+      if (recordLines.length) {
+        lines.push(
+          '',
+          'REKAM JEJAK LIVE (outcome sinyal yang sudah lewat — bukan prediksi, bukan backtest):',
+          ...recordLines
+        );
+      }
+    }
+  } catch {
+    // Rekam jejak tidak terbaca — analisis tetap jalan.
   }
   return lines.join('\n');
 }

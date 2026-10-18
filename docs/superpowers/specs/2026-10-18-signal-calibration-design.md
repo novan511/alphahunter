@@ -193,6 +193,42 @@ Amandemen ini **mengalahkan** poin di atas bila berbeda.
    berpura-pura keduanya informasi independen; keduanya ditampilkan bersama CI,
    bukan sebagai dua bukti.
 
+### Amandemen setelah recheck implementasi
+
+Amandemen ini **mengalahkan** poin di atas bila berbeda.
+
+10. **Satuan waktu: semua candle dalam DETIK.** `Candle.time` adalah detik
+    (semua sumber membagi payload ms-nya dengan 1000). Versi pertama
+    membandingkannya dengan `Date.parse()` (milidetik), sehingga `nearestCandle`
+    (alpha, dokumen A) **dan** `firstTouch` tidak pernah cocok dengan satu bar
+    pun — penilaian mati total tanpa error, dan fixture yang memakai ms membuat
+    self-check hijau. Sekarang `nearestCandle`/`firstTouch` menerima detik,
+    satuan didokumentasikan di `lib/types.ts`, dan smoke-check menegaskan bahwa
+    target ber-milidetik memang tidak boleh cocok.
+11. **`lost` diperluas: bukan hanya awal yang hilang.** Jalur yang tidak bisa
+    ditelusuri utuh tidak boleh dinilai. `lost` sekarang juga dipakai kalau ada
+    **bar bolong di tengah** (stop di bar itu tidak akan terlihat) atau kalau
+    **seri candle berhenti sebelum jendela 7 hari habis** (delisting/pair halt) —
+    dua-duanya akan memflatter rekam jejak kalau dibiarkan lewat.
+12. **Baris tanpa data sama sekali ikut dipensiunkan.** Kalau tidak ada candle
+    sama sekali dan jendela tahan sudah lewat, baris ditandai `lost`. Sebelum
+    itu kegagalan fetch dianggap sementara. Tanpa ini, simbol mati menempati
+    batch `scoreLedgerR` selamanya dan memblokir baris yang bisa dinilai.
+13. **Angka tidak boleh dicetak sama sekali kalau belum konklusif.** Baris
+    konteks AI untuk bucket yang belum lolos gerbang hanya berisi kata, alasan
+    (sampel kurang **atau** interval masih menyentuh nol — dibedakan), dan
+    hitungan waktu-habis/hilang/menunggu. Nomor yang kita pegang tidak masuk
+    konteks, karena dari sana ia akan dikutip sebagai edge.
+14. **Bucket dibatasi pada konvensi risiko yang berlaku sekarang.** Baris dari
+    `level_convention` lain dikecualikan (bukan dipool), sehingga perubahan
+    aturan stop/target tidak pernah menghasilkan satu win rate dari dua definisi
+    risiko. Halaman `/record` menyebutkan ini.
+15. **Level tetap tidak bisa di-backfill, dan `r` juga write-once.** Trigger 015
+    memakai `is distinct from` (yang menghitung NULL→nilai sebagai perubahan),
+    jadi klaim "pra-015 tidak pernah diisi" benar-benar ditegakkan; pemakaian
+    `=` akan membuka pintu itu. `r` diberi penjagaan write-once sendiri, tidak
+    bergantung pada aplikasi yang kebetulan menulisnya bersama `outcome`.
+
 ## Yang dibangun
 
 1. `lib/algorithms/multiTimeframe.ts` — tambah `atr` (4h) ke hasil, aditif seperti

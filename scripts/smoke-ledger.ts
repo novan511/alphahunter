@@ -1,10 +1,14 @@
-import { nearestCandle, alphaOf, SCORE_TOLERANCE_MS } from '../lib/signalLedger';
+import { nearestCandle, alphaOf, SCORE_TOLERANCE_SEC } from '../lib/signalLedger';
 import type { Candle } from '../lib/types';
 
 /**
  * Assert-based self-check for the ledger's pure scoring math: which candle the
  * score reads, and how alpha is signed. The DB write path is covered by the
  * migration's BEFORE UPDATE trigger.
+ *
+ * `time` is in seconds everywhere — that is what every market data source
+ * returns. A fixture in milliseconds would pass here and score nothing in
+ * production, so the millisecond case is asserted to fail on purpose.
  */
 
 let failures = 0;
@@ -16,7 +20,7 @@ function check(name: string, ok: boolean, detail = '') {
   }
 }
 
-const H = 3600_000;
+const H = 3600; // seconds
 const candle = (time: number, close: number): Candle => ({
   time, open: close, high: close, low: close, close, volume: 0,
 });
@@ -24,13 +28,16 @@ const approx = (a: number | null, b: number) => a != null && Math.abs(a - b) < 1
 
 const series = [candle(0, 100), candle(4 * H, 110), candle(8 * H, 90)];
 
-check('tolerance is 6h', SCORE_TOLERANCE_MS === 6 * H);
+check('tolerance is 6h', SCORE_TOLERANCE_SEC === 6 * H);
 check('nearest candle exact hit', nearestCandle(series, 4 * H)?.close === 110);
 // 13h: nearest is the 8h candle, 5h away — inside the 6h tolerance.
 check('nearest candle within tolerance', nearestCandle(series, 13 * H)?.close === 90);
 // 15h: nearest is the 8h candle, 7h away — outside tolerance.
 check('beyond tolerance is null', nearestCandle(series, 15 * H) === null);
 check('picks the closer neighbour', nearestCandle(series, 9 * H)?.close === 90);
+// Guard against the unit bug this check exists for: candle times are seconds, so
+// a millisecond target must never match anything.
+check('a millisecond target matches nothing', nearestCandle(series, 4 * H * 1000) === null);
 
 // Asset +10%, benchmark +5% → long alpha +5%, short alpha -5%.
 check('long alpha = asset - bench', approx(alphaOf('long', 100, 110, 200, 210), 0.05));
