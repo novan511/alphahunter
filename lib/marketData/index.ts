@@ -227,7 +227,9 @@ export async function fetchGateCandles(
   const iv = ivMap[interval] || '4h';
   const capped = Math.min(limit, 1000);
   const to = Math.floor(Date.now() / 1000);
-  const from = to - Math.ceil(intervalToMs(iv) * capped * 1.2);
+  // intervalToMs is milliseconds but Gate's from/to are seconds: without the
+  // /1000 the range spans ~24,000 bars and Gate rejects it (400 INVALID_PARAM_VALUE).
+  const from = to - Math.ceil((intervalToMs(iv) / 1000) * capped * 1.2);
 
   const params = new URLSearchParams({
     currency_pair: pair,

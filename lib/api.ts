@@ -132,31 +132,36 @@ async function fetchBinancePage(
     'https://api1.binance.com',
   ].filter((b, i, arr) => b && arr.indexOf(b) === i);
 
-  let lastStatus = 0;
   let lastErr = '';
   for (const base of bases) {
     const url = `${base}/api/v3/klines?${params.toString()}`;
+    let response: Response;
     try {
-      const response = await fetchWithRetry(url, {
+      response = await fetchWithRetry(url, {
         headers: { 'User-Agent': 'Althunter/2.0' },
       });
-      if (response.ok) {
-        const raw: BinanceKline[] = await response.json();
-        return raw.map(formatBinanceKline);
-      }
-      lastStatus = response.status;
-      lastErr = `Binance API error for ${symbol}: ${response.status} (${base})`;
-      // 451/403 → try next base; others throw
-      if (response.status !== 451 && response.status !== 403 && response.status !== 418) {
-        throw new Error(lastErr);
-      }
     } catch (e) {
+      // Network failure on this base (blocked host, connect timeout) → try the next.
       lastErr = e instanceof Error ? e.message : String(e);
-      if (lastStatus === 451 || lastErr.includes('451')) continue;
-      // network fail on this base → try next
       if (base !== bases[bases.length - 1]) continue;
       throw e;
     }
+    if (response.ok) {
+      const raw: BinanceKline[] = await response.json();
+      return raw.map(formatBinanceKline);
+    }
+    lastErr = `Binance API error for ${symbol}: ${response.status} (${base})`;
+    // Only a host-level problem — geo-block, rate limit, outage — justifies
+    // another base. A 4xx like 400 means this symbol is simply not listed here,
+    // so retrying only burns seconds on a base that is often unreachable and
+    // reports its network error instead of the real reason.
+    const hostProblem =
+      response.status === 403 ||
+      response.status === 418 ||
+      response.status === 429 ||
+      response.status === 451 ||
+      response.status >= 500;
+    if (!hostProblem) throw new Error(lastErr);
   }
   throw new Error(
     lastErr ||
