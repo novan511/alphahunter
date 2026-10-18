@@ -18,6 +18,21 @@ import { fetchBinanceKlines } from '../lib/api';
 import { fetchKlinesRouted, getUniverse, lookupUniverseEntry } from '../lib/universe';
 
 let failures = 0;
+/**
+ * Jumlah candle bisa benar sementara STAPEL WAKTUNYA salah (bug satuan
+ * ms/detik: semua candle Gate pernah bertanggal 1970 dan lulus pemeriksaan
+ * jumlah). Candle terakhir wajib segar; itu yang membedakan data hidup dari
+ * data sampah yang kebetulan punya panjang yang benar.
+ */
+function assertFresh(candles: { time: number }[]): string {
+  if (candles.length === 0) throw new Error('0 candle');
+  const last = candles[candles.length - 1].time;
+  const ageDays = (Date.now() / 1000 - last) / 86_400;
+  if (last < 1_200_000_000) throw new Error(`stempel waktu tidak masuk akal: ${new Date(last * 1000).toISOString()}`);
+  if (ageDays > 2) throw new Error(`candle terakhir ${ageDays.toFixed(0)} hari lalu — sumber kemungkinan basi`);
+  return `${candles.length} candle, terakhir ${new Date(last * 1000).toISOString()}`;
+}
+
 async function timed(label: string, fn: () => Promise<unknown>) {
   const t0 = Date.now();
   try {
@@ -38,20 +53,20 @@ async function main() {
   // 20 bar 1h dan 200 bar 4h: rentang yang dipakai scan. Rentang yang salah
   // (mis. ms vs detik) tidak menghasilkan error jaringan, hanya HTTP 400.
   await timed('gate BTC_USDT 1h x20', async () =>
-    `${(await fetchGateCandles('BTC_USDT', '1h', 20)).length} candle`
+    assertFresh(await fetchGateCandles('BTC_USDT', '1h', 20))
   );
   await timed('gate BTC_USDT 4h x200', async () =>
-    `${(await fetchGateCandles('BTC_USDT', '4h', 200)).length} candle`
+    assertFresh(await fetchGateCandles('BTC_USDT', '4h', 200))
   );
   await timed('binance BTCUSDT 1h x20', async () =>
-    `${(await fetchBinanceKlines('BTCUSDT', '1h', 20)).length} candle`
+    assertFresh(await fetchBinanceKlines('BTCUSDT', '1h', 20))
   );
 
   await getUniverse().catch(() => null);
   const gateOnly = ['ZEUSUSDT', 'PONSUSDT'].find((s) => lookupUniverseEntry(s)?.source === 'gate');
   if (gateOnly) {
     await timed(`routed ${gateOnly} 1h x20 (gate-only)`, async () =>
-      `${(await fetchKlinesRouted(gateOnly, '1h', 20)).length} candle`
+      assertFresh(await fetchKlinesRouted(gateOnly, '1h', 20))
     );
   }
   // Simbol yang tidak ada di Binance: harus gagal CEPAT dengan alasan yang

@@ -255,7 +255,11 @@ export async function fetchGateCandles(
 
   const candles = raw
     .map((row) => ({
-      time: Math.floor(Number(row[0]) / 1000),
+      // Gate's candlestick timestamp is already seconds (e.g. 1792234800);
+      // dividing again puts every gate candle in January 1970, which silently
+      // breaks time-based logic: exact-time alignment, recency, and the ledger's
+      // bar lookup all fail for gate-only assets.
+      time: Math.floor(Number(row[0])),
       quoteVolume: Number(row[1]),
       close: parseFloat(String(row[2])),
       high: parseFloat(String(row[3])),
