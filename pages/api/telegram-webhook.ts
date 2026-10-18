@@ -14,6 +14,7 @@ import { fetchKlinesRouted } from '../../lib/universe';
 import { fetchCoinFlow, flowLine } from '../../lib/quant/derivatives';
 import { signalLabel } from '../../lib/tgMessage';
 import { analyzeStructure } from '../../lib/algorithms/marketStructure';
+import { MAX_STRUCTURE_TARGETS } from '../../lib/signalLedger';
 import { TELEGRAM_SYSTEM_PROMPT } from '../../lib/telegramPersona';
 import type { Candle } from '../../lib/types';
 
@@ -74,6 +75,10 @@ const MATRIX_BASKET = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'XRPUSDT', 'SUIUSDT', 'H
 /** System prompt untuk Telegram bot: paksa bahasa Indonesia natural, jangan JSON. */
 /** Simple in-memory rate limiter for AI chat to prevent DeepSeek spam.
  *  Key = chatId, value = last request timestamp. Cooldown: 30 seconds.
+ *
+ *  shortcut: disimpan per instance (Map di memori), jadi di Vercel multi-
+ *  instance batasnya bisa dilewati N× dan hilang tiap deploy; cukup selama
+ *  satu chat dilayani — pindahkan ke satu baris Postgres saat multi-pengguna (E).
  */
 const AI_RATE_LIMIT_MS = 30_000;
 const aiLastAsk: Map<string, number> = new Map();
@@ -350,7 +355,10 @@ export async function handleHold(args: string[]): Promise<string> {
  * where "no pattern" and "no history" cannot be told apart. Reporting 1h would
  * mean reporting absence we cannot actually claim, so it is left out.
  */
-async function structureLinesFor(assets: string[], max = 4): Promise<string[]> {
+async function structureLinesFor(
+  assets: string[],
+  max = MAX_STRUCTURE_TARGETS
+): Promise<string[]> {
   const out: string[] = [];
   const perCoin = await Promise.all(
     assets.slice(0, max).map(async (asset) => {

@@ -18,7 +18,9 @@ import { buildSectorHeat } from '../../lib/algorithms/narrativeHeat';
 import { fetchPairRatio } from '../../lib/algorithms/pairRatio';
 import { fetchKlinesRouted } from '../../lib/universe';
 import { recordSignals, scoreLedger, scoreLedgerR } from '../../lib/signalLedger';
-import { getSupabaseAdmin } from '../../lib/supabaseAdmin';
+import { ensureSupabaseAdmin } from '../../lib/supabaseAdmin';
+import { isConfidentSignal } from '../../lib/confidentGate';
+import { checkDataSources } from '../../lib/dataHealth';
 import type { Candle } from '../../lib/types';
 
 export const config = { maxDuration: 60 };
@@ -150,8 +152,10 @@ async function pushCompletedScan(args: {
   indexSymbol: string;
   depth: string;
   sweepId: string;
+  /** Sumber data basi saat sweep berjalan — pembaca harus tahu. */
+  degraded?: boolean;
 }): Promise<PushResult> {
-  const { supabase, rankings, regime, indexSymbol, depth } = args;
+  const { supabase, rankings, regime, indexSymbol, depth, degraded } = args;
   const result: PushResult = { attempted: false, sent: 0, failed: 0, errors: [] };
 
   const { configured } = telegramEnv();
@@ -165,11 +169,13 @@ async function pushCompletedScan(args: {
   const windowBars = 30;
   const id = stateId(indexSymbol, depth);
 
-  // Dedup cursor for sector flips: don't re-push the same sector within 24h.
+  // Dedup cursor for sector flips AND the rotation verdict: don't re-push the
+  // same sector within 24h, and never repeat an unchanged rotation digest.
   // No-op (empty cursor) if the migration hasn't been applied yet, so a missing
   // column never blocks rotation/entry pushes.
   const nowIso = new Date().toISOString();
-  let lastNotify: Record<string, string> = {};
+  let lastSectors: Record<string, string> = {};
+  let lastRotation: string | null = null;
   let freshSectors: Record<string, string> = {};
   try {
     const { data: stateRow } = await supabase
@@ -177,12 +183,16 @@ async function pushCompletedScan(args: {
       .select('last_notify')
       .eq('id', id)
       .maybeSingle();
-    lastNotify = (stateRow as { last_notify?: { sectors?: Record<string, string> } } | null)
-      ?.last_notify?.sectors ?? {};
-    freshSectors = { ...lastNotify };
+    const raw = (stateRow as { last_notify?: { sectors?: Record<string, string>; rotation_digest?: string } } | null)
+      ?.last_notify ?? {};
+    lastSectors = raw.sectors ?? {};
+    lastRotation = typeof raw.rotation_digest === 'string' ? raw.rotation_digest : null;
+    freshSectors = { ...lastSectors };
   } catch {
     // Column not yet added — proceed without dedup.
   }
+  // Persisted only after a successful send, so a failed push is retried next sweep.
+  let rotationDigest: string | null = null;
 
   // ---- 1. Rotation verdict from the shared basket ----
   try {
@@ -210,10 +220,33 @@ async function pushCompletedScan(args: {
         const history = await loadDominanceHistory(supabase, matrix.symbols, interval, windowBars);
         const plan = buildPortfolioPlan(matrix, history);
         const digest = buildRotationDigest(plan);
-        const framed = tgFrame('ROTASI', digest);
-        const sent = await sendTelegramMessage(framed);
-        if (sent.ok) result.sent++;
-        else { result.failed++; result.errors.push(`rotasi: ${sent.error}`); }
+        // Perhatian pengguna adalah anggaran paling mahal: digest yang sama
+        // berkali-kali bukan informasi. Kirim hanya saat verdict berubah.
+        const verdict = createHash('sha1').update(digest).digest('hex').slice(0, 8);
+        if (verdict === lastRotation) {
+          console.log('[rotasi] verdict tidak berubah — tidak dikirim');
+        } else {
+          const body = degraded
+            ? `⚠ SUMBER DATA BASI — bacaan bisa menyesatkan\n\n${digest}`
+            : digest;
+          const framed = tgFrame('ROTASI', body);
+          const sent = await sendTelegramMessage(framed);
+          if (sent.ok) {
+            result.sent++;
+            rotationDigest = verdict;
+            // Simpan verdukt di tempat yang sama dengan kursor sektor.
+            await supabase
+              .from('scan_cron_state')
+              .update({
+                last_notify: { sectors: freshSectors, rotation_digest: verdict },
+              })
+              .eq('id', id)
+              .then(() => undefined, () => undefined);
+          } else {
+            result.failed++;
+            result.errors.push(`rotasi: ${sent.error}`);
+          }
+        }
       }
     }
   } catch (err) {
@@ -229,6 +262,7 @@ async function pushCompletedScan(args: {
         `📈 Timeframe: ${interval}`,
         `🌍 Regime: ${regime.regime.replace(/_/g, ' ').toUpperCase()}`,
         `✅ ${trades.length} koin lolos gate`,
+        ...(degraded ? ['⚠ SUMBER DATA BASI — bacaan bisa menyesatkan'] : []),
         '',
       ];
       for (const t of trades.slice(0, 8) as TradeableCoin[]) {
@@ -258,7 +292,7 @@ async function pushCompletedScan(args: {
     );
     const dayAgo = Date.now() - 24 * 60 * 60 * 1000;
     const toSend = warnings.filter((w) => {
-      const sentAt = lastNotify[w.sectorId];
+      const sentAt = lastSectors[w.sectorId];
       if (!sentAt) return true;
       return new Date(sentAt).getTime() < dayAgo;
     });
@@ -281,7 +315,12 @@ async function pushCompletedScan(args: {
         // Persist dedup cursor so the same sector isn't re-pushed within 24h.
         await supabase
           .from('scan_cron_state')
-          .update({ last_notify: { sectors: freshSectors } })
+          .update({
+            last_notify: {
+              sectors: freshSectors,
+              rotation_digest: rotationDigest ?? lastRotation,
+            },
+          })
           .eq('id', id)
           .then(() => undefined, () => undefined);
       } else {
@@ -305,20 +344,6 @@ const SIGNAL_TYPES: Array<'strong_buy' | 'buy' | 'strong_sell' | 'sell'> = [
   'strong_sell',
   'sell',
 ];
-
-/**
- * Confidence gate agar tidak kirim fakeout.
- * Strong sinyal butuh agreement & conviction lebih tinggi dari sinyal biasa.
- */
-function isConfidentSignal(r: MultiTimeframeResult): boolean {
-  if (r.finalSignal === 'strong_buy' || r.finalSignal === 'strong_sell') {
-    return r.confluenceScore >= 72 && r.agreement >= 0.7 && r.conviction >= 0.6;
-  }
-  if (r.finalSignal === 'buy' || r.finalSignal === 'sell') {
-    return r.confluenceScore >= 48 && r.agreement >= 0.5 && r.conviction >= 0.45;
-  }
-  return false;
-}
 
 /** Simpan top 10 per kelas sinyal ke tabel top_signals (Supabase). */
 async function persistTopSignals(
@@ -412,7 +437,7 @@ async function sendConfidentSignals(
   for (const type of SIGNAL_TYPES) {
     const dup = (asset: string) => alreadySent.has(`${type}:${asset}`);
     const confidentAll = rankings
-      .filter((r) => r.finalSignal === type && isConfidentSignal(r))
+      .filter((r) => r.finalSignal === type && isConfidentSignal(r, regime?.regime))
       .sort((a, b) => b.confluenceScore - a.confluenceScore)
       .slice(0, 10);
     const confident = confidentAll.filter((r) => !dup(r.asset));
@@ -494,6 +519,15 @@ export default async function handler(
     return res.status(200).json({ ok: false, reason: 'supabase client unavailable' });
   }
 
+  // Health gate: kerusakan lapisan data terbukti senyap (Gate 400 total,
+  // candle bertanggal 1970, key ditolak) sementara sweep melapor ok:true.
+  // Sekali per tick, ~1 detik; kalau sumber basi, hasilnya dilabeli.
+  const health = await checkDataSources();
+  const degraded = !health.ok;
+  if (degraded) {
+    console.error(`[health] sumber data bermasalah — sweep berjalan DEGRADED: ${JSON.stringify(health)}`);
+  }
+
   const body: Body = { ...(req.query as Body), ...(req.body as Body) };  const indexSymbol = (body.indexSymbol || 'BTCUSDT').toUpperCase();
   const depth = body.depth || 'all';
   const universeMode = body.universe === 'all' ? 'all' : 'curated';
@@ -502,6 +536,8 @@ export default async function handler(
   const id = stateId(indexSymbol, depth);
   // Escape hatch for the first run while wiring things up.
   const notifyDisabled = body.notify === false;
+  let gateStats: { confident: number; nonNeutral: number } | null = null;
+  let sweepTotal: number | undefined;
   let pushResult: PushResult | null = null;
 
   try {
@@ -557,6 +593,23 @@ export default async function handler(
         .single();
       if (resetErr) return res.status(500).json({ error: `reset state: ${resetErr.message}` });
       state = reset as Record<string, unknown>;
+    }
+
+    // Klaim atomik atas target ini: guard concurrency GitHub Actions tidak
+    // melindungi dari tick lokal/eksternal — dua run yang membaca kursor yang
+    // sama majukan posisi yang sama dan mendorong pesan dobel. Update bersyarat
+    // gagal (0 baris) berarti tick lain sedang memegangnya. Tick yang mati di
+    // tengah jalan otomatis lepas lewat batas usang 10 menit.
+    const staleIso = new Date(Date.now() - 10 * 60_000).toISOString();
+    const claim = await supabase
+      .from('scan_cron_state')
+      .update({ status: 'running', last_tick_at: nowIso })
+      .eq('id', id)
+      .or(`status.neq.running,last_tick_at.lt.${staleIso}`)
+      .select('id');
+    if (claim.error) return res.status(500).json({ error: `claim: ${claim.error.message}` });
+    if (!claim.data || claim.data.length === 0) {
+      return res.status(409).json({ ok: false, reason: 'tick lain sedang memegang target ini' });
     }
 
     let sweepId = String(state.sweep_id);
@@ -654,10 +707,11 @@ export default async function handler(
       nextOffset = chunk.progress.nextOffset;
       failed += (chunk.failedPositions ?? []).length;
       done = chunk.progress.done;
+      if (Number.isFinite(chunk.total)) sweepTotal = chunk.total;
       chunks++;
     }
 
-    const total = state.total ?? undefined;
+    const total = state.total ?? sweepTotal;
 
     // Assemble and persist the final scan when the sweep completes.
     if (done) {
@@ -705,6 +759,7 @@ export default async function handler(
             indexSymbol,
             depth,
             sweepId,
+            degraded,
           });
         }
 
@@ -712,6 +767,13 @@ export default async function handler(
         try {
           await persistTopSignals(supabase, rankings);
           const sendInfo = await sendConfidentSignals(supabase, rankings, regime, indexSymbol);
+          gateStats = {
+            confident: rankings.filter((r) => isConfidentSignal(r, regime?.regime)).length,
+            nonNeutral: rankings.filter((r) => r.finalSignal !== 'neutral').length,
+          };
+          console.log(
+            `[gate] confident ${gateStats.confident} / non-netral ${gateStats.nonNeutral} / universe ${rankings.length} (regime ${regime.regime})`
+          );
 
           // Signal ledger: record every confident signal at emit. Deliberately
           // outside sendConfidentSignals() — recording must not depend on
@@ -719,17 +781,17 @@ export default async function handler(
           //
           // Writes use the service-role client: the anon key is public, and a
           // publicly writable track record is not a track record.
-          const ledgerWriter = getSupabaseAdmin();
+          const ledgerWriter = await ensureSupabaseAdmin();
           if (ledgerWriter) {
             await recordSignals(ledgerWriter, {
-              signals: rankings.filter(isConfidentSignal),
+              signals: rankings.filter((r) => isConfidentSignal(r, regime?.regime)),
               indexSymbol,
               regime: regime.regime,
               pushed: sendInfo.pushed,
               deduped: sendInfo.deduped,
             });
           } else {
-            console.error('[ledger] record disabled: SUPABASE_SERVICE_ROLE_KEY is not set');
+            console.error('[ledger] record disabled: service-role tidak tersedia (key ditolak atau belum diset)');
           }
         } catch (err) {
           console.error('[top-signals] failed:', err instanceof Error ? err.message : err);
@@ -740,9 +802,9 @@ export default async function handler(
     // Signal ledger scoring: two bounded batches per tick, whether or not this
     // tick completed a sweep. Alpha and R are independent; neither ever touches
     // a value that is already filled.
-    const ledgerScorer = getSupabaseAdmin();
+    const ledgerScorer = await ensureSupabaseAdmin();
     if (!ledgerScorer) {
-      console.error('[ledger] scoring disabled: SUPABASE_SERVICE_ROLE_KEY is not set');
+      console.error('[ledger] scoring disabled: service-role tidak tersedia (key ditolak atau belum diset)');
     } else {
       try {
         await scoreLedger(ledgerScorer);
@@ -790,6 +852,8 @@ export default async function handler(
       done,
       chunks,
       notify: pushResult,
+      health,
+      gate: gateStats,
       state: final
         ? {
             id,

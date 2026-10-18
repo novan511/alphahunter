@@ -185,7 +185,7 @@ async function snapshotClose(symbol: string): Promise<{ price: number; tf: strin
 }
 
 /** Structure is fetched for at most this many distinct assets per tick. */
-const MAX_STRUCTURE_TARGETS = 6;
+export const MAX_STRUCTURE_TARGETS = 6;
 
 /** Columns added by migration 015, needed to scope the pre-migration fallback. */
 const LEVEL_COLUMNS = ['atr', 'stop', 'target', 'level_convention'] as const;
