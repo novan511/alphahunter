@@ -6,9 +6,9 @@ name: Autonomous scan
 # which is what the web dashboard and the Telegram bot read.
 on:
   schedule:
-    # Every 30 minutes. Offset by 7 minutes so this does not collide with
-    # other scheduled jobs on the same minute.
-    - cron: '7,37 * * * *'
+    # Hourly, per the owner's cadence (pushes land roughly once an hour).
+    # Offset by 7 minutes so this does not collide with other scheduled jobs.
+    - cron: '7 * * * *'
   workflow_dispatch:
     inputs:
       max_chunks:
