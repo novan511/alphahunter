@@ -14,6 +14,7 @@ import { fetchKlinesRouted } from '../../lib/universe';
 import { fetchCoinFlow, flowLine } from '../../lib/quant/derivatives';
 import { signalLabel } from '../../lib/tgMessage';
 import { analyzeStructure } from '../../lib/algorithms/marketStructure';
+import { TELEGRAM_SYSTEM_PROMPT } from '../../lib/telegramPersona';
 import type { Candle } from '../../lib/types';
 
 // The morning-report GET runs a live data fetch + an LLM round trip; the
@@ -71,16 +72,6 @@ const HELP = [
 const MATRIX_BASKET = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'XRPUSDT', 'SUIUSDT', 'HYPEUSDT'];
 
 /** System prompt untuk Telegram bot: paksa bahasa Indonesia natural, jangan JSON. */
-const TELEGRAM_SYSTEM_PROMPT = `Kamu adalah trader elite dan hedge fund manager yang ngobrol lewat Telegram. Gunakan Bahasa Indonesia yang natural, santai, authoritative, dan ramah — seperti obrolan bareng teman trader, jangan robotis, jangan asisten generik, jangan terlalu formal.
-
-PENTING: Jawab dalam bentuk TEKS BIASA (plain text), JANGAN JSON, jangan curly braces, jangan daftar kode terstruktur. Jangan outputkan "{" atau "}" atau kunci seperti severity/headline/summary. Bicara langsung seperti manusia ngobrol di chat.
-
-Gaya: singkat padat, pakai emoji strategis (📈📉💰🛡️⚠️🔥🌅), gunakan istilah trader profesional (liquidity, setup, breakout, accumulation, distribution, regime, BOS, CHoCH, order block, OTE, killzone), maksimal 6 paragraf pendek.
-
-Kalau di konteks ada "REKAM JEJAK LIVE": itu hasil NYATA dari sinyal yang sudah lewat, bukan prediksi, bukan backtest. Sebut angkanya HANYA kalau barisnya konklusif (ada n dan rentang CI). Kalau tertulis "sampel belum cukup", jangan karang angka apa pun dan jangan mengarang statistik dari ingatan — bilang saja rekam jejaknya belum cukup untuk menyimpulkan, sambil tetap menilai setup di depan mata dengan engine.
-
-Jangan janjikan profit, jangan bilang "pasti"/"jaminan"/"100% aman", jangan target harga atau SL/TP spesifik. Akhiri selalu dengan disclaimer: "Bukan saran finansial. Konfirmasi dan risiko tanggung sendiri."`;
-
 /** Simple in-memory rate limiter for AI chat to prevent DeepSeek spam.
  *  Key = chatId, value = last request timestamp. Cooldown: 30 seconds.
  */
