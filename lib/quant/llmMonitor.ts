@@ -1,5 +1,6 @@
 import { NVIDIA_API_KEY, NVIDIA_INVOKE_URL } from '../config';
 import { QuantRunResult } from './types';
+import { callDeepseek, deepseekEnv } from './deepseek';
 
 export interface SampleFlags {
   minTrades: number;
@@ -219,4 +220,22 @@ export async function callNvidiaLLM(prompt: string): Promise<string> {
   const text = result.choices?.[0]?.message?.content?.trim();
   if (!text) throw new Error('Empty LLM response');
   return text;
+}
+
+/**
+ * Monitoring LLM: coba DeepSeek dulu kalau DEEPSEEK_API_KEY diset,
+ * baru NVIDIA. Digunakan untuk risk review backtest — pisah dari
+ * analisis futures di lib/quant/futuresAI.ts (gateway AntSeed).
+ */
+export async function callMonitorLLM(prompt: string): Promise<string> {
+  const env = deepseekEnv();
+  if (env.configured) {
+    try {
+      return await callDeepseek(prompt);
+    } catch (deepseekErr) {
+      if (!NVIDIA_API_KEY) throw deepseekErr;
+      // Fallback ke NVIDIA kalau DeepSeek gagal, jangan diam-diam.
+    }
+  }
+  return callNvidiaLLM(prompt);
 }

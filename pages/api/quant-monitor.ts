@@ -3,7 +3,7 @@ import { QuantRunResult } from '../../lib/quant/types';
 import {
   buildMonitorPrompt,
   buildRiskPayload,
-  callNvidiaLLM,
+  callMonitorLLM,
   ruleFallbackReview,
   RiskReviewResult,
 } from '../../lib/quant/llmMonitor';
@@ -71,7 +71,7 @@ export default async function handler(
   let source: RiskReviewResult['source'];
 
   try {
-    review = await callNvidiaLLM(buildMonitorPrompt(payload));
+    review = await callMonitorLLM(buildMonitorPrompt(payload));
     source = 'llm';
   } catch {
     review = ruleFallbackReview(payload);

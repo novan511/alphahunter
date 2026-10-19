@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import FuturesChart from './FuturesChart';
 // lib/futuresBook, never lib/futures: the engine imports server-only modules
 // (fs-backed candle cache) that cannot be bundled for the browser.
@@ -13,11 +13,9 @@ import {
   type MacroSnapshot,
   type Verdict,
 } from '../../lib/futuresBook';
+import type { FuturesAIOutput } from '../../lib/quant/futuresAI';
 
 interface FuturesTabProps {
-  /** Seeded from the URL so a shared link lands on the same timeframe. */
-  initialTf: string;
-  onTfChange: (tf: string) => void;
   /**
    * Sections stay mounted while hidden, so without this the tab would spend
    * ~39 venue calls on every page load for a view nobody opened — and the
@@ -25,6 +23,10 @@ interface FuturesTabProps {
    */
   visible: boolean;
 }
+
+/** Timeframe locked to 4h: the cards now show all key timeframes at once, so
+ *  the trader sees the holistic direction without picking one. */
+const FIXED_TF = '4h';
 
 const VERDICT_STYLE: Record<Verdict, { bg: string; fg: string; label: string; arrow: string }> = {
   long: { bg: 'rgba(16, 185, 129, 0.15)', fg: '#34d399', label: 'LONG', arrow: '▲' },
@@ -146,10 +148,38 @@ function AlignmentDots({ signal }: { signal: FuturesSignal }) {
   );
 }
 
-function SignalCard({ signal, tf }: { signal: FuturesSignal; tf: string }) {
+function SignalCard({
+  signal,
+  aiAnalysis,
+}: {
+  signal: FuturesSignal;
+  aiAnalysis?: FuturesAIOutput | null;
+}) {
   const [open, setOpen] = useState(false);
   const v = VERDICT_STYLE[signal.verdict];
   const isWait = signal.verdict === 'wait';
+
+  /** Direction dot per timeframe for the holistic MTF strip. */
+  const tfDot = (tf: string, verdict: Verdict) => {
+    const style = VERDICT_STYLE[verdict];
+    return (
+      <span
+        key={tf}
+        title={`${tf}: ${verdict.toUpperCase()}`}
+        style={{
+          fontSize: '9px',
+          fontWeight: 800,
+          padding: '2px 6px',
+          borderRadius: '4px',
+          background: style.bg,
+          color: style.fg,
+          letterSpacing: '0.02em',
+        }}
+      >
+        {style.arrow} {tf.toUpperCase()}
+      </span>
+    );
+  };
 
   return (
     <div style={{ background: '#111827', border: '1px solid #374151', borderRadius: '10px', overflow: 'hidden' }}>
@@ -176,6 +206,14 @@ function SignalCard({ signal, tf }: { signal: FuturesSignal; tf: string }) {
         </div>
       </div>
 
+      <div style={{ padding: '6px 12px', borderBottom: '1px solid #1f2937', fontSize: '10px', color: '#6b7280', fontWeight: 800, letterSpacing: '0.04em', display: 'flex', gap: '6px', alignItems: 'center' }}>
+        MULTI-TIMEFRAME
+      </div>
+      <div style={{ padding: '4px 12px 8px', display: 'flex', gap: '6px', alignItems: 'center', flexWrap: 'wrap' }}>
+        {tfDot('4H', signal.verdict)}
+        {signal.alignment.map((a) => tfDot(a.label.toUpperCase(), a.verdict))}
+      </div>
+
       <FuturesChart candles={signal.candles} marker={signal.lastSignal} />
 
       <div style={{ padding: '8px 12px 10px', borderTop: '1px solid #1f2937' }}>
@@ -188,6 +226,58 @@ function SignalCard({ signal, tf }: { signal: FuturesSignal; tf: string }) {
         ) : (
           <div style={{ fontSize: '11px', color: '#6b7280', marginBottom: '6px' }}>
             Tidak ada sisi — SL/TP tidak ditampilkan.
+          </div>
+        )}
+
+        {aiAnalysis && (
+          <div style={{ marginTop: '8px', borderTop: '1px dashed #374151', paddingTop: '8px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
+              <div style={{ fontSize: '10px', fontWeight: 800, color: '#6b7280', letterSpacing: '0.04em' }}>
+                ANALIS AI
+              </div>
+              <span
+                style={{
+                  fontSize: '10px',
+                  fontWeight: 800,
+                  color: aiAnalysis.source === 'llm' ? '#34d399' : '#fbbf24',
+                }}
+              >
+                {aiAnalysis.source === 'llm' ? 'model' : 'fallback'}
+              </span>
+            </div>
+            <div style={{ fontSize: '11px', color: '#d1d5db', lineHeight: 1.5, marginBottom: '4px' }}>
+              <span style={{ fontWeight: 800, color: '#93c5fd' }}>Arah:</span>{' '}
+              {aiAnalysis.direction === 'long'
+                ? 'Long (cenderung naik)'
+                : aiAnalysis.direction === 'short'
+                  ? 'Short (cenderung turun)'
+                  : 'Wait (tunggu konfirmasi)'}{' '}
+              — confidensi {aiAnalysis.confidence}%
+            </div>
+            <div style={{ fontSize: '11px', color: '#d1d5db', lineHeight: 1.5, marginBottom: '4px' }}>
+              <span style={{ fontWeight: 800, color: '#93c5fd' }}>Pattern:</span>{' '}
+              {aiAnalysis.pattern}
+            </div>
+            <div style={{ fontSize: '11px', color: '#d1d5db', lineHeight: 1.5, marginBottom: '4px' }}>
+              <span style={{ fontWeight: 800, color: '#93c5fd' }}>S/R:</span>{' '}
+              {aiAnalysis.support != null
+                ? `Support ${aiAnalysis.support.toFixed(2)}`
+                : 'Support —'}{' · '}
+              {aiAnalysis.resistance != null
+                ? `Resistance ${aiAnalysis.resistance.toFixed(2)}`
+                : 'Resistance —'}
+            </div>
+            <div style={{ fontSize: '11px', color: '#d1d5db', lineHeight: 1.5, marginBottom: '4px' }}>
+              <span style={{ fontWeight: 800, color: '#93c5fd' }}>Sinyal:</span>{' '}
+              {aiAnalysis.signal === 'buy'
+                ? 'Beli (cenderung)'
+                : aiAnalysis.signal === 'sell'
+                  ? 'Jual (cenderung)'
+                  : 'Tunggu'}
+            </div>
+            <div style={{ fontSize: '10px', color: '#9ca3af', lineHeight: 1.5 }}>
+              {aiAnalysis.reasoning.join(' ')} {aiAnalysis.caveat}
+            </div>
           </div>
         )}
 
@@ -213,7 +303,7 @@ function SignalCard({ signal, tf }: { signal: FuturesSignal; tf: string }) {
         {open && (
           <div style={{ marginTop: '8px', borderTop: '1px dashed #374151', paddingTop: '8px' }}>
             <div style={{ fontSize: '10px', fontWeight: 800, color: '#6b7280', letterSpacing: '0.04em', marginBottom: '4px' }}>
-              TEKNIKAL ({tf.toUpperCase()})
+              TEKNIKAL (4H)
             </div>
             <ul style={{ margin: 0, paddingLeft: '16px' }}>
               {signal.reasons.map((r, i) => (
@@ -239,45 +329,78 @@ function SignalCard({ signal, tf }: { signal: FuturesSignal; tf: string }) {
  * set direction, 1d filters, 1w sizes down. The reason list on every card says
  * which of those jobs the active timeframe is doing.
  */
-export default function FuturesTab({ initialTf, onTfChange, visible }: FuturesTabProps) {
-  const [tf, setTf] = useState(initialTf);
+export default function FuturesTab({ visible }: FuturesTabProps) {
   const [data, setData] = useState<FuturesResponse | null>(null);
+  const [aiResults, setAiResults] = useState<Record<string, FuturesAIOutput>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const cancelledRef = useRef(false);
 
   useEffect(() => {
     if (!visible) return;
-    let cancelled = false;
+    cancelledRef.current = false;
     setLoading(true);
     setError(null);
-    fetch(`/api/futures?tf=${encodeURIComponent(tf)}`)
+    fetch(`/api/futures?tf=${encodeURIComponent(FIXED_TF)}`)
       .then(async (res) => {
         const body = await res.json();
         if (!res.ok) throw new Error(body?.error || `HTTP ${res.status}`);
         return body as FuturesResponse;
       })
       .then((body) => {
-        if (cancelled) return;
+        if (cancelledRef.current) return;
         setData(body);
         setLoading(false);
+        fetchAiAnalysis(body);
       })
       .catch((err: Error) => {
-        if (cancelled) return;
+        if (cancelledRef.current) return;
         setError(err.message);
         setLoading(false);
       });
     return () => {
-      cancelled = true;
+      cancelledRef.current = true;
     };
-  }, [tf, visible]);
+  }, [visible]);
 
-  const changeTf = useCallback(
-    (next: string) => {
-      setTf(next);
-      onTfChange(next);
-    },
-    [onTfChange]
-  );
+  async function fetchAiAnalysis(body: FuturesResponse): Promise<void> {
+    const inputs = body.signals.map((s) => ({
+      symbol: s.instrument.symbol,
+      name: s.instrument.name,
+      group: s.instrument.group,
+      price: s.price,
+      changePct: s.changePct,
+      verdict: s.verdict,
+      score: s.score,
+      atrPct: s.atrPct,
+      technicalReasons: s.reasons,
+      alignment: s.alignment.map((a) => ({ tf: a.tf, label: a.label, verdict: a.verdict, score: a.score })),
+      macroNote: s.macroNote,
+      macro: { dxy: body.macro.dxy, vix: body.macro.vix, us10y: body.macro.us10y },
+      candles: s.candles.slice(-60).map((c) => ({
+        time: c.time,
+        open: c.open,
+        high: c.high,
+        low: c.low,
+        close: c.close,
+        volume: c.volume,
+      })),
+    }));
+    try {
+      const res = await fetch('/api/futures-ai', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(inputs),
+      });
+      if (!res.ok) throw new Error(`AI HTTP ${res.status}`);
+      const { results } = (await res.json()) as { results: FuturesAIOutput[]; errors: string[] };
+      if (!cancelledRef.current) {
+        setAiResults(Object.fromEntries(results.map((r) => [r.symbol, r])));
+      }
+    } catch {
+      // AI analisis opsional — tidak mengganggu tampilan utama.
+    }
+  }
 
   const grouped = useMemo(() => {
     if (!data) return [];
@@ -287,44 +410,17 @@ export default function FuturesTab({ initialTf, onTfChange, visible }: FuturesTa
     })).filter((g) => g.items.length > 0);
   }, [data]);
 
-  const activeDef = FUTURES_TIMEFRAMES.find((t) => t.tf === tf) ?? FUTURES_TIMEFRAMES[2];
-
   return (
     <div>
-      <div style={{
-        display: 'flex', gap: '4px', marginBottom: '8px', flexWrap: 'wrap',
-      }} role="group" aria-label="Timeframe">
-        {FUTURES_TIMEFRAMES.map((t) => (
-          <button
-            key={t.tf}
-            onClick={() => changeTf(t.tf)}
-            aria-pressed={t.tf === tf}
-            title={t.use}
-            style={{
-              padding: '6px 14px',
-              background: t.tf === tf ? 'rgba(59,130,246,0.2)' : 'transparent',
-              border: `1px solid ${t.tf === tf ? '#3b82f6' : '#374151'}`,
-              color: t.tf === tf ? '#93c5fd' : '#9ca3af',
-              borderRadius: '6px',
-              fontSize: '12px',
-              fontWeight: 800,
-              cursor: 'pointer',
-            }}
-          >
-            {t.label}
-          </button>
-        ))}
-      </div>
-
-      <div style={{ fontSize: '11px', color: '#6b7280', marginBottom: '14px', lineHeight: 1.5 }}>
-        {activeDef.use}
+      <div style={{ fontSize: '11px', color: '#6b7280', marginBottom: '8px', lineHeight: 1.5 }}>
+        Timeframe acuan: 4H. Setiap kartu menampilkan arah 1H / 4H / 1D / 1W sekaligus.
       </div>
 
       <MacroStrip macro={data?.macro ?? null} />
 
       {loading && (
         <div style={{ padding: '28px', textAlign: 'center', color: '#6b7280', fontSize: '13px' }}>
-          Memuat book futures {tf.toUpperCase()}… ({FUTURES_BOOK.length} instrumen)
+          Memuat book futures 4H… ({FUTURES_BOOK.length} instrumen)
         </div>
       )}
 
@@ -347,7 +443,11 @@ export default function FuturesTab({ initialTf, onTfChange, visible }: FuturesTa
               </div>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: '12px' }}>
                 {items.map((s) => (
-                  <SignalCard key={s.instrument.id} signal={s} tf={tf} />
+                  <SignalCard
+                    key={s.instrument.id}
+                    signal={s}
+                    aiAnalysis={aiResults[s.instrument.symbol]}
+                  />
                 ))}
               </div>
             </div>

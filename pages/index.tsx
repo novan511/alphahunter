@@ -1420,11 +1420,7 @@ export default function Home() {
       </Section>
 
       <Section id="futures" active={section}>
-        <FuturesTab
-          initialTf={futuresTf}
-          onTfChange={setFuturesTf}
-          visible={section === 'futures'}
-        />
+        <FuturesTab visible={section === 'futures'} />
       </Section>
     </Layout>
   );

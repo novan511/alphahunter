@@ -81,18 +81,9 @@ export const FUTURES_TIMEFRAMES: TimeframeDef[] = [
  */
 export const FUTURES_BOOK: BookEntry[] = [
   { rawId: 'hyperliquid:BTC', symbol: 'BTC', name: 'Bitcoin', group: 'crypto' },
-  { rawId: 'hyperliquid:ETH', symbol: 'ETH', name: 'Ethereum', group: 'crypto' },
-  { rawId: 'hyperliquid:SOL', symbol: 'SOL', name: 'Solana', group: 'crypto' },
-  { rawId: 'hyperliquid:SUI', symbol: 'SUI', name: 'Sui', group: 'crypto' },
-  { rawId: 'hyperliquid:HYPE', symbol: 'HYPE', name: 'Hyperliquid', group: 'crypto' },
   { rawId: 'hyperliquid:xyz:GOLD', symbol: 'XAU', name: 'Emas', group: 'commodity' },
-  { rawId: 'hyperliquid:xyz:SILVER', symbol: 'XAT', name: 'Perak', group: 'commodity' },
   { rawId: 'hyperliquid:xyz:CL', symbol: 'OIL', name: 'Minyak (WTI)', group: 'commodity' },
-  { rawId: 'hyperliquid:xyz:NVDA', symbol: 'NVDA', name: 'Nvidia', group: 'equity' },
-  { rawId: 'hyperliquid:xyz:AAPL', symbol: 'AAPL', name: 'Apple', group: 'equity' },
-  { rawId: 'hyperliquid:xyz:MSFT', symbol: 'MSFT', name: 'Microsoft', group: 'equity' },
-  { rawId: 'hyperliquid:xyz:AMZN', symbol: 'AMZN', name: 'Amazon', group: 'equity' },
-  { rawId: 'hyperliquid:xyz:META', symbol: 'META', name: 'Meta', group: 'equity' },
+  { rawId: 'hyperliquid:xyz:SPY', symbol: 'SPY', name: 'S&P 500 ETF', group: 'equity' },
 ];
 
 export const GROUP_LABEL: Record<FuturesGroup, string> = {

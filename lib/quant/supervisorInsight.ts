@@ -1,6 +1,7 @@
 import { NVIDIA_API_KEY, NVIDIA_INVOKE_URL } from '../config';
 import { MarketId } from './marketProfiles';
 import { getKpiForAgent } from './autoTune';
+import { callDeepseek, deepseekEnv } from './deepseek';
 
 export interface DeskSnapshot {
   agentId: MarketId | string;
@@ -279,13 +280,30 @@ export async function callNvidiaForSupervisor(prompt: string): Promise<string> {
   return text;
 }
 
+/**
+ * Supervisor insight LLM: coba DeepSeek dulu kalau DEEPSEEK_API_KEY diset,
+ * baru NVIDIA. Digunakan untuk briefing desk quant — pisah dari
+ * analisis futures di lib/quant/futuresAI.ts (gateway AntSeed).
+ */
+async function callSupervisorLLM(prompt: string): Promise<string> {
+  const env = deepseekEnv();
+  if (env.configured) {
+    try {
+      return await callDeepseek(prompt);
+    } catch (deepseekErr) {
+      if (!NVIDIA_API_KEY) throw deepseekErr;
+    }
+  }
+  return callNvidiaForSupervisor(prompt);
+}
+
 export async function generateSupervisorInsight(
   payload: SupervisorPayload
 ): Promise<SupervisorInsight> {
   let insight: string;
   let source: SupervisorInsight['source'] = 'llm';
   try {
-    insight = await callNvidiaForSupervisor(buildSupervisorPrompt(payload));
+    insight = await callSupervisorLLM(buildSupervisorPrompt(payload));
   } catch {
     insight = ruleSupervisorFallback(payload);
     source = 'rule_fallback';

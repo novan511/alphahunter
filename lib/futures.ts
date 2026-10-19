@@ -308,11 +308,15 @@ export function clearFuturesCache(): void {
  * 39 venue calls instead of 65 — the venue starts refusing around 180/min, and
  * the dashboard is not allowed to be the thing that trips it.
  */
+const ALIGNMENT_ORDER: string[] = ['1h', '4h', '1d', '1w'];
+
+/**
+ * Alignment returns every key timeframe except the active one, so each card can
+ * show a holistic multi-timeframe direction strip (1H, 4H, 1D, 1W) instead of
+ * forcing the trader to pick one timeframe and guess the rest.
+ */
 export function alignmentTimeframes(tf: string): string[] {
-  const order = FUTURES_TIMEFRAMES.map((t) => t.tf);
-  const activeIdx = order.indexOf(tf);
-  if (activeIdx < 0) return [];
-  return ['1d', '1w'].filter((t) => order.indexOf(t) > activeIdx);
+  return ALIGNMENT_ORDER.filter((t) => t !== tf);
 }
 
 /** Symbols the book expects but could not price — see FuturesResponse.missing. */
