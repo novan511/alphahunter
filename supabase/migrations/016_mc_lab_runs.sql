@@ -29,9 +29,11 @@ create index if not exists mc_lab_runs_cell_idx
 
 alter table public.mc_lab_runs enable row level security;
 
--- Baca publik (halaman riwayat), tulis lewat service-role saja.
+-- Anon boleh baca + tulis, mengikuti pola tabel lab lain (005_quant_lab_runs):
+-- aplikasi ini satu pengguna dan beberapa tabel lab memang tanpa auth.
+-- Penulisan tetap memilih service-role bila key valid; anon hanya fallback.
 drop policy if exists "anon read mc_lab_runs" on public.mc_lab_runs;
-create policy "anon read mc_lab_runs"
-  on public.mc_lab_runs for select to anon using (true);
-
 drop policy if exists "anon write mc_lab_runs" on public.mc_lab_runs;
+drop policy if exists "anon rw mc_lab_runs" on public.mc_lab_runs;
+create policy "anon rw mc_lab_runs"
+  on public.mc_lab_runs for all to anon using (true) with check (true);

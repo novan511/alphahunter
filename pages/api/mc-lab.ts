@@ -42,23 +42,17 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
-  const mismatch = serviceKeyProjectMismatch();
-  if (mismatch) {
-    return res.status(200).json({
-      ok: false,
-      configured: false,
-      reason: mismatch,
-      cooldownMinutes: LAB_COOLDOWN_MINUTES,
-      groups: LAB_CATALOG.map((g) => ({ id: g.id, label: g.label, assets: g.assets })),
-    });
-  }
+  // Service-role yang salah project bukan penghalang: tulisan jatuh ke anon.
+  // Ia dikirim sebagai warning agar pengguna tahu key itu tidak terpakai.
+  const warning = serviceKeyProjectMismatch();
 
   if (!isLabConfigured()) {
     return res.status(200).json({
       ok: false,
       configured: false,
+      warning,
       reason:
-        'Supabase belum dikonfigurasi — riwayat lab butuh NEXT_PUBLIC_SUPABASE_URL, NEXT_PUBLIC_SUPABASE_ANON_KEY, dan SUPABASE_SERVICE_ROLE_KEY',
+        'Supabase belum dikonfigurasi — set NEXT_PUBLIC_SUPABASE_URL + NEXT_PUBLIC_SUPABASE_ANON_KEY (atau SUPABASE_SERVICE_ROLE_KEY) di .env.local/Vercel',
       cooldownMinutes: LAB_COOLDOWN_MINUTES,
       groups: LAB_CATALOG.map((g) => ({ id: g.id, label: g.label, assets: g.assets })),
     });
@@ -82,6 +76,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       return res.status(200).json({
         ok: true,
         configured: true,
+        warning,
         cooldownMinutes: LAB_COOLDOWN_MINUTES,
         latest: last,
         runs,

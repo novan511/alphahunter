@@ -95,6 +95,7 @@ interface LabPayload {
   ok: boolean;
   configured: boolean;
   reason?: string;
+  warning?: string;
   cooldownMinutes: number;
   latest: LabRun | null;
   runs: LabRun[];
@@ -296,9 +297,9 @@ export default function McLabPanel() {
             <>Jalankan <code>supabase/migrations/016_mc_lab_runs.sql</code> sekali di Supabase SQL Editor.</>
           ) : (
             <>
-              Yang dibutuhkan: <code>NEXT_PUBLIC_SUPABASE_URL</code>,{' '}
-              <code>NEXT_PUBLIC_SUPABASE_ANON_KEY</code>, <code>SUPABASE_SERVICE_ROLE_KEY</code> (dari
-              project yang sama), lalu migrasi <code>016_mc_lab_runs.sql</code>.
+              Yang dibutuhkan: <code>NEXT_PUBLIC_SUPABASE_URL</code> dan{' '}
+              <code>NEXT_PUBLIC_SUPABASE_ANON_KEY</code>, lalu migrasi{' '}
+              <code>016_mc_lab_runs.sql</code>. Service-role key bersifat opsional.
             </>
           )}
         </p>
@@ -308,6 +309,20 @@ export default function McLabPanel() {
 
   return (
     <div style={{ marginBottom: '24px' }}>
+      {/* Peringatan non-blocking: lab tetap jalan lewat anon key. */}
+      {data?.warning && (
+        <div
+          style={{
+            ...card,
+            borderColor: 'rgba(245,158,11,0.4)',
+            background: 'rgba(245,158,11,0.07)',
+            marginBottom: '12px',
+            padding: '10px 14px',
+          }}
+        >
+          <span style={{ fontSize: '11px', color: '#f59e0b', lineHeight: 1.6 }}>⚠️ {data.warning}</span>
+        </div>
+      )}
       {/* Header + kontrol */}
       <div style={{ ...card, marginBottom: '12px' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', gap: '16px', flexWrap: 'wrap', alignItems: 'flex-start' }}>

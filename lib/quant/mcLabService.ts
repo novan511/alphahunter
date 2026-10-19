@@ -56,16 +56,24 @@ export interface McLabRow {
 
 const TABLE = 'mc_lab_runs';
 
+/**
+ * Lab butuh Supabase yang bisa DITULIS. Urutan preferensi:
+ *   1. service-role (melewati RLS),
+ *   2. anon key — mengikuti pola tabel lab lain (005_quant_lab_runs yang
+ *      izinkan anon rw), supaya pengguna yang service-role-nya salah project
+ *      tidak terblokir total; polisi RLS di migrasi 016 mengizinkan anon rw.
+ */
 export function isLabConfigured(): boolean {
-  // Riwayat dibaca dengan anon key; penulisan butuh service-role (RLS hanya
-  // mengizinkan select untuk anon).
-  return isSupabaseConfigured() && isSupabaseAdminConfigured();
+  return isSupabaseConfigured() || isSupabaseAdminConfigured();
 }
 
 /**
  * Service-role key yang berasal dari project lain gagal SENYAP di setiap
  * iterasi (RLS menolak, error ditelan pemanggil). Deteksi dini: ref project
  * ada di klaim `ref` JWT dan di hostname URL Supabase.
+ *
+ * Ini TIDAK memblokir lab (fallback anon menutup tulisan); ia hanya menjadi
+ * peringatan agar pengguna tahu service-role-nya tidak terpakai.
  */
 export function serviceKeyProjectMismatch(): string | null {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL || '';
@@ -77,7 +85,7 @@ export function serviceKeyProjectMismatch(): string | null {
     if (!payload) return null;
     const json = JSON.parse(Buffer.from(payload, 'base64').toString('utf8')) as { ref?: string };
     if (json.ref && host && json.ref !== host) {
-      return `SUPABASE_SERVICE_ROLE_KEY milik project "${json.ref}", sedangkan URL menunjuk "${host}". Salin service_role key dari project yang sama.`;
+      return `SUPABASE_SERVICE_ROLE_KEY milik project "${json.ref}", sedangkan URL menunjuk "${host}" — key ini tidak terpakai; penulisan memakai anon key. Salin service_role key dari project yang sama kalau ingin tulisan lewat service-role.`;
     }
   } catch {
     /* JWT tidak bisa dibaca — biarkan probe yang memutuskan */
@@ -102,7 +110,7 @@ async function db() {
 }
 
 async function dbWrite() {
-  return ensureSupabaseAdmin();
+  return (await ensureSupabaseAdmin()) ?? getSupabase();
 }
 
 export async function latestRun(): Promise<McLabRow | null> {
@@ -315,6 +323,11 @@ async function createRow(proposal: LabProposal): Promise<string | null> {
         'tabel mc_lab_runs belum ada — jalankan supabase/migrations/016_mc_lab_runs.sql di SQL Editor'
       );
     }
+    if (/row-level security|42501/i.test(error.message)) {
+      throw new Error(
+        'polisi RLS anon rw belum ada — jalankan ULANG supabase/migrations/016_mc_lab_runs.sql (versi terbaru sudah idempotent: drop policy lalu create policy "anon rw mc_lab_runs")'
+      );
+    }
     return null;
   }
   return data?.id ?? null;
@@ -332,7 +345,7 @@ async function patchRow(id: string | null, patch: Record<string, unknown>): Prom
  * tidak pernah menjalankan dua iterasi paralel.
  */
 export async function runIteration(opts: { force?: boolean; source?: string } = {}): Promise<IterationResult> {
-  if (!isSupabaseConfigured()) {
+  if (!isLabConfigured()) {
     return { ran: false, reason: 'supabase belum dikonfigurasi — riwayat tidak bisa disimpan' };
   }
 
@@ -367,7 +380,7 @@ export async function runIteration(opts: { force?: boolean; source?: string } = 
   if (!runId) {
     return {
       ran: false,
-      reason: 'SUPABASE_SERVICE_ROLE_KEY belum diset/ditolak — hasil tidak bisa disimpan',
+      reason: 'Supabase tidak bisa ditulis — set NEXT_PUBLIC_SUPABASE_URL + anon key (atau service-role key yang valid), lalu jalankan migrasi 016_mc_lab_runs.sql',
       proposal,
     };
   }
