@@ -1,0 +1,60 @@
+name: MC lab iteration
+
+# Satu iterasi laboratorium Monte Carlo, dengan jeda 10 menit SETELAH iterasi
+# sebelumnya selesai.
+#
+# Kenapa GitHub Actions, bukan Vercel Cron: paket Hobby hanya mengizinkan cron
+# harian. Kenapa tiap 5 menit, bukan 10: cooldown dihitung dari waktu SELESAI.
+# Dengan tick 10 menit, run yang selesai pada :10:40 akan melewatkan tick :20
+# dan baru jalan :30 — jedanya jadi 20 menit. Tick 5 menit menjaga jarak tetap
+# 10–15 menit. Route sendiri yang menegakkan cooldown, jadi tick yang terlalu
+# cepat hanya menghasilkan 429 (bukan error).
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: mc-lab
+  cancel-in-progress: false
+
+jobs:
+  iterate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Trigger one iteration
+        env:
+          DEPLOY_URL: ${{ secrets.VERCEL_URL }}
+          SCAN_CRON_SECRET: ${{ secrets.SCAN_CRON_SECRET }}
+        run: |
+          set -euo pipefail
+          if [ -z "${DEPLOY_URL}" ] || [ -z "${SCAN_CRON_SECRET}" ]; then
+            echo "::error::VERCEL_URL dan SCAN_CRON_SECRET wajib diisi"
+            exit 1
+          fi
+          CODE=$(curl --silent --show-error --max-time 240 \
+            -o /tmp/mc-lab.json -w '%{http_code}' \
+            -X POST "${DEPLOY_URL}/api/mc-lab" \
+            -H "Authorization: Bearer ${SCAN_CRON_SECRET}" \
+            -H "Content-Type: application/json" \
+            -d '{}')
+          cat /tmp/mc-lab.json
+          echo
+          # 429 = cooldown masih aktif. Bukan error.
+          if [ "$CODE" = "429" ]; then
+            echo "cooldown aktif — iterasi berikutnya otomatis"
+            exit 0
+          fi
+          if [ "$CODE" != "200" ]; then
+            echo "::error::mc-lab HTTP ${CODE}"
+            exit 1
+          fi
+          python3 -c "
+          import json
+          d = json.load(open('/tmp/mc-lab.json'))
+          if not d.get('ok'):
+              print(f\"::error::iterasi tidak berjalan: {d.get('reason') or d.get('error')}\")
+              raise SystemExit(1)
+          print(f\"ran={d.get('proposal',{}).get('asset')} {d.get('proposal',{}).get('family')} => {d.get('verdict')} {d.get('score')}\")
+          "
