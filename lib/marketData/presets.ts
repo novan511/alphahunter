@@ -141,6 +141,35 @@ export const ASSET_PRESETS: AssetPreset[] = [
       'yahoo:HG=F',
     ]),
   },
+  {
+    id: 'arena-multi',
+    name: 'AI Arena Multi-Market',
+    description: 'Crypto majors + US equity ETFs/majors + oil + commodities. Cross-market untuk AI Arena.',
+    preferredInterval: '1h',
+    benchmarkId: 'binance:BTCUSDT',
+    assets: assets([
+      // crypto
+      'binance:BTCUSDT',
+      'binance:ETHUSDT',
+      'binance:SOLUSDT',
+      'binance:XRPUSDT',
+      // us stock (yahoo)
+      'yahoo:SPY',
+      'yahoo:QQQ',
+      'yahoo:NVDA',
+      'yahoo:TSLA',
+      'yahoo:AAPL',
+      'yahoo:MSFT',
+      // oil
+      'yahoo:CL=F',
+      'yahoo:BZ=F',
+      // komoditas lain
+      'yahoo:GC=F',
+      'yahoo:SI=F',
+      'yahoo:NG=F',
+      'yahoo:HG=F',
+    ]),
+  },
 ];
 
 export function getPresetById(id: string): AssetPreset | undefined {

@@ -7,6 +7,7 @@ interface LayoutProps {
 
 const NAV_ITEMS = [
   { href: '/', label: 'Scanner', icon: '₿' },
+  { href: '/arena', label: 'AI Arena', icon: '⚔️' },
   { href: '/record', label: 'Rekam Jejak', icon: '📒' },
   { href: '/backtest', label: 'Backtest', icon: '📈' },
 ];
