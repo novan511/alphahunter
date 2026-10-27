@@ -7,6 +7,7 @@
 import { Candle } from '../types';
 import { atr } from '../algorithms/indicators';
 import { StepMarketSnapshot } from './paperEngine';
+import { secondaryAnalysis, macroBrief } from './arenaInsight';
 
 export const ARENA_STARTING_CAPITAL = 1000;
 
@@ -468,18 +469,22 @@ interface ModelDecision {
   planPlain?: string;
 }
 
-function buildPrompt(s: ArenaState, snap: StepMarketSnapshot, othersBrief = ''): string {
+function buildPrompt(s: ArenaState, snap: StepMarketSnapshot, othersBrief = '', macro = ''): string {
   const px = s.lastPrices;
-  const signals = snap.signals
+  const candidates = snap.signals
     .filter((x) => x.strength >= s.params.minSignalStrength && s.classes.includes(classifySignal(x.reason)))
     .sort((a, b) => b.strength - a.strength)
-    .slice(0, 6)
+    .slice(0, 6);
+  const signals = candidates
     .map((x) => {
       const h = snap.history[x.symbol];
       const a = h ? atr(h, 14)[h.length - 1] : 0;
       return `- ${x.symbol} ${x.type.toUpperCase()} strength=${x.strength.toFixed(1)} price=${x.price} ATR14=${a?.toFixed(4) ?? '?'} · ${x.reason}`;
     })
     .join('\n');
+  // analisis sekunder (SMC/pattern/indikator) untuk kandidat + BTC — dihitung engine dari candle mentah
+  const insightSymbols = Array.from(new Set([...candidates.map((x) => x.symbol), 'binance:BTCUSDT'])).slice(0, 6);
+  const insight = insightSymbols.map((sym) => secondaryAnalysis(sym, snap.history[sym])).join('\n\n');
   const open = s.positions
     .map((p) => {
       const mark = px[p.symbol] ?? p.entryPrice;
@@ -539,6 +544,13 @@ ${signals || '(no candidates above your min strength)'}
 Market regime snapshot latest closes: ${Object.entries(snap.latest).slice(0, 6).map(([k, c]) => `${k}=${c.close}`).join(' ')}
 
 ${regime}
+
+${macro ? `MACRO GRAMMAR (computed daily, shared): ${macro}\nUse it as bias: DXY turun biasanya tailwind komoditas/gold; VIX tinggi = risk-off (kurangi size/banyak tunggu); US10Y naik = tekanan risk asset. Diskresi penuh, engine tetap menjaga risikomu.` : ''}
+
+SECONDARY ANALYSIS (SMC structure, Fair Value Gap, order block, likuiditas, pattern, indikator — ALL computed by the engine from raw candles, bukan tebakan):
+${insight}
+
+These are YOUR tools, bukan sisipan wajib: engine confluence = konteks; secondary = kedalaman. Use secondary analysis to (a) confirm or REJECT an engine candidate (b) pick better entry side (c) refine reason. A candidate you reject with a cited structure reason (BOS/FVG/OB/liquidity) is a VALID move — flat counts as a decision.
 
 YOUR OWN history analysis (learn from it — don't repeat what loses R):
 Per-symbol perf:
@@ -749,7 +761,7 @@ export async function arenaStep(
   let fallback = false;
   let error: string | undefined;
   if (isNewBar) {
-    const user = buildPrompt(s, snap, othersBrief);
+    const user = buildPrompt(s, snap, othersBrief, await macroBrief());
     let decision: ModelDecision | null = null;
     try {
       const text = await callArenaModel(s.model, systemPrompt, user);
