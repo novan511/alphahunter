@@ -67,7 +67,8 @@ export default function ArenaPage() {
 
   const loadModels = useCallback(async () => {
     try {
-      const res = await fetch('/api/arena?action=models');
+      // full-gratis: panel rekrutmen hanya menampilkan model dengan harga 0
+      const res = await fetch('/api/arena?action=models&freeOnly=1');
       const json = await res.json();
       setModels(json.models || []);
       if ((json.models || []).length === 0) setMsg('Gateway belum dioacak — set ARENA_LLM_BASE_URL/ARENA_LLM_API_KEY atau LLM_BASE_URL/LLM_API_KEY (.env.local).');
