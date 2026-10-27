@@ -156,8 +156,34 @@ export function secondaryAnalysis(symbol: string, c: Candle[]): string {
   else if (dnWick1 > 2 * body1 && dnWick1 > upWick1) lines.push('- pattern: pin bar bullish (lower-wick panjang — rejection bawah)');
   else if (upWick1 > 2 * body1 && upWick1 > dnWick1) lines.push('- pattern: pin bar bearish (upper-wick panjang — rejection atas)');
 
-  // indikator
-  lines.push(`- indikator: RSI14=${rsi14(win).toFixed(0)} ADX14=${adx14(win).toFixed(0)} MACD=${macdState(win)} · ema20 ${win.map((x) => x.close).slice(-1)[0] > (ema(win.map((x) => x.close), 20).slice(-1)[0]) ? 'berada DI ATAS' : 'DI BAWAH'}`);
+  // panel indikator lengkap — platform kasih semua, LLM pilih sendiri metodenya
+  const closes = win.map((x) => x.close);
+  const e20 = ema(closes, 20).slice(-1)[0];
+  const e50 = ema(closes, 50).slice(-1)[0];
+  const e200 = closes.length >= 200 ? ema(closes, 200).slice(-1)[0] : NaN;
+  const s50 = closes.slice(-50).reduce((a, b) => a + b, 0) / Math.min(50, closes.length);
+  // Bollinger 20,2
+  const b20 = closes.slice(-20);
+  const m = b20.reduce((a, b) => a + b, 0) / 20;
+  const sd = Math.sqrt(b20.reduce((a, b) => a + (b - m) ** 2, 0) / 20);
+  const bbUp = m + 2 * sd, bbLo = m - 2 * sd;
+  const bbPct = sd > 0 ? (px - bbLo) / (2 * sd * 2) * 100 : 50;
+  const bbWid = (bbUp - bbLo) / px * 100;
+  // Stochastic %K/%D (14/3)
+  const stochs = win.slice(-19).map((_, i, arr) => {
+    const w = arr.slice(i, i + 14); if (w.length < 5) return NaN;
+    const hh = Math.max(...w.map((x) => x.high)), ll = Math.min(...w.map((x) => x.low));
+    return ((w[w.length - 1].close - ll) / (hh - ll || 1e-9)) * 100;
+  }).filter(Number.isFinite);
+  const k = stochs.slice(-1)[0];
+  const d = stochs.slice(-3).reduce((a, b) => a + b, 0) / Math.min(3, stochs.length) || NaN;
+  // OBV slope 5 bar
+  let obv = 0; const obvRow: number[] = [];
+  for (let i = 1; i < win.length; i++) { obv += win[i].close > win[i - 1].close ? win[i].volume : win[i].close < win[i - 1].close ? -win[i].volume : 0; obvRow.push(obv); }
+  const obvSlope = obvRow.length >= 6 ? (obvRow[obvRow.length - 1] - obvRow[obvRow.length - 6]) : 0;
+  const avgVol = win.slice(-20).reduce((a, x) => a + x.volume, 0) / Math.min(20, win.length) || 0;
+  const volRatio = avgVol > 0 ? last.volume / avgVol : 0;
+  lines.push(`- panel: EMA20=${e20.toFixed(4)} ${px > e20 ? '▲' : '▼'} · EMA50=${e50.toFixed(4)} ${px > e50 ? '▲' : '▼'}${Number.isFinite(e200) ? ` · EMA200=${e200.toFixed(4)} ${px > e200 ? '▲' : '▼'}` : ''} · SMA50=${s50.toFixed(4)} · BB%b=${bbPct.toFixed(0)}% width=${bbWid.toFixed(2)}% (mid=${m.toFixed(4)}) · Stoch %K=${k.toFixed(0)}/%D=${d.toFixed(0)} · RSI14=${rsi14(win).toFixed(0)} · ADX14=${adx14(win).toFixed(0)} · MACD=${macdState(win)} · OBV5=${obvSlope >= 0 ? '+' : ''}${obvSlope.toFixed(0)} · vol=${volRatio.toFixed(1)}x rata²20 · ATR%=${((a / px) * 100).toFixed(2)}%`);
 
   return lines.join('\n');
 }

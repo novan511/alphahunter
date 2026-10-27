@@ -72,6 +72,7 @@ export interface ArenaState {
   trades: ArenaTrade[]; // newest first, cap 200
   log: string[];
   iterNote: string; // refleksi iterasi terakhir model
+  lastTuneIter?: number; // iterasi terakhir saat agent benar-benar men-tune param (untuk duty iterasi)
   /** Process persona: arketipe gaya trading — dijamin beda antar peserta */
   archetype: string;
   mandate: string;
@@ -514,6 +515,12 @@ function buildPrompt(s: ArenaState, snap: StepMarketSnapshot, othersBrief = '', 
   const symRows = Array.from(bySym.entries()).sort((a, b) => (b[1].r / b[1].n) - (a[1].r / a[1].n))
     .slice(0, 6).map(([k, v]) => `${k}: ${v.n} trade, avgR=${(v.r / v.n).toFixed(2)}`).join('\n');
   const exitRows = Array.from(byExit.entries()).map(([k, v]) => `${k}: ${v.n}x, totalR=${v.r.toFixed(2)}`).join(' | ');
+  // MISTAKE LEDGER (engine-computed): pola kesalahan berulang yang HARUS dihentikan
+  let lossStreak = 0;
+  for (const t of s.trades) { if (t.r <= 0) lossStreak += 1; else break; }
+  const banned = Array.from(bySym.entries()).filter(([, v]) => v.n >= 3 && v.r / v.n <= -0.5).map(([k, v]) => `${k} (avgR ${(v.r / v.n).toFixed(2)}×${v.n})`);
+  const poisonExits = Array.from(byExit.entries()).filter(([, v]) => v.n >= 2 && v.r <= -1).map(([k, v]) => `${k} (${v.r.toFixed(1)}R dari ${v.n}x)`);
+  const noTuneFor = s.iterCount - (s.lastTuneIter ?? 0);
   // regim: momentum BTC 20 bar terakhir + volatilitas
   let regime = '';
   const btc = snap.history['binance:BTCUSDT'];
@@ -556,6 +563,12 @@ YOUR OWN history analysis (learn from it — don't repeat what loses R):
 Per-symbol perf:
 ${symRows || '(no trades yet)'}
 Exit reason pattern: ${exitRows || '—'}
+
+MISTAKE LEDGER (engine-audited — kesalahan berulang = dilarang keras):
+- lossStreak saat ini: ${lossStreak}${lossStreak >= 2 ? ` → engine MEMAKSA risk turun bertahap (streak ${lossStreak} = cap ${(lossStreak >= 5 ? 0.5 : lossStreak >= 4 ? 0.75 : lossStreak >= 3 ? 1 : lossStreak >= 2 ? 1.5 : 2).toFixed(2)}% per trade).` : ''} ${lossStreak >= 3 ? 'Loss streak panjang = thesis-mu salah; jangan saling-silang simbol yang sama dengan ukuran sama.' : ''}
+${banned.length ? `- SIMBOL TERLARANG (avgR ≤ -0.5 dari ≥3 trade — engine akan menolak hard): ${banned.join(', ')}` : ''}
+${poisonExits.length ? `- POLA EXIT TERMERTEWAN: ${poisonExits.join(', ')} — perbaiki timing exit-mu sebelum menambah entry` : ''}
+- Iteration duty: tanpa tune ${noTuneFor} step beruntun. ${noTuneFor >= 6 ? 'WAJIB: kalau tidak benar-benar puas dengan R-mu, eksperimen spesifik minimal satu param/hipotesis sekarang (bukan gerran kosong).' : noTuneFor === 0 ? 'tune terbaru tercatat — pertahankan hipotesis sampai ada bukti statistik (≥5 trade) sebelum tune lagi.' : ''}
 ${s.rankNote ? `\nLEADERBOARD POSITION: ${s.rankNote}. Studying the leader is fine; copying their playbook is pointless (style-guard).` : ''}
 ${othersBrief ? `\nWHAT THE OTHER AGENTS SAW & DID (competitive intel — learn from their R patterns and reasoning, NEVER copy their style or positions; you keep your own mandate):\n${othersBrief}` : ''}
 
@@ -612,6 +625,14 @@ function applyDecision(s: ArenaState, d: ModelDecision, snap: StepMarketSnapshot
       notes.push(`open rejected: cooldown ${o.symbol} (2 loss beruntun — ganti sisi, tunggu setup baru)`);
       continue;
     }
+    // MISTAKE LEDGER (hard): simbol yang sudah membuktikan diri penghabis R (avgR ≤ -0.5 dari ≥3 trade)
+    // dilarang dibuka lagi — kesalahan yang sama tidak boleh berulang.
+    const symLedger = s.trades.filter((t) => t.symbol === o.symbol);
+    const symAvgR = symLedger.length >= 3 ? symLedger.reduce((a, t) => a + t.r, 0) / symLedger.length : 0;
+    if (symLedger.length >= 3 && symAvgR <= -0.5) {
+      notes.push(`open rejected: ${o.symbol} avgR=${symAvgR.toFixed(2)} dari ${symLedger.length} trade — simbol terbukti buruk untukmu, cari kandidat lain`);
+      continue;
+    }
     // LEARNING GOVERNOR: R-rata-rata 10 trade terakhir jelek → kecilkan risiko
     const recent10 = s.trades.slice(0, 10).map((t) => t.r);
     const recentAvg = recent10.length >= 5 ? recent10.reduce((a, b) => a + b, 0) / recent10.length : 0;
@@ -636,9 +657,14 @@ function applyDecision(s: ArenaState, d: ModelDecision, snap: StepMarketSnapshot
     const side = o.side === 'short' ? 'short' : o.side === 'long' ? 'long' : (sig.type === 'sell' ? 'short' : 'long');
     if (side === 'short' && !s.params.allowShort) { notes.push('shorts disabled in your params'); continue; }
     const riskFra = clamp(Number(o.riskFra) || s.params.riskPerTrade, RISK_PER_TRADE_MIN, RISK_PER_TRADE_MAX);
-    const effRisk = governed ? Math.min(riskFra, 0.01) : riskFra;
-    if (governed && riskFra > 0.01) {
-      pushLog(s, `LEARNING GOVERNOR: avgR 10-trade terakhir ${recentAvg.toFixed(2)} < -0.4 → risk ditahan ${riskFra} → 1%`);
+    // DE-RISK OTOMATIS: losing streak memaksa risiko turun bertahap — engine, bukan RSI hati.
+    // streak1→2.5%, 2→2%, 3→1.5%, 4→1%, ≥5→0.5%. Plus governor rata-rata 10 trade.
+    let streak = 0;
+    for (const t of s.trades) { if (t.r <= 0) streak += 1; else break; }
+    const streakCap = streak >= 5 ? 0.005 : streak >= 4 ? 0.0075 : streak >= 3 ? 0.01 : streak >= 2 ? 0.015 : streak >= 1 ? 0.02 : RISK_PER_TRADE_MAX;
+    const effRisk = Math.min(riskFra, governed ? 0.01 : RISK_PER_TRADE_MAX, streakCap);
+    if (effRisk < riskFra) {
+      pushLog(s, `DE-RISK: lossStreak=${streak} avgR10=${recentAvg.toFixed(2)} → risk ${riskFra} → ${(effRisk * 100).toFixed(1)}%`);
     }
     const targetRR = clamp(Number(o.targetRR) || 0, TARGET_MIN, TARGET_MAX);
     const stopATR = clamp(Number(o.targetRR) ? Math.min(targetRR, s.params.stopLossATR) : s.params.stopLossATR, ATR_MIN, ATR_MAX) || s.params.stopLossATR;
@@ -708,6 +734,7 @@ function applyDecision(s: ArenaState, d: ModelDecision, snap: StepMarketSnapshot
     tuned.push(`interval→${t.interval}`);
     paramChanged = true;
   }
+  if (paramChanged) s.lastTuneIter = s.iterCount;
   return { paramChanged, notes, tuned };
 }
 
