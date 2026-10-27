@@ -793,6 +793,16 @@ export async function arenaStep(
     try {
       const text = await callArenaModel(s.model, systemPrompt, user);
       decision = extractJson(text);
+      // RETRY korektif: beberapa model (mis. mistral) kadang balas prose — tanya ulang dengan perintah format keras, lalu parse per-keluarga output
+      if (!decision) {
+        console.error(`[arena-debug ${s.model}] raw (${text.length} chars): ${text.slice(0, 600)}`);
+        const text2 = await callArenaModel(
+          s.model,
+          `${systemPrompt}\n\nCRITICAL: your previous reply was prose, which is INVALID. Reply with ONLY the raw JSON object — no explanation, no markdown, start with { and end with }.`,
+          user
+        );
+        decision = extractJson(text2);
+      }
       if (!decision) {
         fallback = true;
         error = 'unparseable model output';

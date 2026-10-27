@@ -157,10 +157,12 @@ export function secondaryAnalysis(symbol: string, c: Candle[]): string {
   else if (upWick1 > 2 * body1 && upWick1 > dnWick1) lines.push('- pattern: pin bar bearish (upper-wick panjang — rejection atas)');
 
   // panel indikator lengkap — platform kasih semua, LLM pilih sendiri metodenya
+  // EMA200 dihitung dari data mentah penuh (win hanya 60 bar terakhir untuk struktur)
+  const fullCloses = c.map((x) => x.close);
   const closes = win.map((x) => x.close);
   const e20 = ema(closes, 20).slice(-1)[0];
   const e50 = ema(closes, 50).slice(-1)[0];
-  const e200 = closes.length >= 200 ? ema(closes, 200).slice(-1)[0] : NaN;
+  const e200 = fullCloses.length >= 200 ? ema(fullCloses, 200).slice(-1)[0] : NaN;
   const s50 = closes.slice(-50).reduce((a, b) => a + b, 0) / Math.min(50, closes.length);
   // Bollinger 20,2
   const b20 = closes.slice(-20);
