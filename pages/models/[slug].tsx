@@ -64,7 +64,7 @@ function LivePositionRow({ p, interval }: { p: NonNullable<ArenaState['positions
   const dir = p.side === 'long' ? 1 : -1;
   const qty = p.qty || 0;
   const pnl = ((mark ?? p.entryPrice) - p.entryPrice) * dir * qty;
-  const riskU = Math.abs(p.entryPrice - p.stopLoss) * qty || (p.riskDollar || 1);
+  const riskU = p.riskDollar || Math.abs(p.entryPrice - p.stopLoss) * qty || 1;
   const pnlR = pnl / (riskU || 1);
   const liveP = mark ?? p.entryPrice;
 

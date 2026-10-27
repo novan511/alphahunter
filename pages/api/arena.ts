@@ -126,6 +126,11 @@ function normalizeState(st: ArenaState): ArenaState {
     st.classes = ['momentum'];
   }
   if (!st.thoughts) st.thoughts = [];
+  if (!st.lastBarTimes) st.lastBarTimes = {};
+  for (const p of st.positions || []) {
+    // posisi lama belum punya riskUnit (dipakai liveR saat stop sudah di-trail)
+    if (!p.riskUnit) p.riskUnit = p.riskDollar && p.qty ? p.riskDollar / p.qty : p.entryATR * st.params.stopLossATR;
+  }
   return st;
 }
 
@@ -133,9 +138,9 @@ function normalizeState(st: ArenaState): ArenaState {
 function livePositions(s: ArenaState) {
   return s.positions.map((p) => {
     const mark = s.lastPrices[p.symbol] ?? p.entryPrice;
-    const riskU = p.riskDollar && p.qty ? p.riskDollar / p.qty : p.entryATR * s.params.stopLossATR;
+    const riskDollar = p.riskDollar || p.riskUnit * p.qty || 1;
     const liveR =
-      Math.round(((p.side === 'long' ? mark - p.entryPrice : p.entryPrice - mark) / riskU) * 100) / 100;
+      Math.round((((p.side === 'long' ? mark - p.entryPrice : p.entryPrice - mark) * p.qty) / riskDollar) * 100) / 100;
     return {
       model: s.model,
       symbol: p.symbol,
@@ -145,6 +150,9 @@ function livePositions(s: ArenaState) {
       stopLoss: Math.round(p.stopLoss * 10000) / 10000,
       takeProfit: Math.round(p.takeProfit * 10000) / 10000,
       liveR,
+      qty: Math.round(p.qty * 1e6) / 1e6,
+      riskDollar: Math.round(riskDollar * 100) / 100,
+      tookPartial: Boolean(p.tookPartial),
       barsHeld: p.barsHeld,
       reason: p.reason,
     };
@@ -203,6 +211,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         positions: states.flatMap(livePositions),
         persisted: isSupabaseConfigured(),
         gw: { ...gatewayHealth, down: gatewayHealth.lastErrAt > gatewayHealth.lastOkAt },
+        deepseekFallback: Boolean(process.env.DEEPSEEK_API_KEY_2),
       });
     }
 
@@ -366,6 +375,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         return res.status(200).json({ ok: false, error: 'agent TERMINATED oleh gateway (402/404) — baru hidupkan lewat body {force:true} setelah model diberes di console' });
       }
       s.running = true;
+      s.terminated = false; // force-resume bersihkan flag terminated agar bisa step lagi
       await saveState(s);
       return res.status(200).json({ ok: true });
     }

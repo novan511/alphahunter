@@ -23,6 +23,10 @@ const RISK_R_MAX = 0.06; // total open risk maks 6% equity (=2-6R per sesi)
 const CIRCUIT_R = -3;    // open unrealized R total ≤ -3R → stop entry sampan pulih
 const CORR_BLOCK = 0.8;  // |corr| ≥ 0.8 dengan posisi open searah → order ditolak (risiko tidak terdiversifikasi)
 const KNOCKOUT_EQ = ARENA_STARTING_CAPITAL / 2; // equity ≤ $500 → KO, ditiadakan dari arena
+const FEE_BPS = 5;       // 5 bps per sisi (taker) — tanpa biaya, churn terlihat gratis
+const PARTIAL_R = 1.5;   // +1.5R: kunci separuh posisi
+const TRAIL_R = 1;       // +1R: stop pindah ke breakeven, lalu trailing ATR
+const RUNNER_MIN_R = 1.5; // close manual di zona +0.2R..+1.5R ditolak — biarkan runner jalan
 
 export interface ArenaParams {
   stopLossATR: number;
@@ -46,6 +50,8 @@ export interface ArenaPosition {
   takeProfit: number;
   barsHeld: number;
   riskDollar: number; // dollar yang dipertaruhkan saat entry (1R) — beku, tidak ikut tune
+  riskUnit: number; // jarak 1R per unit (ATR × stopATR saat entry) — beku, dipakai liveR saat stop sudah di-trail
+  tookPartial?: boolean; // separuh posisi sudah dikunci di +1.5R
   reason: string;
 }
 
@@ -85,6 +91,8 @@ export interface ArenaState {
   rankNote?: string; // diisi engine per step, transien (bukan perpindahan state)
   terminated?: boolean; // gateway menolak permanen (402/404) — agent tak dihidupkan ulang otomatis
   lastBarKey: string;
+  /** waktu candle terakhir per simbol — barsHeld naik per BAR, bukan per step 90s */
+  lastBarTimes?: Record<string, number>;
   lastPrices: Record<string, number>;
   equityHistory: Array<{ time: number; equity: number }>;
   stats: { totalTrades: number; wins: number; winRate: number; totalR: number; avgR: number; bestR: number; worstR: number; ProfitFactor: number };
@@ -297,11 +305,14 @@ function pushLog(s: ArenaState, msg: string) {
   s.log = [`[${new Date().toISOString().slice(11, 19)}] ${msg}`, ...s.log].slice(0, 60);
 }
 
-function closeArena(s: ArenaState, pos: ArenaPosition, exitTime: number, exitPx: number, reason: string) {
-  const pnl =
+function closeArena(s: ArenaState, pos: ArenaPosition, exitTime: number, exitPx: number, reason: string, qty = pos.qty) {
+  const gross =
     pos.side === 'long'
-      ? pos.qty * (exitPx - pos.entryPrice)
-      : pos.qty * (pos.entryPrice - exitPx);
+      ? qty * (exitPx - pos.entryPrice)
+      : qty * (pos.entryPrice - exitPx);
+  // biaya nyata 2 sisi — R yang tidak dipotong fee bikin churn kelihatan gratis
+  const fee = (FEE_BPS / 10_000) * qty * (pos.entryPrice + exitPx);
+  const pnl = gross - fee;
   const riskDollar = pos.riskDollar || pos.qty * pos.entryATR * s.params.stopLossATR || 1;
   s.cash += pnl;
   s.trades.unshift({
@@ -418,7 +429,36 @@ async function callArenaModel(model: string, system: string, user: string): Prom
       ],
     }),
   });
-  if (!res.ok) throw new Error(`Model ${model} error: ${res.status}`);
+  if (!res.ok) {
+    // AntSeed gagal (402 kredit, 404 model, 429 rate-limit, dst.) → fallback DeepSeek langsung
+    const deepKey = process.env.DEEPSEEK_API_KEY_2 || '';
+    const deepBase = process.env.DEEPSEEK_BASE_URL_2 || 'https://api.deepseek.com/v1/chat/completions';
+    if (deepKey) {
+      try {
+        const deepRes = await fetch(deepBase.replace(/\/+$/, '') + '/chat/completions', {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${deepKey}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            model: 'deepseek-chat',
+            max_tokens: 2200,
+            temperature: 0.4,
+            messages: [
+              { role: 'system', content: system },
+              { role: 'user', content: user },
+            ],
+          }),
+        });
+        if (deepRes.ok) {
+          const deepJson = await deepRes.json();
+          const deepText = deepJson.choices?.[0]?.message?.content?.trim();
+          if (deepText) return deepText;
+        }
+      } catch {
+        /* gagal fallback — lempar error asli di bawah */
+      }
+    }
+    throw new Error(`Model ${model} error: ${res.status}`);
+  }
   // FULL-GRATIS guard: kalau gateway memilih peer berbayar, STOP (uang, bukan token).
   const cost = Number(res.headers.get('x-antseed-estimated-cost-usd') || '0');
   if (Number.isFinite(cost) && cost > 0) {
@@ -496,9 +536,9 @@ function buildPrompt(s: ArenaState, snap: StepMarketSnapshot, othersBrief = '', 
   const open = s.positions
     .map((p) => {
       const mark = px[p.symbol] ?? p.entryPrice;
-      const riskU = p.entryATR * s.params.stopLossATR;
-      const liveR = (p.side === 'long' ? mark - p.entryPrice : p.entryPrice - mark) / riskU;
-      return `- ${p.symbol} ${p.side.toUpperCase()} entry=${p.entryPrice} liveR=${liveR.toFixed(2)} held=${p.barsHeld}bars · why: ${p.reason}`;
+      const riskU = p.riskUnit || p.entryATR * s.params.stopLossATR;
+      const liveR = (p.side === 'long' ? mark - p.entryPrice : p.entryPrice - mark) / Math.max(1e-9, riskU);
+      return `- ${p.symbol} ${p.side.toUpperCase()} entry=${p.entryPrice} liveR=${liveR.toFixed(2)} held=${p.barsHeld}bars${p.tookPartial ? ' (half banked, runner trailing)' : ''} · why: ${p.reason}`;
     })
     .join('\n');
   // KORELASI (engine, dari candle mentah): kandidat vs posisi open — asset yang bergerak bareng
@@ -598,6 +638,7 @@ Decide your next moves. You may:
 
 HARD RULES (enforced by the engine, violating = order rejected):
 - Every position ALWAYS carries a stop (SL is set at entry automatically; you cannot remove it).
+- Engine exit ladder: +1R → stop moves to breakeven, +1.5R → half the position is banked and the rest trails an ATR. A discretionary close while PnL is between +0.2R and +1.5R is REJECTED (runner lock): cut losers or let the winner run.
 - Risk per trade 0.5%-3% of equity; total open risk across positions max 6%.
 - Max ${s.params.maxConcurrentPositions} concurrent positions (hard cap 5).
 - If your open unrealized R total hits -3R, new entries are BLOCKED until it recovers.
@@ -623,6 +664,14 @@ function applyDecision(s: ArenaState, d: ModelDecision, snap: StepMarketSnapshot
     const pos = s.positions[i];
     const last = snap.latest[pos.symbol];
     const px = last ? last.close : (s.lastPrices[pos.symbol] ?? pos.entryPrice);
+    // RUNNER LOCK: close manual di zona +0.2R..+1.5R ditolak — posisi masih sehat dan
+    // stop/trail sudah melindunginya. Cut loser (≤+0.2R) atau ambil profit ≥1.5R tetap boleh.
+    const riskUnit = pos.riskUnit || pos.riskDollar / Math.max(1e-9, pos.qty) || pos.entryATR * s.params.stopLossATR;
+    const liveR = (px - pos.entryPrice) * (pos.side === 'long' ? 1 : -1) / Math.max(1e-9, riskUnit);
+    if (liveR > 0.2 && liveR < RUNNER_MIN_R) {
+      notes.push(`close rejected: ${pos.symbol} baru ${liveR.toFixed(2)}R — biarkan runner jalan (stop sudah di breakeven/trail)`);
+      continue;
+    }
     closeArena(s, pos, last?.time ?? Date.now(), px, `model_close${c.reason ? ': ' + c.reason : ''}`);
     s.positions.splice(i, 1);
   }
@@ -696,8 +745,16 @@ function applyDecision(s: ArenaState, d: ModelDecision, snap: StepMarketSnapshot
     if (effRisk < riskFra) {
       pushLog(s, `DE-RISK: lossStreak=${streak} avgR10=${recentAvg.toFixed(2)} → risk ${riskFra} → ${(effRisk * 100).toFixed(1)}%`);
     }
-    const targetRR = clamp(Number(o.targetRR) || 0, TARGET_MIN, TARGET_MAX);
-    const stopATR = clamp(Number(o.targetRR) ? Math.min(targetRR, s.params.stopLossATR) : s.params.stopLossATR, ATR_MIN, ATR_MAX) || s.params.stopLossATR;
+    // TP dan SL independen: SL selalu dari stopLossATR milik model; kalau model tidak
+    // menyebut targetRR, pakai RR implisit dari param (takeProfitATR/stopLossATR) —
+    // dulu default-nya clamp(0) = 0.5R sehingga tuning takeProfitATR tidak berefek.
+    const targetRaw = Number(o.targetRR) || 0;
+    const targetRR = clamp(
+      targetRaw > 0 ? targetRaw : s.params.takeProfitATR / Math.max(1e-9, s.params.stopLossATR),
+      TARGET_MIN,
+      TARGET_MAX
+    );
+    const stopATR = clamp(s.params.stopLossATR, ATR_MIN, ATR_MAX) || s.params.stopLossATR;
     const riskPerUnit = stopATR * a;
     const riskDollar = Math.max(0, eq) * effRisk;
     const qty = riskDollar / riskPerUnit;
@@ -723,9 +780,13 @@ function applyDecision(s: ArenaState, d: ModelDecision, snap: StepMarketSnapshot
       takeProfit,
       barsHeld: 0,
       riskDollar,
+      riskUnit: riskPerUnit,
       reason: (sig?.reason || o.reason || 'model pick').slice(0, 140),
     });
-    pushLog(s, `OPEN ${side.toUpperCase()} ${o.symbol} @ ${entryPrice.toFixed(4)} risk=${(effRisk * 100).toFixed(1)}% R=1R target=${targetRR || s.params.takeProfitATR}R — ${(o.reason || sig?.reason || '').slice(0, 90)}`);
+    // bar entry sudah terpakai — barsHeld baru naik saat candle berikutnya datang
+    if (!s.lastBarTimes) s.lastBarTimes = {};
+    s.lastBarTimes[o.symbol] = last.time;
+    pushLog(s, `OPEN ${side.toUpperCase()} ${o.symbol} @ ${entryPrice.toFixed(4)} risk=${(effRisk * 100).toFixed(1)}% R=1R target=${targetRR.toFixed(2)}R — ${(o.reason || sig?.reason || '').slice(0, 90)}`);
   }
 
   const t = d.tune || {};
@@ -773,22 +834,64 @@ function applyDecision(s: ArenaState, d: ModelDecision, snap: StepMarketSnapshot
 export interface ArenaStepResult { closedTrades: ArenaTrade[]; fallback: boolean; error?: string }
 
 function manageOpen(s: ArenaState, snap: StepMarketSnapshot) {
+  if (!s.lastBarTimes) s.lastBarTimes = {};
   for (let i = s.positions.length - 1; i >= 0; i--) {
     const pos = s.positions[i];
     const last = snap.latest[pos.symbol];
     if (!last) continue;
-    pos.barsHeld += 1;
+    // barsHeld = jumlah CANDLE baru, bukan jumlah tick 90 detik. Dulu maxHoldBars 72
+    // di chart 4h habis dalam ~1,8 jam sehingga time_stop memotong winner dini.
+    const seen = s.lastBarTimes[pos.symbol];
+    if (seen === undefined) s.lastBarTimes[pos.symbol] = last.time;
+    else if (last.time > seen) {
+      s.lastBarTimes[pos.symbol] = last.time;
+      pos.barsHeld += 1;
+    }
+
+    const riskUnit = pos.riskUnit || pos.riskDollar / Math.max(1e-9, pos.qty) || pos.entryATR * s.params.stopLossATR;
+    const dir = pos.side === 'long' ? 1 : -1;
+    const liveR = (last.close - pos.entryPrice) * dir / Math.max(1e-9, riskUnit);
+    const hitTarget = pos.takeProfit > 0 && (pos.side === 'long' ? last.high >= pos.takeProfit : last.low <= pos.takeProfit);
     const hitStop = pos.side === 'long' ? last.low <= pos.stopLoss : last.high >= pos.stopLoss;
-    const hitTarget = pos.side === 'long' ? last.high >= pos.takeProfit : last.low <= pos.takeProfit;
-    if (pos.takeProfit > 0 && hitTarget) {
+
+    // STOP dicek lebih dulu (konservatif): satu bar menyentuh dua-duanya tidak boleh
+    // dibukukan sebagai profit yang belum tentu didapat.
+    if (hitStop) {
+      // gap melewati stop = fill di harga open bar, bukan di harga stop
+      const fill = pos.side === 'long' ? Math.min(pos.stopLoss, last.open) : Math.max(pos.stopLoss, last.open);
+      closeArena(s, pos, last.time, fill, 'risk_stop');
+      s.positions.splice(i, 1);
+      continue;
+    }
+    if (hitTarget) {
       closeArena(s, pos, last.time, pos.takeProfit, 'risk_target');
       s.positions.splice(i, 1);
-    } else if (hitStop) {
-      closeArena(s, pos, last.time, pos.stopLoss, 'risk_stop');
-      s.positions.splice(i, 1);
-    } else if (pos.barsHeld >= s.params.maxHoldBars) {
+      continue;
+    }
+    if (pos.barsHeld >= s.params.maxHoldBars) {
       closeArena(s, pos, last.time, last.close, 'time_stop');
       s.positions.splice(i, 1);
+      continue;
+    }
+
+    // EXIT LADDER (engine, bukan discretion LLM): +1R breakeven, +1.5R kunci separuh,
+    // sisa di-trail ATR. Tanpa ini winner selalu ditutup manual di ~1R dan avgR mentok 0.
+    if (liveR >= TRAIL_R) {
+      const be = pos.side === 'long' ? Math.max(pos.stopLoss, pos.entryPrice) : Math.min(pos.stopLoss, pos.entryPrice);
+      const hist = snap.history[pos.symbol];
+      const a = hist ? atr(hist, 14)[hist.length - 1] : 0;
+      const trail = a > 0
+        ? (pos.side === 'long' ? last.high - TRAIL_R * a : last.low + TRAIL_R * a)
+        : be;
+      pos.stopLoss = pos.side === 'long' ? Math.max(be, trail) : Math.min(be, trail);
+    }
+    if (liveR >= PARTIAL_R && !pos.tookPartial && pos.qty > 0) {
+      const half = pos.qty / 2;
+      closeArena(s, pos, last.time, last.close, 'partial_target', half);
+      pos.qty -= half;
+      pos.tookPartial = true;
+      // stop sisa posisi ke breakeven — sisa R tidak boleh berubah jadi loss
+      pos.stopLoss = pos.side === 'long' ? Math.max(pos.stopLoss, pos.entryPrice) : Math.min(pos.stopLoss, pos.entryPrice);
     }
   }
 }

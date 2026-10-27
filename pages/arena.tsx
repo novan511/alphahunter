@@ -39,6 +39,9 @@ interface LivePos {
   stopLoss: number;
   takeProfit: number;
   liveR: number;
+  qty?: number;
+  riskDollar?: number;
+  tookPartial?: boolean;
   barsHeld: number;
   reason: string;
 }
@@ -57,6 +60,7 @@ export default function ArenaPage() {
   const [positions, setPositions] = useState<LivePos[]>([]);
   const [marks, setMarks] = useState<Record<string, number>>({});
   const [gw, setGw] = useState<{ lastOkAt: number; lastErrAt: number; lastErr: string; down: boolean } | null>(null);
+  const [deepseekFallback, setDeepseekFallback] = useState<boolean>(false);
   const [booting, setBooting] = useState(false);
   const [stepping, setStepping] = useState(false);
   const [msg, setMsg] = useState<string>('');
@@ -88,6 +92,7 @@ export default function ArenaPage() {
     setLb(json.lb || []);
     setPositions(json.positions || []);
     setGw(json.gw || null);
+    setDeepseekFallback(Boolean(json.deepseekFallback));
   }, []);
 
   const reviveGateway = async () => {
@@ -224,15 +229,20 @@ export default function ArenaPage() {
               </p>
             </div>
             <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-              {gw && (
-                <span
-                  style={{ padding: '8px 10px', borderRadius: 8, fontSize: 11, fontWeight: 600, cursor: gw.down ? 'pointer' : 'default', border: `1px solid ${gw.down ? '#ef4444' : '#10b981'}`, color: gw.down ? '#fca5a5' : '#86efac' }}
-                  onClick={gw.down ? reviveGateway : undefined}
-                  title={gw.down ? `Terlihat mati: ${gw.lastErr} — klik untuk ping ulang` : ''}
-                >
-                  {gw.down ? '🔴 gateway mati — klik untuk bangunkan' : '🟢 gateway hidup'}
-                </span>
-              )}
+                {gw && (
+                  <span
+                    style={{ padding: '8px 10px', borderRadius: 8, fontSize: 11, fontWeight: 600, cursor: gw.down ? 'pointer' : 'default', border: `1px solid ${gw.down ? '#ef4444' : '#10b981'}`, color: gw.down ? '#fca5a5' : '#86efac' }}
+                    onClick={gw.down ? reviveGateway : undefined}
+                    title={gw.down ? `Terlihat mati: ${gw.lastErr} — klik untuk ping ulang` : ''}
+                  >
+                    {gw.down ? '🔴 gateway mati — klik untuk bangunkan' : '🟢 gateway hidup'}
+                  </span>
+                )}
+                {deepseekFallback && (
+                  <span style={{ padding: '8px 10px', borderRadius: 8, fontSize: 11, fontWeight: 600, border: '1px solid #22c55e', color: '#86efac' }}>
+                    🟢 DeepSeek fallback siap
+                  </span>
+                )}
               <button
                 onClick={() => setAuto((a) => !a)}
                 style={{ padding: '8px 12px', borderRadius: 8, border: '1px solid #4b5563', background: auto ? 'rgba(59,130,246,.2)' : 'transparent', color: auto ? '#3b82f6' : '#9ca3af', cursor: 'pointer', fontSize: 12, fontWeight: 600 }}
@@ -386,7 +396,11 @@ export default function ArenaPage() {
                       {(() => {
                         const m = marks[p.symbol] ?? p.markPrice;
                         const dir = p.side === 'long' ? 1 : -1;
-                        const lr = ((m - p.entryPrice) * dir) / Math.max(1e-9, Math.abs(p.entryPrice - p.stopLoss));
+                        // R = pnl / riskDollar entry (bukan jarak stop — stop sudah pindah ke
+                        // breakeven/trail, jadi jarak entry→SL tidak lagi sama dengan 1R)
+                        const lr = p.riskDollar && p.qty
+                          ? ((m - p.entryPrice) * dir * p.qty) / Math.max(1e-9, p.riskDollar)
+                          : ((m - p.entryPrice) * dir) / Math.max(1e-9, Math.abs(p.entryPrice - p.stopLoss));
                         return <td style={{ padding: 8, color: rColor(lr), fontWeight: 700 }}>{lr >= 0 ? '+' : ''}{lr.toFixed(2)}R</td>;
                       })()}
                       <td style={{ padding: 8, color: '#ef4444' }}>{fmt(p.stopLoss)}</td>
