@@ -161,33 +161,32 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   try {
     ensureGatewayKeepalive();
     if (action === 'models') {
-      // 60s cache + fallback list terakhir: gateway flicker (timeout/5xx) tak boleh bikin panel rekrutmen kosong
+      // 60s cache daftar mentah + fallback list terakhir: gateway flicker (timeout/5xx)
+      // tak boleh bikin panel rekrutmen kosong. Filter freeOnly dijalankan SETELAH cache
+      // supaya kedua mode menghasilkan daftar yang benar dari cache yang sama.
+      const wantFree = req.query.freeOnly === '1' || req.body?.freeOnly === true;
+      let raw: ArenaModelInfo[] = [];
+      let note = '';
       if (modelsCache.t && Date.now() - modelsCache.t < 60_000) {
-        return res.status(200).json({ ok: true, models: modelsCache.list, freeCount: modelsCache.freeCount, gatewayConfigured: modelsCache.list.length > 0, cached: true });
+        raw = modelsCache.list;
+        note = 'cached';
+      } else {
+        try {
+          raw = await listArenaModels();
+          modelsCache = { t: Date.now(), list: raw, freeCount: raw.filter((m) => m.free).length };
+        } catch (e) {
+          note = modelsCache.t ? 'stale-cache' : 'gateway-down';
+          raw = modelsCache.t ? modelsCache.list : [];
+        }
       }
-      try {
-        const all = await listArenaModels();
-        // default: semua model (biar bisa di-scan & dipilih); freeOnly=1 untuk penghemat
-        const wantFree = req.query.freeOnly === '1' || req.body?.freeOnly === true;
-        const filtered = wantFree && all.some((m) => m.free) ? all.filter((m) => m.free) : all;
-        modelsCache = { t: Date.now(), list: filtered, freeCount: all.filter((m) => m.free).length };
-        return res.status(200).json({
-          ok: true,
-          models: filtered,
-          freeCount: all.filter((m) => m.free).length,
-          gatewayConfigured: all.length > 0,
-        });
-      } catch (e) {
-        // gateway sedang tersendat: sajikan cache terakhir kalau ada, kalau tak ada kosong+pesan
-        const stale = modelsCache.t ? modelsCache.list : [];
-        return res.status(200).json({
-          ok: true,
-          models: stale,
-          freeCount: modelsCache.freeCount || 0,
-          gatewayConfigured: stale.length > 0,
-          note: `gateway sedang tersendat (${e instanceof Error ? e.message.slice(0, 90) : e}) — ${stale.length ? 'menampilkan daftar terakhir' : 'coba lagi sebentar'}`,
-        });
-      }
+      const filtered = wantFree && raw.some((m) => m.free) ? raw.filter((m) => m.free) : raw;
+      return res.status(200).json({
+        ok: true,
+        models: filtered,
+        freeCount: raw.filter((m) => m.free).length,
+        gatewayConfigured: filtered.length > 0 || raw.length > 0,
+        ...(note ? { note } : {}),
+      });
     }
 
     if (action === 'gw-ping') {
