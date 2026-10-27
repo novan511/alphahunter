@@ -154,6 +154,21 @@ function stdev(xs: number[]): number {
   return Math.sqrt(variance(xs));
 }
 
+/**
+ * Korelasi dua aset dari candle mentah: log-return Pearson, di-join on
+ * timestamp (asumsi index parity merusak data kalau jam dagang beda).
+ * Return null kalau tidak cukup bar yang waktunya sama (mis. crypto vs saham).
+ */
+export function pairCorrelation(a: Candle[], b: Candle[], window = 60): number | null {
+  if (!a?.length || !b?.length) return null;
+  const aligned = alignOnTime({ a, b }, ['a', 'b'], window);
+  if (!aligned) return null;
+  const ra = logReturns(aligned.closes.a);
+  const rb = logReturns(aligned.closes.b);
+  if (ra.length < window || rb.length < window) return null;
+  return pearson(ra.slice(-window), rb.slice(-window));
+}
+
 function pearson(a: number[], b: number[]): number {
   const n = Math.min(a.length, b.length);
   if (n < 3) return 0;

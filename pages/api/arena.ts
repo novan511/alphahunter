@@ -312,6 +312,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           } else if (/error: 402\b/.test(out.error || '')) {
             s.running = false;
             s.log = [...(s.log || []), `⏸ JEDA — kredit AntSeed habis (${(out.error || '').split('error: ')[1] || '402'}). Top-up di konsol AntSeed lalu klik resume — agent lanjut dari state terakhir.`];
+          } else if (/PAID peer/i.test(out.error || '')) {
+            // free-only: model dilayani peer berbayar → jeda, jangan ulangi (biaya)
+            s.running = false;
+            s.log = [...(s.log || []), `⏸ JEDA — memakai peer BERBAYAR (${(out.error || '').split('paid peer ')[1] || 'paid'}). Aturan arena: free-only. Resume setelah routing gateway balik ke peer gratis.`];
           }
           // STYLE-GUARD: fingerprint gaya tidak boleh persis sama dengan peserta lain
           const dup = all.some(

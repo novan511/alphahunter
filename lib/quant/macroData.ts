@@ -17,6 +17,7 @@
  */
 
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 import { fetchWithRetry } from '../api';
 import { MacroContext, hasMacroContent } from './marketAnalyst';
@@ -24,7 +25,7 @@ import { MacroContext, hasMacroContent } from './marketAnalyst';
 const UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 
-const CACHE_FILE = path.join(process.cwd(), '.cache', 'macro', 'context.json');
+const CACHE_FILE = path.join(process.env.VERCEL ? os.tmpdir() : process.cwd(), '.cache', 'macro', 'context.json');
 const DEFAULT_TTL_MS = 6 * 60 * 60 * 1000;
 
 interface YahooQuote {

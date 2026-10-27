@@ -1,8 +1,10 @@
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 import { Candle } from './types';
 
-const CACHE_DIR = path.join(process.cwd(), '.cache', 'candles');
+// Vercel: cwd (/var/task) read-only → tulis cache di tmp (writable, per-instance)
+const CACHE_DIR = path.join(process.env.VERCEL ? os.tmpdir() : process.cwd(), '.cache', 'candles');
 const DEFAULT_TTL_MS = 6 * 60 * 60 * 1000; // 6h for deep history
 
 function ensureDir(): void {

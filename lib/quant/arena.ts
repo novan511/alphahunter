@@ -6,6 +6,7 @@
  */
 import { Candle } from '../types';
 import { atr } from '../algorithms/indicators';
+import { pairCorrelation } from '../algorithms/correlationMatrix';
 import { StepMarketSnapshot } from './paperEngine';
 import { secondaryAnalysis, macroBrief } from './arenaInsight';
 
@@ -20,6 +21,7 @@ const HOLD_MIN = 6, HOLD_MAX = 96;
 const RISK_PER_TRADE_MIN = 0.005, RISK_PER_TRADE_MAX = 0.03; // 1 trade maks 3% equity
 const RISK_R_MAX = 0.06; // total open risk maks 6% equity (=2-6R per sesi)
 const CIRCUIT_R = -3;    // open unrealized R total ≤ -3R → stop entry sampan pulih
+const CORR_BLOCK = 0.8;  // |corr| ≥ 0.8 dengan posisi open searah → order ditolak (risiko tidak terdiversifikasi)
 const KNOCKOUT_EQ = ARENA_STARTING_CAPITAL / 2; // equity ≤ $500 → KO, ditiadakan dari arena
 
 export interface ArenaParams {
@@ -417,6 +419,11 @@ async function callArenaModel(model: string, system: string, user: string): Prom
     }),
   });
   if (!res.ok) throw new Error(`Model ${model} error: ${res.status}`);
+  // FULL-GRATIS guard: kalau gateway memilih peer berbayar, STOP (uang, bukan token).
+  const cost = Number(res.headers.get('x-antseed-estimated-cost-usd') || '0');
+  if (Number.isFinite(cost) && cost > 0) {
+    throw new Error(`Model ${model} used a PAID peer (cost $${cost.toFixed(6)}) — arena ini free-only`);
+  }
   const json = await res.json();
   const text = json.choices?.[0]?.message?.content?.trim();
   if (!text) throw new Error(`Model ${model} returned empty`);
@@ -494,6 +501,15 @@ function buildPrompt(s: ArenaState, snap: StepMarketSnapshot, othersBrief = '', 
       return `- ${p.symbol} ${p.side.toUpperCase()} entry=${p.entryPrice} liveR=${liveR.toFixed(2)} held=${p.barsHeld}bars · why: ${p.reason}`;
     })
     .join('\n');
+  // KORELASI (engine, dari candle mentah): kandidat vs posisi open — asset yang bergerak bareng
+  const corrLines = candidates.slice(0, 4).map((x) => {
+    const hs = snap.history[x.symbol] || [];
+    const best = s.positions
+      .map((p) => ({ sym: p.symbol, c: pairCorrelation(hs, snap.history[p.symbol] || []) }))
+      .filter((y) => y.c !== null)
+      .sort((a, b) => Math.abs((b.c as number)) - Math.abs((a.c as number)))[0];
+    return `- ${x.symbol}: ${best ? `corr=${(best.c as number).toFixed(2)} vs ${best.sym}` : 'corr n/a (bar tidak sinkron)'}`;
+  }).join('\n');
   const recent = s.trades.slice(0, 8)
     .map((t) => `- ${t.symbol} ${t.side} R=${t.r} exit=${t.exitReason} (${t.reason})`)
     .join('\n');
@@ -556,6 +572,9 @@ ${macro ? `MACRO GRAMMAR (computed daily, shared): ${macro}\nUse it as bias: DXY
 
 SECONDARY ANALYSIS (SMC structure, Fair Value Gap, order block, likuiditas, pattern, indikator — ALL computed by the engine from raw candles, bukan tebakan):
 ${insight}
+
+CORRELATION vs YOUR OPEN POSITIONS (engine-computed dari log-return bersama timestamp; |corr| ≥ 0.8 searah = engine MENOLAK order — buang risiko terpusat):
+${corrLines || '(no candidates)'}
 
 These are YOUR tools, bukan sisipan wajib: engine confluence = konteks; secondary = kedalaman. Use secondary analysis to (a) confirm or REJECT an engine candidate (b) pick better entry side (c) refine reason. A candidate you reject with a cited structure reason (BOS/FVG/OB/liquidity) is a VALID move — flat counts as a decision.
 
@@ -656,6 +675,17 @@ function applyDecision(s: ArenaState, d: ModelDecision, snap: StepMarketSnapshot
     if (!last || !a || a <= 0) { notes.push(`open skipped: no data ${o.symbol}`); continue; }
     const side = o.side === 'short' ? 'short' : o.side === 'long' ? 'long' : (sig.type === 'sell' ? 'short' : 'long');
     if (side === 'short' && !s.params.allowShort) { notes.push('shorts disabled in your params'); continue; }
+    // GUARDRAIL KORELASI: dua posisi searah yang bergerak bareng = risiko terpusat, bukan diversifikasi.
+    // Angka dihitung engine dari candle mentah (join timestamp), bukan tebakan LLM.
+    const sym = o.symbol;
+    const corrHit = s.positions
+      .filter((p) => p.side === side)
+      .map((p) => ({ sym: p.symbol, c: pairCorrelation(snap.history[sym] || [], snap.history[p.symbol] || []) }))
+      .find((x) => x.c !== null && Math.abs(x.c) >= CORR_BLOCK);
+    if (corrHit) {
+      notes.push(`open rejected: ${o.symbol} korelasi ${(corrHit.c as number).toFixed(2)} dengan posisi ${corrHit.sym} searah — risiko terpusat, pilih aset lain`);
+      continue;
+    }
     const riskFra = clamp(Number(o.riskFra) || s.params.riskPerTrade, RISK_PER_TRADE_MIN, RISK_PER_TRADE_MAX);
     // DE-RISK OTOMATIS: losing streak memaksa risiko turun bertahap — engine, bukan RSI hati.
     // streak1→2.5%, 2→2%, 3→1.5%, 4→1%, ≥5→0.5%. Plus governor rata-rata 10 trade.
