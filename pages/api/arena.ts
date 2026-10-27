@@ -77,7 +77,6 @@ function othersBriefOf(s: ArenaState, all: ArenaState[]): string {
   return lines.join('\n');
 }
 
-const TERMINATE_ERR = /error: (402|404)\b/; // gateway bilang model keburu mati/tidak ada → matikan permanen, history dipertahankan
 let stepInFlight = false; // single-flight step guard
 let modelsCache: { t: number; list: ArenaModelInfo[]; freeCount: number } = { t: 0, list: [], freeCount: 0 };
 
@@ -304,12 +303,16 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         const brief = othersBriefOf(s, all);
         try {
           const out = await arenaStep(s, snap, SYSTEM_PROMPT, Boolean(req.body?.force), brief);
-          // model yang ditolak gateway permanen (402 payment / 404 missing) → putuskan agent-nya,
-          // tapi state & history dipertahankan supaya tetap tampil di leaderboard + profil
-          if (TERMINATE_ERR.test(out.error || '')) {
+          // 404 = model hilang di gateway → matikan permanen (history dipertahankan).
+          // 402 "out of AntSeed credits" = krisis kredit GLOBAL → hanya jeda (running=false,
+          // terminated=false): semua model kena bersamaan, bukan modelnya yang mati.
+          if (/error: 404\b/.test(out.error || '')) {
             s.running = false;
             s.terminated = true;
             s.log = [...(s.log || []), `TERMINATED — gateway menolak permanen (${(out.error || '').split('error: ')[1] || 'unknown'}). History & catatan dipertahankan.`];
+          } else if (/error: 402\b/.test(out.error || '')) {
+            s.running = false;
+            s.log = [...(s.log || []), `⏸ JEDA — kredit AntSeed habis (${(out.error || '').split('error: ')[1] || '402'}). Top-up di konsol AntSeed lalu klik resume — agent lanjut dari state terakhir.`];
           }
           // STYLE-GUARD: fingerprint gaya tidak boleh persis sama dengan peserta lain
           const dup = all.some(
