@@ -1,17 +1,22 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { useRouter } from 'next/router';
 import Layout from '../components/Layout/Layout';
+import Sparkline from '../components/Sparkline';
 
 interface ArenaModel { id: string; name: string; free: boolean }
 
 interface LeaderRow {
   model: string;
   running: boolean;
+  terminated?: boolean;
   equity: number;
+  archetype?: string;
+  equityHistory?: number[];
   pnlPct: number;
   openCount: number;
   iterCount: number;
   iterNote: string;
-  thoughts?: Array<{ time: number; thought: string; plan: string; actions: string }>;
+  thoughts?: Array<{ time: number; thought: string; thoughtPlain?: string; plan: string; planPlain?: string; actions: string }>;
   params: Record<string, number | boolean | string>;
   stats: {
     totalTrades: number;
@@ -46,9 +51,12 @@ const fmt = (v: number, d = 4) =>
 
 export default function ArenaPage() {
   const [models, setModels] = useState<ArenaModel[]>([]);
+  const [modelSearch, setModelSearch] = useState('');
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [lb, setLb] = useState<LeaderRow[]>([]);
   const [positions, setPositions] = useState<LivePos[]>([]);
+  const [marks, setMarks] = useState<Record<string, number>>({});
+  const [gw, setGw] = useState<{ lastOkAt: number; lastErrAt: number; lastErr: string; down: boolean } | null>(null);
   const [booting, setBooting] = useState(false);
   const [stepping, setStepping] = useState(false);
   const [msg, setMsg] = useState<string>('');
@@ -68,17 +76,58 @@ export default function ArenaPage() {
     }
   }, []);
 
+  const modelsFree = models.filter((m) => m.free);
+  const filteredModels = modelSearch.trim()
+    ? models.filter((m) => (m.id + ' ' + m.name).toLowerCase().includes(modelSearch.toLowerCase()))
+    : models;
+
   const loadLb = useCallback(async () => {
     const res = await fetch('/api/arena?action=leaderboard');
     const json = await res.json();
     setLb(json.lb || []);
     setPositions(json.positions || []);
+    setGw(json.gw || null);
   }, []);
+
+  const reviveGateway = async () => {
+    setMsg('Ping gateway…');
+    try {
+      const r = await fetch('/api/arena', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'gw-ping' }) });
+      const d = await r.json();
+      setMsg(d.alive ? '✅ gateway hidup kembali' : '❌ gateway masih mati — buka console instabox lalu klik Resume (runtime 8 jam harus di-extend di platform)');
+      await loadLb();
+    } catch {
+      setMsg('Ping gagal jalan.');
+    }
+  };
+
+  // mark price live (candle 1m granular) per simbol — PnL naik-turun semivable CEX
+  const symbols = Array.from(new Set(positions.map((p: LivePos) => p.symbol))).join(',');
+  useEffect(() => {
+    if (!symbols) return;
+    let alive = true;
+    const tick = async () => {
+      for (const sym of symbols.split(',')) {
+        if (!alive) return;
+        try {
+          const r = await fetch(`/api/arena-candles?symbol=${encodeURIComponent(sym)}&gran=1m&lastOnly=1`);
+          const arr = await r.json();
+          const px = Array.isArray(arr) && arr.length ? arr[arr.length - 1].close : null;
+          if (alive && typeof px === 'number') setMarks((m) => ({ ...m, [sym]: px }));
+        } catch { /* tahan mark sebelumnya */ }
+      }
+    };
+    tick();
+    const id = setInterval(tick, 30_000);
+    return () => { alive = false; clearInterval(id); };
+  }, [symbols]);
 
   useEffect(() => {
     loadLb();
     loadModels();
   }, [loadLb, loadModels]);
+
+  const router = useRouter();
 
   // autonomous loop: step tiap 90 detik selama tab terbuka
   useEffect(() => {
@@ -174,6 +223,15 @@ export default function ArenaPage() {
               </p>
             </div>
             <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+              {gw && (
+                <span
+                  style={{ padding: '8px 10px', borderRadius: 8, fontSize: 11, fontWeight: 600, cursor: gw.down ? 'pointer' : 'default', border: `1px solid ${gw.down ? '#ef4444' : '#10b981'}`, color: gw.down ? '#fca5a5' : '#86efac' }}
+                  onClick={gw.down ? reviveGateway : undefined}
+                  title={gw.down ? `Terlihat mati: ${gw.lastErr} — klik untuk ping ulang` : ''}
+                >
+                  {gw.down ? '🔴 gateway mati — klik untuk bangunkan' : '🟢 gateway hidup'}
+                </span>
+              )}
               <button
                 onClick={() => setAuto((a) => !a)}
                 style={{ padding: '8px 12px', borderRadius: 8, border: '1px solid #4b5563', background: auto ? 'rgba(59,130,246,.2)' : 'transparent', color: auto ? '#3b82f6' : '#9ca3af', cursor: 'pointer', fontSize: 12, fontWeight: 600 }}
@@ -205,16 +263,24 @@ export default function ArenaPage() {
               {booting ? 'Merekrut…' : `🚀 Mulai Arena${selected.size ? ` (${selected.size})` : ' (default 6)'}`}
             </button>
           </div>
-          <p style={{ fontSize: 11, color: '#6b7280', margin: '0 0 8px' }}>
-            Tanpa pilihan: otomatis 6 model teks unik (glm/deepseek/gpt/claude/gemini/grok/qwen/kimi) paling gratisan/teratas dari gateway.
-          </p>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 8 }}>
+            <input
+              value={modelSearch}
+              onChange={(e) => setModelSearch(e.target.value)}
+              placeholder="🔍 cari model (glm, grok, deepseek…)"
+              style={{ flex: 1, maxWidth: 320, padding: '6px 10px', borderRadius: 8, border: '1px solid #4b5563', background: '#0b1220', color: '#f9fafb', fontSize: 12 }}
+            />
+            <span style={{ color: '#6b7280', fontSize: 11 }}>
+              {selected.size > 0 ? `${selected.size} dipilih` : `${(modelsFree || []).length} model gratis tersedia`}
+            </span>
+          </div>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, maxHeight: 180, overflowY: 'auto' }}>
-            {models.length === 0 && <span style={{ color: '#6b7280', fontSize: 12 }}>— daftar model belum termuat —</span>}
-            {models.map((m) => (
+            {filteredModels.length === 0 && <span style={{ color: '#6b7280', fontSize: 12 }}>— tidak ada yang cocok —</span>}
+            {filteredModels.map((m) => (
               <button
                 key={m.id}
                 onClick={() => toggleSelect(m.id)}
-                title={m.free ? 'ada peer gratis' : m.id}
+                title={m.free ? 'GRATIS (peer $0/$0)' : m.id}
                 style={{
                   padding: '4px 10px', borderRadius: 999, fontSize: 11, cursor: 'pointer',
                   border: selected.has(m.id) ? '1px solid #3b82f6' : '1px solid #4b5563',
@@ -228,66 +294,62 @@ export default function ArenaPage() {
           </div>
         </div>
 
-        {/* Leaderboard */}
+        {/* Leaderboard ala alpha arena: kartu baris besar + sparkline, klik → profil model */}
         <div style={card}>
-          <h2 style={{ fontSize: 15, color: '#f9fafb', margin: '0 0 10px' }}>🏆 Leaderboard · diurutkan per total R</h2>
-          <div style={{ overflowX: 'auto' }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
-              <thead>
-                <tr style={{ color: '#9ca3af', textAlign: 'left', borderBottom: '1px solid #374151' }}>
-                  <th style={{ padding: 8 }}>#</th>
-                  <th style={{ padding: 8 }}>Model</th>
-                  <th style={{ padding: 8 }}>Equity</th>
-                  <th style={{ padding: 8 }}>PnL</th>
-                  <th style={{ padding: 8 }}>Total R</th>
-                  <th style={{ padding: 8 }}>Avg R</th>
-                  <th style={{ padding: 8 }}>PF</th>
-                  <th style={{ padding: 8 }}>WR%</th>
-                  <th style={{ padding: 8 }}>Trades</th>
-                  <th style={{ padding: 8 }}>Open</th>
-                  <th style={{ padding: 8 }}>Iters</th>
-                  <th style={{ padding: 8 }} />
-                </tr>
-              </thead>
-              <tbody>
-                {lb.length === 0 && (
-                  <tr><td colSpan={12} style={{ padding: 14, color: '#6b7280' }}>Belum ada peserta — mulai arena di panel atas. Semua model demo butuh Supabase (tabel ai_arena_agents) atau server yang terus hidup.</td></tr>
-                )}
-                {lb.map((row, i) => (
-                  <tr key={row.model} style={{ borderBottom: '1px solid #1f2937' }}>
-                    <td style={{ padding: 8, color: '#9ca3af' }}>{i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : i + 1}</td>
-                    <td style={{ padding: 8, color: '#f9fafb', fontWeight: 600, maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={row.model}>
-                      {row.model} {!row.running && <span style={{ color: '#ef4444', fontWeight: 400 }}>· stopped</span>}
-                    </td>
-                    <td style={{ padding: 8, color: '#f9fafb' }}>${fmt(row.equity, 2)}</td>
-                    <td style={{ padding: 8, color: rColor(row.pnlPct) }}>{row.pnlPct >= 0 ? '+' : ''}{row.pnlPct.toFixed(2)}%</td>
-                    <td style={{ padding: 8, color: rColor(row.stats.totalR), fontWeight: 700 }}>{row.stats.totalR >= 0 ? '+' : ''}{row.stats.totalR.toFixed(2)}R</td>
-                    <td style={{ padding: 8, color: rColor(row.stats.avgR) }}>{row.stats.avgR >= 0 ? '+' : ''}{row.stats.avgR.toFixed(2)}R</td>
-                    <td style={{ padding: 8, color: '#9ca3af' }}>{row.stats.ProfitFactor > 90 ? '—' : row.stats.ProfitFactor.toFixed(2)}</td>
-                    <td style={{ padding: 8, color: '#9ca3af' }}>{row.stats.winRate.toFixed(0)}%</td>
-                    <td style={{ padding: 8, color: '#9ca3af' }}>{row.stats.totalTrades}</td>
-                    <td style={{ padding: 8, color: '#9ca3af' }}>{row.openCount}</td>
-                    <td style={{ padding: 8, color: '#818cf8' }}>{row.iterCount}</td>
-                    <td style={{ padding: 8 }}>
-                      <button
-                        onClick={() => toggleAgent(row.model, row.running)}
-                        style={{ padding: '3px 8px', fontSize: 10, borderRadius: 6, cursor: 'pointer', background: 'transparent', border: '1px solid #4b5563', color: row.running ? '#ef4444' : '#10b981' }}
-                      >
-                        {row.running ? 'stop' : 'resume'}
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 12 }}>
+            <h2 style={{ fontSize: 15, color: '#f9fafb', margin: 0 }}>🏆 Leaderboard</h2>
+            <span style={{ fontSize: 11, color: '#6b7280', alignSelf: 'center' }}>Ribu kertas yang besar · klik baris untuk detail model</span>
           </div>
-          {lb.some((r) => r.iterNote) && (
-            <div style={{ marginTop: 10, fontSize: 11, color: '#a5b4fc', display: 'flex', flexDirection: 'column', gap: 2 }}>
-              {lb.filter((r) => r.iterNote).slice(0, 4).map((r) => (
-                <div key={r.model}>🧠 <b style={{ color: '#c7d2fe' }}>{r.model.split('/').pop()}:</b> {r.iterNote}</div>
-              ))}
-            </div>
+          {lb.length === 0 && (
+            <p style={{ color: '#6b7280', fontSize: 12, margin: 0 }}>Belum ada peserta — tekan "🚀 Mulai Arena" di panel atas.</p>
           )}
+          {lb.map((row, i) => (
+            <div
+              key={row.model}
+              onClick={() => router.push(`/models/${encodeURIComponent(row.model)}`)}
+              style={{
+                display: 'grid',
+                gridTemplateColumns: '44px 1.4fr 1fr 92px 96px 84px 72px 92px 70px',
+                alignItems: 'center', gap: 8, padding: '12px 10px', borderRadius: 10, cursor: 'pointer',
+                borderBottom: '1px solid #1f2937', background: i === 0 ? 'rgba(129,140,248,.06)' : 'transparent',
+              }}
+            >
+              <span style={{ color: '#9ca3af', fontSize: 13, fontWeight: 700 }}>{i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : i + 1}</span>
+              <div style={{ minWidth: 0 }}>
+                <div style={{ color: '#f9fafb', fontWeight: 700, fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={row.model}>
+                  {row.model} {!row.running && <span style={{ color: '#ef4444', fontWeight: 400 }}>· {row.terminated ? 'TERMINATED (402/404)' : 'stopped'}</span>}
+                </div>
+                <div style={{ fontSize: 10, color: '#818cf8' }}>🧬 {row.archetype || 'Momentum General'} · iter {row.iterCount}</div>
+              </div>
+              <Sparkline points={row.equityHistory || []} width={120} height={34} />
+              <div>
+                <div style={{ color: '#f9fafb', fontWeight: 700, fontSize: 14 }}>${fmt(row.equity, 2)}</div>
+                <div style={{ fontSize: 11, color: rColor(row.pnlPct) }}>{row.pnlPct >= 0 ? '+' : ''}{row.pnlPct.toFixed(2)}%</div>
+              </div>
+              <div>
+                <div style={{ color: '#9ca3af', fontSize: 10 }}>TOTAL R</div>
+                <div style={{ color: rColor(row.stats.totalR), fontWeight: 800, fontSize: 14 }}>{row.stats.totalR >= 0 ? '+' : ''}{row.stats.totalR.toFixed(2)}R</div>
+              </div>
+              <div>
+                <div style={{ color: '#9ca3af', fontSize: 10 }}>AVG R / TRADE</div>
+                <div style={{ color: rColor(row.stats.avgR), fontSize: 12 }}>{row.stats.avgR >= 0 ? '+' : ''}{row.stats.avgR.toFixed(2)}R</div>
+              </div>
+              <div>
+                <div style={{ color: '#9ca3af', fontSize: 10 }}>TRADES</div>
+                <div style={{ color: '#e5e7eb', fontSize: 12 }}>{row.stats.totalTrades}{row.stats.totalTrades > 0 && <span style={{ color: '#6b7280' }}> ({row.stats.winRate.toFixed(0)}%w)</span>}</div>
+              </div>
+              <div>
+                <div style={{ color: '#9ca3af', fontSize: 10 }}>OPEN POSISI</div>
+                <div style={{ color: '#e5e7eb', fontSize: 12 }}>{row.openCount}</div>
+              </div>
+              <button
+                onClick={(e) => { e.stopPropagation(); toggleAgent(row.model, row.running); }}
+                style={{ padding: '5px 10px', fontSize: 10, borderRadius: 6, cursor: 'pointer', background: 'transparent', border: '1px solid #4b5563', color: row.running ? '#ef4444' : '#10b981' }}
+              >
+                {row.running ? 'stop' : 'resume'}
+              </button>
+            </div>
+          ))}
         </div>
 
         {/* Live positions */}
@@ -319,8 +381,13 @@ export default function ArenaPage() {
                       <td style={{ padding: 8, color: '#f9fafb', fontWeight: 600 }}>{p.symbol}</td>
                       <td style={{ padding: 8, color: p.side === 'long' ? '#10b981' : '#ef4444', fontWeight: 700 }}>{p.side === 'long' ? '▲ LONG' : '▼ SHORT'}</td>
                       <td style={{ padding: 8, color: '#9ca3af' }}>{fmt(p.entryPrice)}</td>
-                      <td style={{ padding: 8, color: '#9ca3af' }}>{fmt(p.markPrice)}</td>
-                      <td style={{ padding: 8, color: rColor(p.liveR), fontWeight: 700 }}>{p.liveR >= 0 ? '+' : ''}{p.liveR.toFixed(2)}R</td>
+                      <td style={{ padding: 8, color: '#9ca3af' }}>{fmt(marks[p.symbol] ?? p.markPrice)}</td>
+                      {(() => {
+                        const m = marks[p.symbol] ?? p.markPrice;
+                        const dir = p.side === 'long' ? 1 : -1;
+                        const lr = ((m - p.entryPrice) * dir) / Math.max(1e-9, Math.abs(p.entryPrice - p.stopLoss));
+                        return <td style={{ padding: 8, color: rColor(lr), fontWeight: 700 }}>{lr >= 0 ? '+' : ''}{lr.toFixed(2)}R</td>;
+                      })()}
                       <td style={{ padding: 8, color: '#ef4444' }}>{fmt(p.stopLoss)}</td>
                       <td style={{ padding: 8, color: '#10b981' }}>{p.takeProfit > 0 ? fmt(p.takeProfit) : '—"run" (trail/exit bebas)'}</td>
                       <td style={{ padding: 8, color: '#9ca3af' }}>{p.barsHeld}b</td>
@@ -349,17 +416,25 @@ export default function ArenaPage() {
                       <b style={{ color: '#f9fafb', fontSize: 13 }}>{r.model.split('/').pop()}</b>
                       <span style={{ color: '#6b7280', fontSize: 11 }}>iter ke-{r.iterCount} · {r.running ? '🟢 berjalan' : '🔴 berhenti'}</span>
                     </div>
-                    {(r.thoughts || []).slice(0, 4).map((th, i) => (
+                    {(r.thoughts || []).map((th, i) => (
                       <div key={i} style={{ padding: '8px 0', borderTop: i === 0 ? 'none' : '1px dashed #1f2937' }}>
                         <div style={{ fontSize: 11, color: '#6b7280', marginBottom: 3 }}>
                           {new Date(th.time).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' })} · aksi: <span style={{ color: '#fbbf24' }}>{th.actions || '—'}</span>
                         </div>
-                        <div style={{ fontSize: 12, color: '#e5e7eb', lineHeight: 1.5 }}>
-                          💭 <span style={{ color: '#e5e7eb' }}>{th.thought || '—'}</span>
+                        <div style={{ fontSize: 13, color: '#f3f4f6', lineHeight: 1.55 }}>
+                          🗣️ <span style={{ fontWeight: 500 }}>{th.thoughtPlain || th.thought || '—'}</span>
                         </div>
+                        {th.thought && th.thoughtPlain && (
+                          <div style={{ fontSize: 11, color: '#6b7280', lineHeight: 1.5, marginTop: 2, fontStyle: 'italic' }}>
+                            📊 versi teknis: {th.thought}
+                          </div>
+                        )}
                         {th.plan && (
                           <div style={{ fontSize: 12, color: '#818cf8', lineHeight: 1.5, marginTop: 3 }}>
-                            🎯 rencana: {th.plan}
+                            🎯 {th.planPlain || th.plan}
+                            {th.planPlain && th.plan && (
+                              <div style={{ fontSize: 10, color: '#4b5563', marginTop: 1 }}>rencana teknis: {th.plan}</div>
+                            )}
                           </div>
                         )}
                       </div>

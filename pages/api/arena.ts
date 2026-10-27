@@ -9,6 +9,12 @@ import {
   arenaStep,
   arenaEquity,
   ArenaModelInfo,
+  pickArchetype,
+  styleFingerprint,
+  ensureStyleUnique,
+  ensureGatewayKeepalive,
+  gatewayHealth,
+  pingGateway,
 } from '../../lib/quant/arena';
 import { getSupabase, isSupabaseConfigured } from '../../lib/supabase';
 
@@ -28,7 +34,7 @@ NON-NEGOTIABLE GUARDRAILS (the engine enforces these; violations are rejected):
 5. Equity floor $500: below that you are knocked out of the arena.
 6. No revenge trading mechanics: position limits and risk caps apply even during a losing streak.
 
-Colored by which guardrails constrain you, everything else is YOUR call. You are expected to keep iterating — not stay committed to one method: switch between momentum, mean reversion, spike-following, decoupling, trend-following, tighten or widen targets, change thresholds, intervals, short/long bias. Rationalize every iteration in one line: what you changed, why you believe it raises avg R.`;
+Ruled by the guardrails above, everything else is YOUR call. Keep iterating to raise avg R — but you must stay in the archetype/style assigned to your agent (stated at the top of every session): entry timing, thresholds, targets, risk size and hold time are yours to tune; copying another competitor's whole playbook is impossible anyway (style-guard reverts it). Rationalize every iteration in one line: what you changed, why you believe it raises avg R.`;
 
 async function loadState(modelId: string): Promise<ArenaState | null> {
   if (memory.has(modelId)) return memory.get(modelId)!;
@@ -39,7 +45,7 @@ async function loadState(modelId: string): Promise<ArenaState | null> {
   if (data?.state) {
     const st = data.state as ArenaState;
     memory.set(modelId, st);
-    return st;
+    return normalizeState(st);
   }
   return null;
 }
@@ -53,6 +59,28 @@ async function saveState(s: ArenaState): Promise<void> {
   if (error) console.warn('arena save failed', error.message);
 }
 
+/** ringkasan pikiran & trade history agent LAIN — diberikan ke tiap agent biar belajar satu sama
+ *  lain (berbeda gaya, tapi saling melihat pola R & cara berpikir). Dipangkas ringkas per agent. */
+function othersBriefOf(s: ArenaState, all: ArenaState[]): string {
+  const others = all.filter((o) => o.model !== s.model && o.running);
+  if (others.length === 0) return '';
+  const lines = others.map((o) => {
+    const avgR = o.stats.totalTrades ? o.stats.totalR / o.stats.totalTrades : 0;
+    const th = (o.thoughts || [])[0];
+    const think = th ? `pikirannya: "${(th.thoughtPlain || th.thought || '').slice(0, 180)}"` : 'belum ada pikiran terekam';
+    const hist = o.trades
+      .slice(0, 6)
+      .map((t) => `${t.symbol} ${t.side} ${t.r >= 0 ? '+' : ''}${t.r.toFixed(2)}R (${t.exitReason})`)
+      .join('; ');
+    return `- ${o.model} [${o.archetype}] $${arenaEquity(o).toFixed(0)} totalR=${o.stats.totalR.toFixed(2)} avgR=${avgR.toFixed(2)} — ${think}${hist ? ` — history: ${hist}` : ''}`;
+  });
+  return lines.join('\n');
+}
+
+const TERMINATE_ERR = /error: (402|404)\b/; // gateway bilang model keburu mati/tidak ada → matikan permanen, history dipertahankan
+let stepInFlight = false; // single-flight step guard
+let modelsCache: { t: number; list: ArenaModelInfo[]; freeCount: number } = { t: 0, list: [], freeCount: 0 };
+
 export function leaderboard(states: ArenaState[]) {
   return states
     .map((s) => {
@@ -60,13 +88,16 @@ export function leaderboard(states: ArenaState[]) {
       return {
         model: s.model,
         running: s.running,
+        terminated: Boolean(s.terminated),
         equity: Math.round(eq * 100) / 100,
+        archetype: s.archetype,
         pnlPct: Math.round(((eq - 1000) / 10) * 100) / 100, // % dari $1000
         openCount: s.positions.length,
         iterCount: s.iterCount,
         iterNote: s.iterNote,
-        thoughts: (s.thoughts || []).slice(0, 6),
+        thoughts: s.thoughts || [],
         params: s.params,
+        equityHistory: (s.equityHistory || []).slice(-150).map((p) => p.equity),
         stats: s.stats,
       };
     })
@@ -85,7 +116,18 @@ async function allStates(): Promise<ArenaState[]> {
     }
   }
   for (const [k, v] of Array.from(memory.entries())) merged.set(k, v);
-  return Array.from(merged.values());
+  return Array.from(merged.values()).map(normalizeState);
+}
+
+/** kompatibilitas state lama (pra-arketipe / pra-thoughts) */
+function normalizeState(st: ArenaState): ArenaState {
+  if (!st.archetype) {
+    st.archetype = 'Momentum General';
+    st.mandate = 'generalist momentum (warisan pra-arketipe)';
+    st.classes = ['momentum'];
+  }
+  if (!st.thoughts) st.thoughts = [];
+  return st;
 }
 
 /** serialisasi ringan untuk live-positions di UI */
@@ -118,14 +160,41 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   const action = req.method === 'GET' ? String(req.query.action || 'leaderboard') : String(req.body?.action || 'leaderboard');
 
   try {
+    ensureGatewayKeepalive();
     if (action === 'models') {
-      const all = await listArenaModels();
-      const free = all.filter((m) => m.free);
-      return res.status(200).json({
-        ok: true,
-        models: free.length > 0 ? free : all,
-        gatewayConfigured: all.length > 0,
-      });
+      // 60s cache + fallback list terakhir: gateway flicker (timeout/5xx) tak boleh bikin panel rekrutmen kosong
+      if (modelsCache.t && Date.now() - modelsCache.t < 60_000) {
+        return res.status(200).json({ ok: true, models: modelsCache.list, freeCount: modelsCache.freeCount, gatewayConfigured: modelsCache.list.length > 0, cached: true });
+      }
+      try {
+        const all = await listArenaModels();
+        // default: semua model (biar bisa di-scan & dipilih); freeOnly=1 untuk penghemat
+        const wantFree = req.query.freeOnly === '1' || req.body?.freeOnly === true;
+        const filtered = wantFree && all.some((m) => m.free) ? all.filter((m) => m.free) : all;
+        modelsCache = { t: Date.now(), list: filtered, freeCount: all.filter((m) => m.free).length };
+        return res.status(200).json({
+          ok: true,
+          models: filtered,
+          freeCount: all.filter((m) => m.free).length,
+          gatewayConfigured: all.length > 0,
+        });
+      } catch (e) {
+        // gateway sedang tersendat: sajikan cache terakhir kalau ada, kalau tak ada kosong+pesan
+        const stale = modelsCache.t ? modelsCache.list : [];
+        return res.status(200).json({
+          ok: true,
+          models: stale,
+          freeCount: modelsCache.freeCount || 0,
+          gatewayConfigured: stale.length > 0,
+          note: `gateway sedang tersendat (${e instanceof Error ? e.message.slice(0, 90) : e}) — ${stale.length ? 'menampilkan daftar terakhir' : 'coba lagi sebentar'}`,
+        });
+      }
+    }
+
+    if (action === 'gw-ping') {
+      // coba hidupkan/bangun gateway dari sisi kita (kalau instabox resume-on-request, ping ini membangunkan)
+      const alive = await pingGateway();
+      return res.status(200).json({ ok: true, alive, gw: { ...gatewayHealth } });
     }
 
     if (action === 'leaderboard') {
@@ -135,6 +204,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         lb: leaderboard(states),
         positions: states.flatMap(livePositions),
         persisted: isSupabaseConfigured(),
+        gw: { ...gatewayHealth, down: gatewayHealth.lastErrAt > gatewayHealth.lastOkAt },
       });
     }
 
@@ -149,6 +219,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       const body = (req.body || {}) as Record<string, unknown>;
       let models: string[] = [];
       if (Array.isArray(body.models)) models = body.models.map(String).filter(Boolean).slice(0, 10);
+      console.log('[arena-start] req:', models.join(',') || '(default)', Array.isArray(body.models) ? 'explicit' : 'default-pool');
       if (models.length === 0) {
         // default: cukup model gratis saja (peers berharga 0/0)
         let info: ArenaModelInfo[] = [];
@@ -174,15 +245,23 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       if (models.length === 0) {
         return res.status(502).json({ ok: false, error: 'No text models available on gateway' });
       }
+      const existing = await allStates();
+      const taken = existing.map((s) => s.archetype).filter(Boolean);
       for (const id of models) {
-        const existing = await loadState(id);
-        if (existing) continue;
-        await saveState(createArenaState(id));
+        const prior = await loadState(id);
+        if (prior) continue;
+        const arch = pickArchetype(id, taken);
+        taken.push(arch.name);
+        await saveState(createArenaState(id, arch));
       }
       return res.status(200).json({ ok: true, started: models });
     }
 
     if (action === 'step') {
+      // single-flight: step auto-loop browser + manual force yang overlap akan menimpa state satu sama lain
+      if (stepInFlight) return res.status(200).json({ ok: false, busy: true, note: 'step masih berjalan — request di-skip' });
+      stepInFlight = true;
+      try {
       const only = String(req.body?.model || '');
       const all = await allStates();
       const targets = only ? all.filter((s) => s.model === only) : all.filter((s) => s.running);
@@ -206,12 +285,42 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         return res.status(502).json({ ok: false, error: 'market snapshot failed' });
       }
 
-      const results: Array<{ model: string; ok: boolean; fallback?: boolean; error?: string }> = [];
+      const results: Array<{ model: string; ok: boolean; fallback?: boolean; error?: string; styleGuard?: string }> = [];
+      const paramsBefore = new Map<string, string>();
+      for (const s of targets) paramsBefore.set(s.model, JSON.stringify(s.params));
+      // rankNote: posisi leaderboard (diurut totalR) diisi engine per step — dipakai prompt iterasi ini
+      const totalRof = (x: typeof all[number]) => x.trades.reduce((acc, t) => acc + t.r, 0);
+      const ranked = [...all].sort((a, b) => totalRof(b) - totalRof(a));
+      for (const s of targets) {
+        const rank = ranked.findIndex((x) => x.model === s.model) + 1;
+        const lead = ranked[0];
+        s.rankNote = `#${rank}/${all.length} by totalR ${lead && lead.model !== s.model ? `· pemimpin: ${lead.model}` : '· kamu pemimpin'}`;
+      }
       for (const s of targets) {
         const snap = snaps[s.params.interval] || snaps[intervals[0]];
         if (!snap) { results.push({ model: s.model, ok: false, error: 'no snapshot' }); continue; }
+        // peserta ke-7+ sharing archetype: pastikan fingerprint unik SEBELUM step (juga menyembuhkan agent lama yang macet)
+        ensureStyleUnique(s, all);
+        const brief = othersBriefOf(s, all);
         try {
-          const out = await arenaStep(s, snap, SYSTEM_PROMPT, Boolean(req.body?.force));
+          const out = await arenaStep(s, snap, SYSTEM_PROMPT, Boolean(req.body?.force), brief);
+          // model yang ditolak gateway permanen (402 payment / 404 missing) → putuskan agent-nya,
+          // tapi state & history dipertahankan supaya tetap tampil di leaderboard + profil
+          if (TERMINATE_ERR.test(out.error || '')) {
+            s.running = false;
+            s.terminated = true;
+            s.log = [...(s.log || []), `TERMINATED — gateway menolak permanen (${(out.error || '').split('error: ')[1] || 'unknown'}). History & catatan dipertahankan.`];
+          }
+          // STYLE-GUARD: fingerprint gaya tidak boleh persis sama dengan peserta lain
+          const dup = all.some(
+            (other) => other.model !== s.model && other.archetype === s.archetype && styleFingerprint(other) === styleFingerprint(s)
+          );
+          if (dup) {
+            const prev = paramsBefore.get(s.model);
+            if (prev) s.params = JSON.parse(prev);
+            results.push({ model: s.model, ok: true, fallback: out.fallback, styleGuard: 'reverted: tune buat identik dengan peserta lain' });
+            continue;
+          }
           await saveState(s);
           results.push({ model: s.model, ok: true, fallback: out.fallback, error: out.error });
         } catch (e) {
@@ -228,6 +337,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         lb: leaderboard(states.filter(Boolean)),
         positions: states.filter(Boolean).flatMap(livePositions),
       });
+      } finally {
+        stepInFlight = false;
+      }
     }
 
     if (action === 'stop') {
@@ -243,6 +355,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       const body = (req.body || {}) as Record<string, unknown>;
       const s = await loadState(String(body.model || ''));
       if (!s) return res.status(404).json({ ok: false, error: 'not started' });
+      // agent yang di-terminate gateway (402/404) tidak dihidupkan ulang — kecuali dipaksa
+      if (s.terminated && !body.force) {
+        return res.status(200).json({ ok: false, error: 'agent TERMINATED oleh gateway (402/404) — baru hidupkan lewat body {force:true} setelah model diberes di console' });
+      }
       s.running = true;
       await saveState(s);
       return res.status(200).json({ ok: true });

@@ -198,6 +198,9 @@ export async function fetchAssetCandles(
 }
 
 function rangeForLimit(interval: string, limit: number): string {
+  // Yahoo membatasi interval menit ke ~60 hari: range lebih panjang → HTTP 422
+  if (interval === '1m') return '5d';
+  if (interval === '5m' || interval === '15m' || interval === '30m') return '1mo';
   if (interval.includes('m') || interval === '1h') {
     if (limit > 400) return '2y';
     if (limit > 150) return '1y';
