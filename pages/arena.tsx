@@ -434,7 +434,7 @@ export default function ArenaPage() {
                     {(r.thoughts || []).map((th, i) => (
                       <div key={i} style={{ padding: '8px 0', borderTop: i === 0 ? 'none' : '1px dashed #1f2937' }}>
                         <div style={{ fontSize: 11, color: '#6b7280', marginBottom: 3 }}>
-                          {new Date(th.time).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' })} · aksi: <span style={{ color: '#fbbf24' }}>{th.actions || '—'}</span>
+                          {new Date(th.time).toLocaleString('id-ID', { timeZone: 'Asia/Jakarta', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })} · aksi: <span style={{ color: '#fbbf24' }}>{th.actions || '—'}</span>
                         </div>
                         <div style={{ fontSize: 13, color: '#f3f4f6', lineHeight: 1.55 }}>
                           🗣️ <span style={{ fontWeight: 500 }}>{th.thoughtPlain || th.thought || '—'}</span>
