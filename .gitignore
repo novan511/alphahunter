@@ -32,3 +32,5 @@ next-env.d.ts
 # candle disk cache
 .cache/
 
+.vercel
+.env*

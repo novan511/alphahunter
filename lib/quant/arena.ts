@@ -347,6 +347,36 @@ function gatewayModelsUrl(baseUrl: string): string {
 
 export interface ArenaModelInfo { id: string; name: string; free: boolean }
 
+/* ---- Gateway kedua: OpenRouter (model gratis saja, pricing 0/0) ---- */
+const OR_PREFIX = 'or:';
+
+function orBase(): string {
+  return (process.env.ARENA_OR_BASE_URL || 'https://openrouter.ai/api/v1').replace(/\/+$/, '');
+}
+
+export async function listOpenRouterModels(): Promise<ArenaModelInfo[]> {
+  const key = (process.env.ARENA_OR_API_KEY || '').trim();
+  if (!key) return [];
+  const res = await fetch(`${orBase()}/models`, {
+    headers: { Authorization: `Bearer ${key}` },
+    signal: AbortSignal.timeout(15_000),
+  });
+  if (!res.ok) throw new Error(`OpenRouter /models error: ${res.status}`);
+  const json = await res.json();
+  const out: ArenaModelInfo[] = [];
+  for (const m of json.data ?? []) {
+    if (!m.id) continue;
+    // gratis = pricing 0/0 di katalog; text-in & text-out saja (model audio/image output tidak bisa jawab prompt)
+    if (Number(m.pricing?.prompt) !== 0 || Number(m.pricing?.completion) !== 0) continue;
+    const arch = m.architecture || {};
+    if (!Array.isArray(arch.input_modalities) || !arch.input_modalities.includes('text')) continue;
+    // keluaran harus murni teks — model campur (mis. audio output) tidak bisa menjawab prompt
+    if (!Array.isArray(arch.output_modalities) || arch.output_modalities.length !== 1 || arch.output_modalities[0] !== 'text') continue;
+    out.push({ id: OR_PREFIX + m.id, name: m.name || m.id, free: true });
+  }
+  return out;
+}
+
 export async function listArenaModels(): Promise<ArenaModelInfo[]> {
   const gw = arenaGateway();
   if (!gw.configured) return [];
@@ -363,6 +393,12 @@ export async function listArenaModels(): Promise<ArenaModelInfo[]> {
     const bestRep = (m.peers ?? []).reduce((a: number, p: { reputationScore?: number }) => Math.max(a, p.reputationScore ?? 0), 0);
     const free = (m.peers ?? []).some((p: { inputUsdPerMillion?: number; outputUsdPerMillion?: number }) => (p.inputUsdPerMillion ?? -1) === 0 && (p.outputUsdPerMillion ?? -1) === 0);
     out.push({ id: m.id, name: m.name || m.id, free });
+  }
+  // OpenRouter di-APPEND supaya pool default tetap AntSeed dulu; gagal tak boleh menghapus list AntSeed
+  try {
+    out.push(...(await listOpenRouterModels()));
+  } catch {
+    /* gateway kedua down → tetap pakai list AntSeed */
   }
   return out.filter((m) => !out.some((o) => o !== m && o.id === m.id));
 }
@@ -451,6 +487,44 @@ async function callArenaModel(model: string, system: string, user: string): Prom
     } catch (e) {
       throw new Error(`Model deepseek-2 error: ${e instanceof Error ? e.message : String(e)}`);
     }
+  }
+
+  // Model or:* → OpenRouter (gateway kedua, gratis saja), bypass AntSeed
+  if (model.startsWith(OR_PREFIX)) {
+    const key = (process.env.ARENA_OR_API_KEY || '').trim();
+    if (!key) throw new Error('OpenRouter API key tidak dikonfigurasi');
+    const res = await fetchWithTimeout(
+      `${orBase()}/chat/completions`,
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${key}`,
+          'Content-Type': 'application/json',
+          'HTTP-Referer': 'https://alphahunter-silk.vercel.app',
+          'X-Title': 'Althunter Arena',
+        },
+        body: JSON.stringify({
+          model: model.slice(OR_PREFIX.length),
+          max_tokens: 2200,
+          temperature: 0.4,
+          usage: { include: true }, // OpenRouter balas usage.cost → guard free-only
+          messages: [
+            { role: 'system', content: system },
+            { role: 'user', content: user },
+          ],
+        }),
+      },
+      60_000 // free-tier kadang antri lama; default 8s terlalu ketat
+    );
+    if (!res.ok) throw new Error(`Model ${model} error: ${res.status}`);
+    const json = await res.json();
+    const cost = Number(json.usage?.cost || 0);
+    if (Number.isFinite(cost) && cost > 0) {
+      throw new Error(`Model ${model} used a PAID route (cost $${cost.toFixed(6)}) — arena ini free-only`);
+    }
+    const text = json.choices?.[0]?.message?.content?.trim();
+    if (!text) throw new Error(`Model ${model} returned empty`);
+    return text;
   }
 
   const gw = arenaGateway();
