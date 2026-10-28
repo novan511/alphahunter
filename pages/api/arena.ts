@@ -237,7 +237,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         }
         const free = info.filter((m) => m.free);
         const pool = free.length > 0 ? free : info;
-        const known = ['glm', 'deepseek', 'gpt', 'claude', 'gemini', 'grok', 'qwen', 'kimi', 'mimo'];
+        const known = ['glm', 'deepseek', 'gpt', 'claude', 'gemini', 'grok', 'qwen', 'kimi', 'mimo', 'deepseek-2'];
         const seen = new Set<string>();
         for (const m of pool) {
           const fam = known.find((k) => m.id.toLowerCase().includes(k)) || m.id;

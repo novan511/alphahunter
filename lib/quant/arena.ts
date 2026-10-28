@@ -414,9 +414,48 @@ export function ensureGatewayKeepalive(): void {
 }
 
 async function callArenaModel(model: string, system: string, user: string): Promise<string> {
+  const fetchWithTimeout = async (url: string, init: RequestInit, ms: number = 12_000): Promise<Response> => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), ms);
+    try {
+      return await fetch(url, { ...init, signal: controller.signal });
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+
+  // Model custom deepseek-2 panggil DeepSeek API langsung, bypass AntSeed
+  if (model === 'deepseek-2' || model.startsWith('deepseek-2:')) {
+    const deepKey = process.env.DEEPSEEK_API_KEY_2 || '';
+    const deepBase = process.env.DEEPSEEK_BASE_URL_2 || 'https://api.deepseek.com/v1/chat/completions';
+    if (!deepKey) throw new Error('DeepSeek API key 2 tidak dikonfigurasi');
+    try {
+      const deepRes = await fetchWithTimeout(deepBase.replace(/\/+$/, '') + '/chat/completions', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${deepKey}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: 'deepseek-chat',
+          max_tokens: 2200,
+          temperature: 0.4,
+          messages: [
+            { role: 'system', content: system },
+            { role: 'user', content: user },
+          ],
+        }),
+      });
+      if (!deepRes.ok) throw new Error(`DeepSeek error: ${deepRes.status}`);
+      const deepJson = await deepRes.json();
+      const deepText = deepJson.choices?.[0]?.message?.content?.trim();
+      if (deepText) return deepText;
+      throw new Error('DeepSeek kosong');
+    } catch (e) {
+      throw new Error(`Model deepseek-2 error: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+
   const gw = arenaGateway();
   if (!gw.configured) throw new Error('Arena gateway not configured');
-  const res = await fetch(gatewayChatUrl(gw.baseUrl), {
+  const res = await fetchWithTimeout(gatewayChatUrl(gw.baseUrl), {
     method: 'POST',
     headers: { Authorization: `Bearer ${gw.apiKey}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -435,7 +474,7 @@ async function callArenaModel(model: string, system: string, user: string): Prom
     const deepBase = process.env.DEEPSEEK_BASE_URL_2 || 'https://api.deepseek.com/v1/chat/completions';
     if (deepKey) {
       try {
-        const deepRes = await fetch(deepBase.replace(/\/+$/, '') + '/chat/completions', {
+        const deepRes = await fetchWithTimeout(deepBase.replace(/\/+$/, '') + '/chat/completions', {
           method: 'POST',
           headers: { Authorization: `Bearer ${deepKey}`, 'Content-Type': 'application/json' },
           body: JSON.stringify({
