@@ -12,9 +12,10 @@ import { listArenaModels } from '../lib/quant/arena';
   console.log(`OpenRouter: ${or.length} (semua free=${or.every((m) => m.free)})`);
   for (const m of or.slice(0, 6)) console.log('  -', m.id, '|', m.name);
 
+  // saat AntSeed outage pun daftar harus tetap terisi (OpenRouter tidak ikut hilang)
+  if (list.length === 0) throw new Error('kedua gateway kosong — daftar model gagal total');
   if (or.length === 0) throw new Error('tidak ada model OpenRouter masuk list');
   if (!or.every((m) => m.free)) throw new Error('ada model OpenRouter yang tidak free');
-  if (antseed.length === 0) throw new Error('list AntSeed hilang saat OpenRouter ditambahkan');
   console.log('SMOKE-ARENA-MODELS OK');
 })().catch((e) => {
   console.error('FAIL:', e instanceof Error ? e.message : e);

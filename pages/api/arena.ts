@@ -10,6 +10,7 @@ import {
   arenaEquity,
   ArenaModelInfo,
   pickArchetype,
+  ARENA_OR_PREFIX,
   styleFingerprint,
   ensureStyleUnique,
   manageOpen,
@@ -315,6 +316,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
       const results: Array<{ model: string; ok: boolean; fallback?: boolean; error?: string; styleGuard?: string }> = [];
       const paramsBefore = new Map<string, string>();
+      // sekali per request: sehat-tidaknya AntSeed dipakai semua agent saat menimbang 404
+      let antseedHealthy: boolean | null = null;
+      const gwHealthy = async () => (antseedHealthy ??= await pingGateway());
       for (const s of targets) paramsBefore.set(s.model, JSON.stringify(s.params));
       const totalRof = (x: typeof all[number]) => x.trades.reduce((acc, t) => acc + t.r, 0);
       const ranked = [...all].sort((a, b) => totalRof(b) - totalRof(a));
@@ -338,9 +342,16 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           try {
             const out = await arenaStep(s, snap, SYSTEM_PROMPT, Boolean(req.body?.force), brief);
             if (/error: 404\b/.test(out.error || '')) {
-              s.running = false;
-              s.terminated = true;
-              s.log = [...(s.log || []), `TERMINATED — gateway menolak permanen (${(out.error || '').split('error: ')[1] || 'unknown'}). History & catatan dipertahankan.`];
+              // OUTAGE GUARD: gateway yang sedang mati / host yang berputar juga membalas 404.
+              // Cek dulu sehat-tidaknya AntSeed sebelum memusnahkan agent (bukan cuma modelnya).
+              const gatewayHealthy = s.model.startsWith(ARENA_OR_PREFIX) || (await gwHealthy());
+              if (gatewayHealthy) {
+                s.running = false;
+                s.terminated = true;
+                s.log = [...(s.log || []), `TERMINATED — gateway menolak permanen (${(out.error || '').split('error: ')[1] || 'unknown'}). History & catatan dipertahankan.`];
+              } else {
+                s.log = [...(s.log || []), `⚠️ 404 TAPI AntSeed /v1/models ikut tidak sehat → diduga outage/host berputar, bukan model hilang. Agent TIDAK di-terminate.`];
+              }
             } else if (/error: 402\b/.test(out.error || '')) {
               s.running = false;
               s.log = [...(s.log || []), `⏸ JEDA — kredit AntSeed habis (${(out.error || '').split('error: ')[1] || '402'}). Top-up di konsol AntSeed lalu klik resume — agent lanjut dari state terakhir.`];

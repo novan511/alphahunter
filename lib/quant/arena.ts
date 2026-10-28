@@ -348,7 +348,7 @@ function gatewayModelsUrl(baseUrl: string): string {
 export interface ArenaModelInfo { id: string; name: string; free: boolean }
 
 /* ---- Gateway kedua: OpenRouter (model gratis saja, pricing 0/0) ---- */
-const OR_PREFIX = 'or:';
+export const ARENA_OR_PREFIX = 'or:';
 
 function orBase(): string {
   return (process.env.ARENA_OR_BASE_URL || 'https://openrouter.ai/api/v1').replace(/\/+$/, '');
@@ -372,33 +372,40 @@ export async function listOpenRouterModels(): Promise<ArenaModelInfo[]> {
     if (!Array.isArray(arch.input_modalities) || !arch.input_modalities.includes('text')) continue;
     // keluaran harus murni teks — model campur (mis. audio output) tidak bisa menjawab prompt
     if (!Array.isArray(arch.output_modalities) || arch.output_modalities.length !== 1 || arch.output_modalities[0] !== 'text') continue;
-    out.push({ id: OR_PREFIX + m.id, name: m.name || m.id, free: true });
+    out.push({ id: ARENA_OR_PREFIX + m.id, name: m.name || m.id, free: true });
   }
   return out;
 }
 
 export async function listArenaModels(): Promise<ArenaModelInfo[]> {
   const gw = arenaGateway();
-  if (!gw.configured) return [];
-  const res = await fetch(gatewayModelsUrl(gw.baseUrl), {
-    headers: { Authorization: `Bearer ${gw.apiKey}` },
-  });
-  if (!res.ok) throw new Error(`Gateway /v1/models error: ${res.status}`);
-  const json = await res.json();
   const out: ArenaModelInfo[] = [];
-  for (const m of json.data ?? []) {
-    if (Array.isArray(m.supported_protocols) && !m.supported_protocols.includes('openai-chat-completions')) continue;
-    if (m.type && m.type !== 'text') continue;
-    if (!m.id) continue;
-    const bestRep = (m.peers ?? []).reduce((a: number, p: { reputationScore?: number }) => Math.max(a, p.reputationScore ?? 0), 0);
-    const free = (m.peers ?? []).some((p: { inputUsdPerMillion?: number; outputUsdPerMillion?: number }) => (p.inputUsdPerMillion ?? -1) === 0 && (p.outputUsdPerMillion ?? -1) === 0);
-    out.push({ id: m.id, name: m.name || m.id, free });
+  if (gw.configured) {
+    try {
+      const res = await fetch(gatewayModelsUrl(gw.baseUrl), {
+        headers: { Authorization: `Bearer ${gw.apiKey}` },
+      });
+      if (!res.ok) throw new Error(`Gateway /v1/models error: ${res.status}`);
+      const json = await res.json();
+      for (const m of json.data ?? []) {
+        if (Array.isArray(m.supported_protocols) && !m.supported_protocols.includes('openai-chat-completions')) continue;
+        if (m.type && m.type !== 'text') continue;
+        if (!m.id) continue;
+        const bestRep = (m.peers ?? []).reduce((a: number, p: { reputationScore?: number }) => Math.max(a, p.reputationScore ?? 0), 0);
+        const free = (m.peers ?? []).some((p: { inputUsdPerMillion?: number; outputUsdPerMillion?: number }) => (p.inputUsdPerMillion ?? -1) === 0 && (p.outputUsdPerMillion ?? -1) === 0);
+        out.push({ id: m.id, name: m.name || m.id, free });
+      }
+    } catch (e) {
+      // AntSeed mati (outage/rotasi host) tak boleh menghapus seluruh daftar — OpenRouter tetap dijual
+      console.warn('[arena] AntSeed /v1/models gagal:', e instanceof Error ? e.message : e);
+    }
   }
   // OpenRouter di-APPEND supaya pool default tetap AntSeed dulu; gagal tak boleh menghapus list AntSeed
   try {
     out.push(...(await listOpenRouterModels()));
-  } catch {
+  } catch (e) {
     /* gateway kedua down → tetap pakai list AntSeed */
+    console.warn('[arena] OpenRouter /models gagal:', e instanceof Error ? e.message : e);
   }
   return out.filter((m) => !out.some((o) => o !== m && o.id === m.id));
 }
@@ -490,7 +497,7 @@ async function callArenaModel(model: string, system: string, user: string): Prom
   }
 
   // Model or:* → OpenRouter (gateway kedua, gratis saja), bypass AntSeed
-  if (model.startsWith(OR_PREFIX)) {
+  if (model.startsWith(ARENA_OR_PREFIX)) {
     const key = (process.env.ARENA_OR_API_KEY || '').trim();
     if (!key) throw new Error('OpenRouter API key tidak dikonfigurasi');
     const res = await fetchWithTimeout(
@@ -504,7 +511,7 @@ async function callArenaModel(model: string, system: string, user: string): Prom
           'X-Title': 'Althunter Arena',
         },
         body: JSON.stringify({
-          model: model.slice(OR_PREFIX.length),
+          model: model.slice(ARENA_OR_PREFIX.length),
           max_tokens: 2200,
           temperature: 0.4,
           usage: { include: true }, // OpenRouter balas usage.cost → guard free-only
