@@ -1,0 +1,54 @@
+name: AI Arena step
+
+# Iterasi arena AI tiap 2 menit via GitHub Actions (Vercel Hobby hanya izinkan
+# cron harian). Route /api/arena action=step menjalankan satu step untuk semua
+# agent yang running, mengelola posisi, dan memanggil LLM kalau ada bar baru.
+on:
+  schedule:
+    - cron: '*/2 * * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: arena-step
+  cancel-in-progress: false
+
+jobs:
+  step:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Trigger arena step
+        env:
+          DEPLOY_URL: ${{ secrets.VERCEL_URL }}
+        run: |
+          set -euo pipefail
+          if [ -z "${DEPLOY_URL}" ]; then
+            echo "::error::VERCEL_URL wajib diisi"
+            exit 1
+          fi
+          echo "POST ${DEPLOY_URL}/api/arena (action=step)"
+          RESP=$(curl --silent --show-error --max-time 120 \
+            -o /tmp/arena-step.json -w '%{http_code}' \
+            -X POST "${DEPLOY_URL}/api/arena" \
+            -H "Content-Type: application/json" \
+            -d '{"action":"step","force":false}')
+          echo "HTTP ${RESP}"
+          cat /tmp/arena-step.json
+          echo
+          python3 -c "
+          import json,sys
+          try:
+              d = json.load(open('/tmp/arena-step.json'))
+          except Exception as e:
+              print(f'::error::gagal parse response: {e}')
+              sys.exit(1)
+          if not d.get('ok', False):
+              print(f\"::error::arena step not ok: {d.get('error') or d.get('note')}\")
+              sys.exit(1)
+          results = d.get('results', [])
+          ok_count = sum(1 for r in results if r.get('ok'))
+          print(f\"ran={d.get('ran')} ok={ok_count}/{len(results)}\")
+          for r in results:
+              err = r.get('error', '')
+              print(f\"  {r['model']}: ok={r['ok']} error={err[:80] if err else '-'}\")
+          " || true
