@@ -212,6 +212,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         positions: states.flatMap(livePositions),
         persisted: isSupabaseConfigured(),
         gw: { ...gatewayHealth, down: gatewayHealth.lastErrAt > gatewayHealth.lastOkAt },
+        // diagnostik: kalau '0' → runtime menonaktifkan verifikasi sertifikat TLS (bukan dari kode kita)
+        tls: process.env.NODE_TLS_REJECT_UNAUTHORIZED ?? null,
         deepseekFallback: Boolean(process.env.DEEPSEEK_API_KEY_2),
       });
     }
