@@ -314,7 +314,6 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       const results: Array<{ model: string; ok: boolean; fallback?: boolean; error?: string; styleGuard?: string }> = [];
       const paramsBefore = new Map<string, string>();
       for (const s of targets) paramsBefore.set(s.model, JSON.stringify(s.params));
-      // rankNote: posisi leaderboard (diurut totalR) diisi engine per step — dipakai prompt iterasi ini
       const totalRof = (x: typeof all[number]) => x.trades.reduce((acc, t) => acc + t.r, 0);
       const ranked = [...all].sort((a, b) => totalRof(b) - totalRof(a));
       for (const s of targets) {
@@ -322,45 +321,47 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         const lead = ranked[0];
         s.rankNote = `#${rank}/${all.length} by totalR ${lead && lead.model !== s.model ? `· pemimpin: ${lead.model}` : '· kamu pemimpin'}`;
       }
-      for (const s of targets) {
-        const snap = snaps[s.params.interval] || snaps[intervals[0]];
-        if (!snap) { results.push({ model: s.model, ok: false, error: 'no snapshot' }); continue; }
-        // peserta ke-7+ sharing archetype: pastikan fingerprint unik SEBELUM step (juga menyembuhkan agent lama yang macet)
-        ensureStyleUnique(s, all);
-        const brief = othersBriefOf(s, all);
-        try {
-          const out = await arenaStep(s, snap, SYSTEM_PROMPT, Boolean(req.body?.force), brief);
-          // 404 = model hilang di gateway → matikan permanen (history dipertahankan).
-          // 402 "out of AntSeed credits" = krisis kredit GLOBAL → hanya jeda (running=false,
-          // terminated=false): semua model kena bersamaan, bukan modelnya yang mati.
-          if (/error: 404\b/.test(out.error || '')) {
-            s.running = false;
-            s.terminated = true;
-            s.log = [...(s.log || []), `TERMINATED — gateway menolak permanen (${(out.error || '').split('error: ')[1] || 'unknown'}). History & catatan dipertahankan.`];
-          } else if (/error: 402\b/.test(out.error || '')) {
-            s.running = false;
-            s.log = [...(s.log || []), `⏸ JEDA — kredit AntSeed habis (${(out.error || '').split('error: ')[1] || '402'}). Top-up di konsol AntSeed lalu klik resume — agent lanjut dari state terakhir.`];
-          } else if (/PAID peer/i.test(out.error || '')) {
-            // free-only: model dilayani peer berbayar → jeda, jangan ulangi (biaya)
-            s.running = false;
-            s.log = [...(s.log || []), `⏸ JEDA — memakai peer BERBAYAR (${(out.error || '').split('paid peer ')[1] || 'paid'}). Aturan arena: free-only. Resume setelah routing gateway balik ke peer gratis.`];
+
+      // Jalankan step tiap model PARALEL — Vercel 60s timeout, sequential berisiko melebihi
+      // saat banyak model memakai DeepSeek fallback (timeout) atau retry prose.
+      await Promise.allSettled(
+        targets.map(async (s) => {
+          const snap = snaps[s.params.interval] || snaps[intervals[0]];
+          if (!snap) {
+            results.push({ model: s.model, ok: false, error: 'no snapshot' });
+            return;
           }
-          // STYLE-GUARD: fingerprint gaya tidak boleh persis sama dengan peserta lain
-          const dup = all.some(
-            (other) => other.model !== s.model && other.archetype === s.archetype && styleFingerprint(other) === styleFingerprint(s)
-          );
-          if (dup) {
-            const prev = paramsBefore.get(s.model);
-            if (prev) s.params = JSON.parse(prev);
-            results.push({ model: s.model, ok: true, fallback: out.fallback, styleGuard: 'reverted: tune buat identik dengan peserta lain' });
-            continue;
+          ensureStyleUnique(s, all);
+          const brief = othersBriefOf(s, all);
+          try {
+            const out = await arenaStep(s, snap, SYSTEM_PROMPT, Boolean(req.body?.force), brief);
+            if (/error: 404\b/.test(out.error || '')) {
+              s.running = false;
+              s.terminated = true;
+              s.log = [...(s.log || []), `TERMINATED — gateway menolak permanen (${(out.error || '').split('error: ')[1] || 'unknown'}). History & catatan dipertahankan.`];
+            } else if (/error: 402\b/.test(out.error || '')) {
+              s.running = false;
+              s.log = [...(s.log || []), `⏸ JEDA — kredit AntSeed habis (${(out.error || '').split('error: ')[1] || '402'}). Top-up di konsol AntSeed lalu klik resume — agent lanjut dari state terakhir.`];
+            } else if (/PAID peer/i.test(out.error || '')) {
+              s.running = false;
+              s.log = [...(s.log || []), `⏸ JEDA — memakai peer BERBAYAR (${(out.error || '').split('paid peer ')[1] || 'paid'}). Aturan arena: free-only. Resume setelah routing gateway balik ke peer gratis.`];
+            }
+            const dup = all.some(
+              (other) => other.model !== s.model && other.archetype === s.archetype && styleFingerprint(other) === styleFingerprint(s)
+            );
+            if (dup) {
+              const prev = paramsBefore.get(s.model);
+              if (prev) s.params = JSON.parse(prev);
+              results.push({ model: s.model, ok: true, fallback: out.fallback, styleGuard: 'reverted: tune buat identik dengan peserta lain' });
+              return;
+            }
+            await saveState(s);
+            results.push({ model: s.model, ok: true, fallback: out.fallback, error: out.error });
+          } catch (e) {
+            results.push({ model: s.model, ok: false, error: e instanceof Error ? e.message : String(e) });
           }
-          await saveState(s);
-          results.push({ model: s.model, ok: true, fallback: out.fallback, error: out.error });
-        } catch (e) {
-          results.push({ model: s.model, ok: false, error: e instanceof Error ? e.message : String(e) });
-        }
-      }
+        })
+      );
       const states = (
         await Promise.all(targets.map((t) => loadState(t.model)))
       ).filter((x): x is ArenaState => x !== null);

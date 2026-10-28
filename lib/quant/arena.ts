@@ -414,7 +414,7 @@ export function ensureGatewayKeepalive(): void {
 }
 
 async function callArenaModel(model: string, system: string, user: string): Promise<string> {
-  const fetchWithTimeout = async (url: string, init: RequestInit, ms: number = 12_000): Promise<Response> => {
+  const fetchWithTimeout = async (url: string, init: RequestInit, ms: number = 8_000): Promise<Response> => {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), ms);
     try {
