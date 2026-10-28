@@ -872,7 +872,7 @@ function applyDecision(s: ArenaState, d: ModelDecision, snap: StepMarketSnapshot
 
 export interface ArenaStepResult { closedTrades: ArenaTrade[]; fallback: boolean; error?: string }
 
-function manageOpen(s: ArenaState, snap: StepMarketSnapshot) {
+export function manageOpen(s: ArenaState, snap: StepMarketSnapshot) {
   if (!s.lastBarTimes) s.lastBarTimes = {};
   for (let i = s.positions.length - 1; i >= 0; i--) {
     const pos = s.positions[i];
@@ -890,8 +890,8 @@ function manageOpen(s: ArenaState, snap: StepMarketSnapshot) {
     const riskUnit = pos.riskUnit || pos.riskDollar / Math.max(1e-9, pos.qty) || pos.entryATR * s.params.stopLossATR;
     const dir = pos.side === 'long' ? 1 : -1;
     const liveR = (last.close - pos.entryPrice) * dir / Math.max(1e-9, riskUnit);
-    const hitTarget = pos.takeProfit > 0 && (pos.side === 'long' ? last.high >= pos.takeProfit : last.low <= pos.takeProfit);
-    const hitStop = pos.side === 'long' ? last.low <= pos.stopLoss : last.high >= pos.stopLoss;
+    const hitTarget = Number.isFinite(pos.takeProfit) && pos.takeProfit > 0 && (pos.side === 'long' ? last.high >= pos.takeProfit : last.low <= pos.takeProfit);
+    const hitStop = Number.isFinite(pos.stopLoss) && pos.stopLoss > 0 && (pos.side === 'long' ? last.low <= pos.stopLoss : last.high >= pos.stopLoss);
 
     // STOP dicek lebih dulu (konservatif): satu bar menyentuh dua-duanya tidak boleh
     // dibukukan sebagai profit yang belum tentu didapat.

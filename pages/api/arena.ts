@@ -12,6 +12,7 @@ import {
   pickArchetype,
   styleFingerprint,
   ensureStyleUnique,
+  manageOpen,
   ensureGatewayKeepalive,
   gatewayHealth,
   pingGateway,
@@ -271,16 +272,17 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       try {
       const only = String(req.body?.model || '');
       const all = await allStates();
-      const targets = only ? all.filter((s) => s.model === only) : all.filter((s) => s.running);
-      if (targets.length === 0) {
-        return res.status(200).json({ ok: true, ran: 0, lb: [], note: 'no running agents' });
-      }
+      // Interval dari SEMUA agent (running + stopped) agar snapshot tersedia
+      // untuk manageOpen posisi stopped agent.
+      const allWithPos = all.filter((s) => s.positions && s.positions.length > 0);
+      const targetPool = only ? all.filter((s) => s.model === only) : all.filter((s) => s.running);
+      const targets = targetPool;
 
       // snapshot diambil per interval unik — semua model di interval sama tidak akan double-fetch
       // universe arena: crypto + US stock + oil + komoditas
       const preset = getPresetById('arena-multi') || getPresetById('paper-cross-asset');
       const universeRefs = preset?.assets ?? parseAssetList('binance:BTCUSDT,binance:ETHUSDT,yahoo:CL=F,yahoo:GC=F', []);
-      const intervals = Array.from(new Set(targets.map((s) => s.params.interval)));
+      const intervals = Array.from(new Set([...allWithPos, ...targets].map((s) => s.params.interval)));
       const snaps: Record<string, Awaited<ReturnType<typeof buildMultiTfSnapshot>>> = {};
       const bench = universeRefs.find((a) => a.symbol?.includes('BTC')) || universeRefs[0] || null;
       await Promise.allSettled(
@@ -290,6 +292,23 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       );
       if (Object.keys(snaps).length === 0) {
         return res.status(502).json({ ok: false, error: 'market snapshot failed' });
+      }
+
+      // Pre-step: kelola posisi TP/SL untuk SEMUA agent (termasuk yang stopped),
+      // supaya posisi tetap ditutup saat TP/SL tercapai meskipun agent tidak running.
+      for (const s of all) {
+        if (!s.positions || s.positions.length === 0) continue;
+        const snap = snaps[s.params.interval] || snaps[intervals[0]];
+        if (!snap) continue;
+        const before = s.positions.length;
+        manageOpen(s, snap);
+        if (s.positions.length !== before) {
+          await saveState(s);
+        }
+      }
+
+      if (targets.length === 0) {
+        return res.status(200).json({ ok: true, ran: 0, lb: [], note: 'no running agents' });
       }
 
       const results: Array<{ model: string; ok: boolean; fallback?: boolean; error?: string; styleGuard?: string }> = [];
