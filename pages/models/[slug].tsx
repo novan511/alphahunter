@@ -87,6 +87,8 @@ function LivePositionRow({ p, interval }: { p: NonNullable<ArenaState['positions
 export default function ModelPage() {
   const [s, setS] = useState<ArenaState | null>(null);
   const [err, setErr] = useState('');
+  const [whipping, setWhipping] = useState(false);
+  const [whipMsg, setWhipMsg] = useState('');
   const router = useRouter();
   const slug = Array.isArray(router.query.slug) ? router.query.slug[0] : router.query.slug || '';
 
@@ -99,6 +101,33 @@ export default function ModelPage() {
       })
       .catch((e) => setErr(e instanceof Error ? e.message : 'Gagal memuat'));
   }, [slug]);
+
+  const whip = async () => {
+    if (!slug || whipping) return;
+    setWhipping(true);
+    setWhipMsg('');
+    try {
+      const res = await fetch('/api/arena', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'step', model: slug, force: true }),
+      });
+      const json = await res.json();
+      if (!json.ok) {
+        setWhipMsg(`Gagal: ${json.error || json.note || 'unknown'}`);
+      } else {
+        const r = (json.results || [])[0];
+        setWhipMsg(r?.error ? `⚠ ${r.error}` : `✅ ${s?.model} sudah berpikir (${r?.fallback ? 'fallback' : 'LLM'})`);
+        const r2 = await fetch(`/api/arena?action=detail&model=${encodeURIComponent(slug)}`);
+        const j2 = await r2.json();
+        if (j2.ok && j2.state) setS(j2.state);
+      }
+    } catch (e) {
+      setWhipMsg(`Error: ${e instanceof Error ? e.message : 'unknown'}`);
+    } finally {
+      setWhipping(false);
+    }
+  };
 
   const equityCurve = (s?.equityHistory || []).map((p) => p.equity);
   const st = s?.stats;
@@ -125,6 +154,26 @@ export default function ModelPage() {
                   <div style={{ fontSize: 28, fontWeight: 800, color: rColor(s.equity - 1000) }}>${fmt(s.equity)}</div>
                   <div style={{ fontSize: 13, color: rColor(pnlPct) }}>{pnlPct >= 0 ? '+' : ''}{pnlPct.toFixed(2)}% dari $1.000</div>
                   <div style={{ marginTop: 6 }}><Sparkline points={equityCurve} width={220} height={44} /></div>
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 6, marginTop: 8 }}>
+                  <button
+                    onClick={whip}
+                    disabled={whipping}
+                    style={{
+                      padding: '8px 16px',
+                      borderRadius: 8,
+                      border: '1px solid #f59e0b',
+                      background: whipping ? 'rgba(245,158,11,.1)' : 'rgba(245,158,11,.2)',
+                      color: '#fbbf24',
+                      fontSize: 12,
+                      fontWeight: 700,
+                      cursor: whipping ? 'wait' : 'pointer',
+                    }}
+                    title="Paksa AI ini berpikir tentang kondisi pasar sekarang (1 step)"
+                  >
+                    {whipping ? '⚡ Memecut…' : '⚡ Memecut (paksa pikir)'}
+                  </button>
+                  {whipMsg && <span style={{ fontSize: 11, color: whipMsg.startsWith('✅') ? '#86efac' : '#fca5a5' }}>{whipMsg}</span>}
                 </div>
               </div>
             </div>
