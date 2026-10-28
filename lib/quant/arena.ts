@@ -456,9 +456,10 @@ export function ensureGatewayKeepalive(): void {
   (gwTimer as unknown as { unref?: () => void }).unref?.();
 }
 
-async function callArenaModel(model: string, system: string, user: string): Promise<string> {
-  // 8 dtk terlalu sempat untuk prompt arena (output bisa ratusan token) → tiap step berakhir "aborted"
-  const fetchWithTimeout = async (url: string, init: RequestInit, ms: number = 35_000): Promise<Response> => {
+async function callArenaModel(model: string, system: string, user: string, timeoutMs?: number): Promise<string> {
+  // 8 dtk terlalu sempat untuk prompt arena (output bisa ratusan token) → tiap step berakhir "aborted";
+  // timeoutMs = sisa budget step dari pemanggil (Vercel limit 60s)
+  const fetchWithTimeout = async (url: string, init: RequestInit, ms: number = Math.min(35_000, timeoutMs ?? 35_000)): Promise<Response> => {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), ms);
     try {
@@ -522,7 +523,7 @@ async function callArenaModel(model: string, system: string, user: string): Prom
           ],
         }),
       },
-      45_000 // free-tier kadang antri lama; sisakan ruang untuk retry parse di bawah budget 60s Vercel
+      Math.min(45_000, timeoutMs ?? 45_000) // free-tier kadang antri; tetap dibatasi sisa budget step
     );
     if (!res.ok) throw new Error(`Model ${model} error: ${res.status}`);
     const json = await res.json();
@@ -1042,21 +1043,27 @@ export async function arenaStep(
   let fallback = false;
   let error: string | undefined;
   if (isNewBar) {
+    const stepStart = Date.now();
+    const STEP_BUDGET = 42_000; // snapshot+persist di handler makan ~8-15dtk di luar ini → total aman < 60s Vercel
+    const leftMs = () => STEP_BUDGET - (Date.now() - stepStart);
     const user = buildPrompt(s, snap, othersBrief, await macroBrief());
     let decision: ModelDecision | null = null;
     try {
-      const text = await callArenaModel(s.model, systemPrompt, user);
+      const text = await callArenaModel(s.model, systemPrompt, user, Math.max(5_000, leftMs()));
       decision = extractJson(text);
       // RETRY korektif: beberapa model (mis. mistral) kadang balas prose — tanya ulang dengan perintah format keras, lalu parse per-keluarga output
-      if (!decision) {
+      if (!decision && leftMs() >= 12_000) {
         // bukan error — ada retry korektif di bawah; jangan bikin merah di log Vercel
         console.warn(`[arena-debug ${s.model}] output pertama gagal parse (${text.length} chars): ${text.slice(0, 300)}`);
         const text2 = await callArenaModel(
           s.model,
           `${systemPrompt}\n\nCRITICAL: your previous reply was prose, which is INVALID. Reply with ONLY the raw JSON object — no explanation, no markdown, start with { and end with }.`,
-          user
+          user,
+          Math.max(5_000, leftMs())
         );
         decision = extractJson(text2);
+      } else if (!decision) {
+        console.warn(`[arena-debug ${s.model}] output pertama gagal parse (${text.length} chars), sisa budget ${leftMs()}ms < 12s → retry dilewati`);
       }
       if (!decision) {
         fallback = true;
