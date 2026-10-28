@@ -457,7 +457,8 @@ export function ensureGatewayKeepalive(): void {
 }
 
 async function callArenaModel(model: string, system: string, user: string): Promise<string> {
-  const fetchWithTimeout = async (url: string, init: RequestInit, ms: number = 8_000): Promise<Response> => {
+  // 8 dtk terlalu sempat untuk prompt arena (output bisa ratusan token) → tiap step berakhir "aborted"
+  const fetchWithTimeout = async (url: string, init: RequestInit, ms: number = 35_000): Promise<Response> => {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), ms);
     try {
@@ -521,7 +522,7 @@ async function callArenaModel(model: string, system: string, user: string): Prom
           ],
         }),
       },
-      60_000 // free-tier kadang antri lama; default 8s terlalu ketat
+      45_000 // free-tier kadang antri lama; sisakan ruang untuk retry parse di bawah budget 60s Vercel
     );
     if (!res.ok) throw new Error(`Model ${model} error: ${res.status}`);
     const json = await res.json();
