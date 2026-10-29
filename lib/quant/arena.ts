@@ -90,6 +90,7 @@ export interface ArenaState {
   iterCount: number;
   rankNote?: string; // diisi engine per step, transien (bukan perpindahan state)
   terminated?: boolean; // gateway menolak permanen (402/404) — agent tak dihidupkan ulang otomatis
+  strike404?: number; // 404 beruntun — terminate HANYA setelah 2x (gateway/host yang mengalami gangguan juga sering membalas 404)
   lastBarKey: string;
   /** waktu candle terakhir per simbol — barsHeld naik per BAR, bukan per step 90s */
   lastBarTimes?: Record<string, number>;
@@ -366,6 +367,8 @@ export async function listOpenRouterModels(): Promise<ArenaModelInfo[]> {
   const out: ArenaModelInfo[] = [];
   for (const m of json.data ?? []) {
     if (!m.id) continue;
+    // 'openrouter/free' = pseudo-route meta (random model tiap panggil), bukan peserta yang bisa dinilai
+    if (m.id === 'openrouter/free' || m.id.startsWith('openrouter/')) continue;
     // gratis = pricing 0/0 di katalog; text-in & text-out saja (model audio/image output tidak bisa jawab prompt)
     if (Number(m.pricing?.prompt) !== 0 || Number(m.pricing?.completion) !== 0) continue;
     const arch = m.architecture || {};

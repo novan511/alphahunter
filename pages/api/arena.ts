@@ -24,7 +24,7 @@ export const config = { maxDuration: 60 };
 
 const memory = new Map<string, ArenaState>();
 
-const SYSTEM_PROMPT = `You are an autonomous trading agent in the Althunter AI Arena, competing against other LLM models. You start with $1000 of virtual capital, paper-trading across crypto, US equities/ETFs, oil and commodities using the Althunter engines: multi-timeframe confluence signals (15m/1w), spike detection, relative-strength decoupling, ATR-based risk sizing.
+const SYSTEM_PROMPT = `You are an autonomous trading agent in the Althunter AI Arena, competing against other LLM models. You start with $1000 of virtual capital, paper-trading across crypto, US equities/ETFs, forex (EUR/JPY/GBP), and commodities — gold, silver, copper, aluminium, platinum, palladium, natgas, crude/brent oil — using the Althunter engines: multi-timeframe confluence signals (15m/1w), spike detection, relative-strength decoupling, ATR-based risk sizing.
 
 YOUR ONLY GOAL: maximize R expectancy — the average R multiple per trade. A win rate of 30% with avg win R=4 and avg loss R=1 beats a win rate of 70% with avg win R=1.2. Think in R units: every trade risks exactly 1R. Best total R wins the leaderboard.
 
@@ -343,14 +343,16 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             const out = await arenaStep(s, snap, SYSTEM_PROMPT, Boolean(req.body?.force), brief);
             if (/error: 404\b/.test(out.error || '')) {
               // OUTAGE GUARD: gateway yang sedang mati / host yang berputar juga membalas 404.
-              // Cek dulu sehat-tidaknya AntSeed sebelum memusnahkan agent (bukan cuma modelnya).
+              // 404 tunggal TIDAK menewaskan agent — marketplace bisa sempat mute/rebuild lima menit.
+              // Terminate cuma kalau 404 beruntun ≥2x DAN gateway sehat di sekitarnya.
               const gatewayHealthy = s.model.startsWith(ARENA_OR_PREFIX) || (await gwHealthy());
-              if (gatewayHealthy) {
+              s.strike404 = (s.strike404 || 0) + 1;
+              if (s.strike404 >= 2 && gatewayHealthy) {
                 s.running = false;
                 s.terminated = true;
-                s.log = [...(s.log || []), `TERMINATED — gateway menolak permanen (${(out.error || '').split('error: ')[1] || 'unknown'}). History & catatan dipertahankan.`];
+                s.log = [...(s.log || []), `TERMINATED — gateway menolak permanen 2x beruntun (${(out.error || '').split('error: ')[1] || 'unknown'}). History & catatan dipertahankan.`];
               } else {
-                s.log = [...(s.log || []), `⚠️ 404 TAPI AntSeed /v1/models ikut tidak sehat → diduga outage/host berputar, bukan model hilang. Agent TIDAK di-terminate.`];
+                s.log = [...(s.log || []), `⚠️ 404 (${s.strike404}x beruntun) — ${gatewayHealthy ? 'diberi kesempatan, cek ulang step berikutnya; agent TIDAK di-terminate.' : 'gateway ikut tidak sehat → agent TIDAK di-terminate.'}`];
               }
             } else if (/error: 402\b/.test(out.error || '')) {
               s.running = false;
@@ -358,6 +360,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             } else if (/PAID (peer|route)/i.test(out.error || '')) {
               s.running = false;
               s.log = [...(s.log || []), `⏸ JEDA — memakai peer BERBAYAR (${(out.error || '').split('paid peer ')[1] || 'paid'}). Aturan arena: free-only. Resume setelah routing gateway balik ke peer gratis.`];
+            }
+            if (!s.terminated && s.strike404 && s.strike404 > 0 && !/error: 404\b/.test(out.error || '')) {
+              s.strike404 = 0; // step sukses — hitungan 404 beruntun di-nol-kan
             }
             const dup = all.some(
               (other) => other.model !== s.model && other.archetype === s.archetype && styleFingerprint(other) === styleFingerprint(s)

@@ -163,11 +163,30 @@ export const ASSET_PRESETS: AssetPreset[] = [
       // oil
       'yahoo:CL=F',
       'yahoo:BZ=F',
-      // komoditas lain
+      // komoditas
       'yahoo:GC=F',
       'yahoo:SI=F',
       'yahoo:NG=F',
       'yahoo:HG=F',
+      // komoditas & makro via Hyperliquid HIP-3 (xyz dex, candle 1-4h, bukan daily):
+      // ALUMINIUM sudah listing tapi belum ada candle diperdagangkan — engine skip token yang kosong,
+      // ikut jadi aktif begitu ada volume (shortcut: kosong per Okt 2026, cek lagi kalau error).
+      'hyperliquid:xyz:GOLD',
+      'hyperliquid:xyz:SILVER',
+      'hyperliquid:xyz:COPPER',
+      'hyperliquid:xyz:ALUMINIUM',
+      'hyperliquid:xyz:NATGAS',
+      'hyperliquid:xyz:PLATINUM',
+      'hyperliquid:xyz:PALLADIUM',
+      'hyperliquid:xyz:BRENTOIL',
+      // forex (HIP-3 FX perp, 1h) + pasangan USD Yahoo klasik
+      'hyperliquid:xyz:EUR',
+      'hyperliquid:xyz:JPY',
+      'hyperliquid:xyz:GBP',
+      'yahoo:EURUSD=X',
+      'yahoo:GBPUSD=X',
+      'yahoo:USDJPY=X',
+      'yahoo:AUDUSD=X',
     ]),
   },
 ];
