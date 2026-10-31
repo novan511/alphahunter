@@ -1,0 +1,59 @@
+name: ML Train (XGBoost)
+
+on:
+  schedule:
+    - cron: '0 2 * * *'   # daily 02:00 UTC
+  workflow_dispatch:
+    inputs:
+      symbols:
+        description: 'Comma-separated symbols (default ETHUSDT,SOLUSDT,BNBUSDT,XRPUSDT)'
+        required: false
+        default: 'ETHUSDT,SOLUSDT,BNBUSDT,XRPUSDT'
+      interval:
+        description: 'Candle interval'
+        required: false
+        default: '4h'
+
+concurrency:
+  group: ml-train
+  cancel-in-progress: false
+
+jobs:
+  train:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      max-parallel: 4
+      matrix:
+        symbol: ${{ fromJson(github.event.inputs.symbols && github.event.inputs.symbols != '' && format('[\"{0}\"]', replace(github.event.inputs.symbols, ',', '","')) || '["ETHUSDT","SOLUSDT","BNBUSDT","XRPUSDT"]') }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r ml/train/requirements.txt
+
+      - name: Train model
+        env:
+          SYMBOL: ${{ matrix.symbol }}
+          INTERVAL: ${{ github.event.inputs.interval || '4h' }}
+        run: |
+          python ml/train/train_model.py --symbol "$SYMBOL" --interval "$INTERVAL" --lookback 1000
+
+      - name: Commit model artifacts
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add ml/models/ || true
+          git commit -m "chore(ml): update model artifacts for ${{ matrix.symbol }} ${{ github.event.inputs.interval || '4h' }}" || true
+          git push || true
