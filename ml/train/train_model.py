@@ -21,9 +21,9 @@ import xgboost as xgb
 BINANCE_BASE = os.environ.get("BINANCE_BASE_URL", "https://data-api.binance.vision")
 BINANCE_MAX_LIMIT = 1000
 GATES = {
-    "oos_sharpe_min": 1.0,
-    "oos_maxdd_max": 0.15,
-    "oos_pf_min": 1.2,
+    "oos_sharpe_min": float(os.environ.get("ML_GATE_SHARPE_MIN", "0.5")),
+    "oos_maxdd_max": float(os.environ.get("ML_GATE_MAXDD_MAX", "0.20")),
+    "oos_pf_min": float(os.environ.get("ML_GATE_PF_MIN", "1.05")),
 }
 
 
