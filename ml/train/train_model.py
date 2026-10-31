@@ -415,7 +415,7 @@ def export_model_json(model: xgb.XGBRegressor, feature_names: list[str]) -> dict
     dump = booster.get_dump(with_stats=True)
     trees = []
     for tree_text in dump:
-        trees.append(parse_xgb_dump(tree_text))
+        trees.append(parse_xgb_dump(tree_text, feature_names))
     return {
         "feature_names": feature_names,
         "num_trees": len(trees),
@@ -425,34 +425,43 @@ def export_model_json(model: xgb.XGBRegressor, feature_names: list[str]) -> dict
     }
 
 
-def parse_xgb_dump(dump_text: str) -> dict:
-    """Parse XGBoost text dump into nested node structure."""
+def parse_xgb_dump(dump_text: str, feature_names: list[str]) -> dict:
+    """Parse XGBoost text dump into nested node structure.
+    Handles both 'f0' index format and named feature format.
+    """
     lines = dump_text.strip().split("\n")
     nodes = []
+    feature_index = {name: i for i, name in enumerate(feature_names)}
+
     for line in lines:
         line = line.strip()
         if not line:
             continue
         # Format: 0:[f0<2.5] yes=1,no=2,missing=1, gain=0.123, cover=45.6
+        # or with named features: 0:[mom_5<0.023] yes=1,no=2,missing=1, ...
         # or: 0:leaf=0.5
         node_id_str, rest = line.split(":", 1)
         node_id = int(node_id_str)
 
         if rest.startswith("leaf"):
-            # Leaf node
             leaf_val = float(rest.split("=")[1].split(",")[0])
             nodes.append({
                 "nodeid": node_id,
                 "leaf": leaf_val,
             })
         else:
-            # Split node
-            # Extract feature
-            feat_part = rest.split("[")[1].split("]")[0]
-            # f0 -> 0
-            feature_idx = int(feat_part.replace("f", ""))
+            # Extract feature part inside [...]
+            bracket_start = rest.index("[")
+            bracket_end = rest.index("]")
+            feat_part = rest[bracket_start + 1 : bracket_end]
 
-            # Extract threshold
+            # Resolve feature index: 'f0' -> 0, or named feature -> index
+            if feat_part.startswith("f"):
+                feature_idx = int(feat_part[1:])
+            else:
+                feature_idx = feature_index.get(feat_part, 0)
+
+            # Extract threshold (value after < )
             thr_str = rest.split("<")[1].split("]")[0]
             threshold = float(thr_str)
 
