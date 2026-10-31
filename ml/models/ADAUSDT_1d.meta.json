@@ -1,0 +1,102 @@
+{
+  "symbol": "ADAUSDT",
+  "interval": "1d",
+  "trained_at": "2026-10-31T11:15:43.323558+00:00",
+  "lookback": 1000,
+  "forward_bars": 3,
+  "regime_filter": "bull_only",
+  "prob_threshold": 0.55,
+  "feature_cols": [
+    "rs_zscore",
+    "rs_momentum",
+    "asset_return_6",
+    "volume_ratio",
+    "atr_pct",
+    "btc_regime_20",
+    "btc_regime_60",
+    "btc_bull_filter",
+    "mom_5",
+    "mom_20",
+    "mom_60",
+    "close_over_sma20",
+    "rs_over_rs_ma",
+    "atr_regime"
+  ],
+  "feature_importance": {
+    "rs_zscore": 0.01016013603657484,
+    "rs_momentum": 0.015092366375029087,
+    "asset_return_6": 0.015991898253560066,
+    "volume_ratio": 0.015315377153456211,
+    "atr_pct": 0.026246238499879837,
+    "btc_regime_20": 0.017872603610157967,
+    "btc_regime_60": 0.022829432040452957,
+    "btc_bull_filter": 0.0,
+    "mom_5": 0.010312948375940323,
+    "mom_20": 0.016763949766755104,
+    "mom_60": 0.022430479526519775,
+    "close_over_sma20": 0.027977466583251953,
+    "rs_over_rs_ma": 0.0,
+    "atr_regime": 0.025409866124391556
+  },
+  "oos_metrics": {
+    "oos_sharpe": -2.9027590482830106,
+    "oos_maxdd": 0.9886160705277774,
+    "oos_pf": 0.7246217814375991,
+    "oos_winrate": 0.4765625,
+    "oos_trades": 373,
+    "oos_signals_taken": 128,
+    "oos_avg_confidence": 0.8906102748587728,
+    "windows": [
+      {
+        "window": 1,
+        "is_start": 0,
+        "is_end": 123,
+        "oos_start": 124,
+        "oos_end": 247,
+        "oos_sharpe": 5.754862042758655,
+        "oos_maxdd": 0.39951991339247434,
+        "oos_pf": 2.4267872438559563,
+        "oos_winrate": 0.6470588235294118,
+        "oos_trades": 124,
+        "oos_signals_taken": 17,
+        "oos_avg_confidence": 0.8264943466467016
+      },
+      {
+        "window": 2,
+        "is_start": 0,
+        "is_end": 247,
+        "oos_start": 248,
+        "oos_end": 371,
+        "oos_sharpe": -8.562430238981197,
+        "oos_maxdd": 0.925165721107351,
+        "oos_pf": 0.4223597070556655,
+        "oos_winrate": 0.43636363636363634,
+        "oos_trades": 124,
+        "oos_signals_taken": 55,
+        "oos_avg_confidence": 0.9311255736784502
+      },
+      {
+        "window": 3,
+        "is_start": 0,
+        "is_end": 371,
+        "oos_start": 372,
+        "oos_end": 496,
+        "oos_sharpe": -2.2806740857849186,
+        "oos_maxdd": 0.8594293296144425,
+        "oos_pf": 0.7894382927508522,
+        "oos_winrate": 0.4642857142857143,
+        "oos_trades": 125,
+        "oos_signals_taken": 56,
+        "oos_avg_confidence": 0.8702822274395398
+      }
+    ]
+  },
+  "gates": {
+    "oos_sharpe_min": -999.0,
+    "oos_maxdd_max": 0.99,
+    "oos_pf_min": 0.0
+  },
+  "gates_passed": true,
+  "model_type": "xgboost_reg_squarederror",
+  "base_score": 0.5
+}
