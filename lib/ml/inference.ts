@@ -129,7 +129,7 @@ export function predict(
   features: number[],
   btcBullFilter: number = 1,
 ): PredictionResult {
-  const probThreshold = meta?.prob_threshold ?? 0.55;
+  const probThreshold = meta?.prob_threshold ?? 0.53;
   const regimeFilter = meta?.regime_filter ?? 'none';
   const allowShort = meta?.allow_short ?? true;
 
@@ -151,8 +151,9 @@ export function predict(
     raw += traverseTree(tree, features);
   }
 
-  // Calibrate probability from raw log-return estimate
-  const scaled = raw * 100;
+  // Calibrate probability from raw log-return estimate (SIGMOID_SCALE=300 matches training)
+  const SIGMOID_SCALE = 300.0;
+  const scaled = raw * SIGMOID_SCALE;
   const probabilityUp = sigmoid(scaled);
   const probabilityDown = 1 - probabilityUp;
   const confidence = Math.abs(probabilityUp - 0.5);

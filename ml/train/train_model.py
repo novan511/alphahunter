@@ -29,6 +29,9 @@ import xgboost as xgb
 BINANCE_BASE = os.environ.get("BINANCE_BASE_URL", "https://data-api.binance.vision")
 BINANCE_MAX_LIMIT = 1000
 
+# Probability calibration scaling: raw log-return * SIGMOID_SCALE -> probability
+SIGMOID_SCALE = 300.0
+
 
 def fetch_klines(symbol: str, interval: str, limit: int) -> list[dict]:
     """Fetch klines from Binance, paginated if needed."""
@@ -289,6 +292,9 @@ def apply_regime_filter(df: pd.DataFrame, regime_filter: str = "none") -> pd.Dat
 def run_backtest_compounded_r(
     X: pd.DataFrame,
     y: pd.Series,
+    close_prices: np.ndarray,
+    high_prices: np.ndarray,
+    low_prices: np.ndarray,
     initial_capital: float = 1000.0,
     risk_per_trade: float = 0.01,
     stop_loss_atr: float = 2.0,
@@ -297,6 +303,7 @@ def run_backtest_compounded_r(
     prob_threshold: float = 0.55,
     leverage: float = 1.0,
     allow_short: bool = True,
+    regime_filter: str = 'both',
     fee_rate: float = 0.001,
     slippage: float = 0.0005,
 ) -> dict:
@@ -373,7 +380,7 @@ def run_backtest_compounded_r(
         atr_pct_col = X_oos["atr_pct"].values if "atr_pct" in X_oos.columns else np.full(len(X_oos), 2.0)
 
         # Probability calibration
-        scaled = y_pred * 100
+        scaled = y_pred * SIGMOID_SCALE
         probs = 1 / (1 + np.exp(-np.clip(scaled, -10, 10)))
 
         # Account tracking for this window
@@ -382,7 +389,7 @@ def run_backtest_compounded_r(
         window_r_multiples = []
 
         for i in range(len(X_oos)):
-            close = X_oos["close"].values[i] if "close" in X_oos.columns else 0
+            close = close_prices[oos_start + i] if oos_start + i < len(close_prices) else 0
             if close <= 0:
                 continue
 
@@ -395,8 +402,22 @@ def run_backtest_compounded_r(
             prob_down = 1.0 - prob_up
 
             # Determine signal
-            take_long = prob_up > prob_threshold and (btc_filter[i] == 1.0 or allow_short)
-            take_short = prob_down > prob_threshold and allow_short and (btc_filter[i] == 0.0 or not allow_short)
+            # Regime filter logic
+            if regime_filter == 'none':
+                regime_pass_long = True
+                regime_pass_short = True
+            elif regime_filter == 'bull_only':
+                regime_pass_long = btc_filter[i] == 1.0
+                regime_pass_short = False
+            elif regime_filter == 'bear_only':
+                regime_pass_long = False
+                regime_pass_short = btc_filter[i] == 0.0
+            else:  # both
+                regime_pass_long = True
+                regime_pass_short = True
+
+            take_long = prob_up > prob_threshold and regime_pass_long
+            take_short = allow_short and prob_down > prob_threshold and regime_pass_short
 
             # Only take one direction per bar
             side = None
@@ -435,12 +456,9 @@ def run_backtest_compounded_r(
 
             # Check SL/TP hit in subsequent bars
             for j in range(i + 1, exit_idx + 1):
-                bar_high = X_oos.iloc[j].get("high", X_oos["close"].values[j] if "close" in X_oos.columns else 0)
-                bar_low = X_oos.iloc[j].get("low", X_oos["close"].values[j] if "close" in X_oos.columns else 0)
-                if isinstance(bar_high, (pd.Series, np.ndarray)):
-                    bar_high = float(bar_high.iloc[0]) if len(bar_high) > 0 else 0
-                if isinstance(bar_low, (pd.Series, np.ndarray)):
-                    bar_low = float(bar_low.iloc[0]) if len(bar_low) > 0 else 0
+                abs_j = oos_start + j
+                bar_high = float(high_prices[abs_j]) if abs_j < len(high_prices) else close
+                bar_low = float(low_prices[abs_j]) if abs_j < len(low_prices) else close
 
                 if side == "long":
                     if bar_low <= stop_price:
@@ -723,12 +741,23 @@ def main():
         sys.exit(1)
 
     print("[train] Computing features")
+    # Preserve OHLC from raw candles for backtest SL/TP checking
+    asset_close_prices = [c["close"] for c in asset_candles]
+    asset_high_prices = [c["high"] for c in asset_candles]
+    asset_low_prices = [c["low"] for c in asset_candles]
+
     df = compute_features(asset_candles, index_candles)
 
     df = apply_regime_filter(df, regime_filter)
     if len(df) < 80:
         print(f"[train] ERROR: insufficient data after regime filter ({len(df)} rows)")
         sys.exit(1)
+
+    # Reindex price arrays to match df index after regime filter
+    df_index = df.index
+    close_prices = np.array(asset_close_prices)[df_index]
+    high_prices = np.array(asset_high_prices)[df_index]
+    low_prices = np.array(asset_low_prices)[df_index]
 
     df["target"] = build_target(df, forward_bars=forward_bars)
 
@@ -743,12 +772,18 @@ def main():
         print(f"[train] ERROR: insufficient clean data ({len(df_clean)} rows)")
         sys.exit(1)
 
+    # Reindex price arrays to match df_clean index
+    clean_idx = df_clean.index
+    close_prices = close_prices[clean_idx]
+    high_prices = high_prices[clean_idx]
+    low_prices = low_prices[clean_idx]
+
     X = df_clean[feature_cols]
     y = df_clean["target"]
 
     print(f"[train] Walk-forward backtest (n={len(X)}, forward={forward_bars}, regime={regime_filter}, prob_thresh={prob_threshold})")
     oos = run_backtest_compounded_r(
-        X, y,
+        X, y, close_prices, high_prices, low_prices,
         initial_capital=1000.0,
         risk_per_trade=risk_per_trade,
         stop_loss_atr=sl_atr,
@@ -757,6 +792,7 @@ def main():
         prob_threshold=prob_threshold,
         leverage=leverage,
         allow_short=allow_short,
+        regime_filter=regime_filter,
         fee_rate=0.001,
         slippage=0.0005,
     )
