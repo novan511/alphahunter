@@ -3,6 +3,7 @@ import { Candle } from '../../lib/types';
 import { fetchKlinesRouted } from '../../lib/universe';
 import { buildFeatures } from '../../lib/ml/features';
 import { loadModelFromJSON, loadMetaFromJSON, predict } from '../../lib/ml/inference';
+import { atr } from '../../lib/algorithms/indicators';
 import fs from 'fs';
 import path from 'path';
 
@@ -20,6 +21,8 @@ interface MLPredictResponse {
   forwardBars?: number;
   probThreshold?: number;
   regimeFilter?: string;
+  latestClose?: number;
+  atrPct?: number;
   timestamp: number;
   error?: string;
 }
@@ -134,6 +137,13 @@ export default async function handler(
     // Use the most recent feature vector
     const latest = fv[fv.length - 1];
 
+    // Latest close and ATR% for trade setup chart
+    const closes = assetCandles.map((c) => c.close);
+    const latestClose = closes[closes.length - 1];
+    const atrSeries = atr(assetCandles, 14);
+    const latestATRPct = atrSeries.length > 0 ? atrSeries[atrSeries.length - 1] : 0;
+    const atrPct = Number.isFinite(latestATRPct) && latestClose > 0 ? (latestATRPct / latestClose) * 100 : 0;
+
     // Load model and meta
     const modelObj = loadModelFile(sym, iv);
     const model = modelObj ? loadModelFromJSON(modelObj) : null;
@@ -160,6 +170,8 @@ export default async function handler(
       forwardBars: meta?.forward_bars,
       probThreshold: meta?.prob_threshold,
       regimeFilter: meta?.regime_filter,
+      latestClose,
+      atrPct,
       timestamp: latest.time * 1000,
     };
 
