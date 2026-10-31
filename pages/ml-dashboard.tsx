@@ -48,6 +48,24 @@ interface MlPredict {
   error?: string;
 }
 
+interface MLBacktest {
+  symbol: string;
+  interval: string;
+  totalTrades: number;
+  winningTrades: number;
+  losingTrades: number;
+  winRate: number;
+  totalReturnPercent: number;
+  profitFactor: number;
+  maxDrawdownPercent: number;
+  expectancyR: number;
+  avgBarsHeld: number;
+  equityCurve: Array<{ time: number; equity: number }>;
+  trades: any[];
+  tradesByMonth: any[];
+  error?: string;
+}
+
 function getSetupMessage(p: MlPredict | null): string {
   if (!p) return '—';
   if (p.signal === 'long' && p.regimePass) return '✅ Setup valid: LONG dengan regime BTC bull dan P(naik) di atas threshold';
@@ -63,6 +81,7 @@ export default function MlDashboard() {
   });
   const [meta, setMeta] = useState<MlMeta | null>(null);
   const [predict, setPredict] = useState<MlPredict | null>(null);
+  const [backtest, setBacktest] = useState<MLBacktest | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -108,9 +127,18 @@ export default function MlDashboard() {
       } else {
         setPredict(null);
       }
+
+      const btRes = await fetch(`/api/ml-backtest?symbol=${selected.symbol}&interval=${selected.interval}&lookback=2000`);
+      if (btRes.ok) {
+        const b: MLBacktest = await btRes.json();
+        setBacktest(b);
+      } else {
+        setBacktest(null);
+      }
     } catch {
       setMeta(null);
       setPredict(null);
+      setBacktest(null);
     }
   }
 
@@ -130,6 +158,7 @@ export default function MlDashboard() {
   const availableModels = models.filter((m) => m.file_exists);
   const curMeta = meta;
   const curPred = predict;
+  const curBt = backtest;
   const oos = curMeta?.oos_metrics || {};
   const imp = curMeta?.feature_importance || {};
   const impEntries = Object.entries(imp);
@@ -143,7 +172,7 @@ export default function MlDashboard() {
       pct: totalImp > 0 ? ((val as number) / totalImp) * 100 : 0,
     }));
 
-  // --- Trade Setup calculations ---
+  // --- Trade Setup calculations (latest prediction) ---
   const latestClose = curPred?.latestClose;
   const atrPct = curPred?.atrPct ?? 0;
   const entry = latestClose ?? 0;
@@ -157,6 +186,31 @@ export default function MlDashboard() {
   const kellyFraction = prob > 0.5 && riskReward > 0 ? Math.min(0.05, (prob * (riskReward + 1) - 1) / riskReward) : 0;
 
   const hasModel = curMeta != null || curPred != null;
+
+  // --- Monte Carlo bootstrap from backtest trades ---
+  let mcStats: { winProb: number; p5: number; median: number; p95: number; worst: number } | null = null;
+  if (curBt?.trades && curBt.trades.length > 0) {
+    const tradeReturns = curBt.trades.map((t) => t.pnlPercent / 100);
+    const iterations = 300;
+    const results: number[] = [];
+    for (let iter = 0; iter < iterations; iter++) {
+      let iterReturn = 0;
+      const n = tradeReturns.length;
+      for (let i = 0; i < n; i++) {
+        const r = tradeReturns[Math.floor(Math.random() * n)];
+        iterReturn += r;
+      }
+      results.push(iterReturn);
+    }
+    results.sort((a, b) => a - b);
+    mcStats = {
+      winProb: results.filter((r) => r > 0).length / iterations,
+      p5: results[Math.floor(iterations * 0.05)],
+      median: results[Math.floor(iterations * 0.5)],
+      p95: results[Math.floor(iterations * 0.95)],
+      worst: results[0],
+    };
+  }
 
   return (
     <Layout>
@@ -298,7 +352,6 @@ export default function MlDashboard() {
                 ))}
               </div>
 
-              {/* Simple text-based chart visualization */}
               <div style={{ marginTop: '16px', fontSize: '11px', color: '#9ca3af', fontFamily: 'monospace', lineHeight: '1.6' }}>
                 <div>SL ───────── {slPrice > 0 ? slPrice.toFixed(2) : '—'}</div>
                 <div>ENTRY ───── {entry > 0 ? entry.toFixed(2) : '—'}</div>
@@ -307,47 +360,143 @@ export default function MlDashboard() {
               </div>
             </div>
 
-            {/* OOS Metrics */}
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '12px', marginBottom: '24px' }}>
-              {[
-                { label: 'Sharpe (OOS)', val: oos.oos_sharpe, fmt: '0.00' },
-                { label: 'Profit Factor', val: oos.oos_pf, fmt: '0.00' },
-                { label: 'Max Drawdown', val: oos.oos_maxdd, fmt: '0.00%' },
-                { label: 'Win Rate', val: oos.oos_winrate, fmt: '0.00%' },
-                { label: 'Signals Taken', val: `${oos.oos_signals_taken}/${oos.oos_trades}`, fmt: '' },
-                { label: 'Avg Confidence', val: oos.oos_avg_confidence, fmt: '0.00' },
-              ].map((m) => {
-                const displayVal = typeof m.val === 'number' ? (m.fmt.includes('%') ? m.val.toFixed(0) : m.val.toFixed(2)) : m.val;
-                return (
-                  <div key={m.label} style={{ background: 'rgba(31, 41, 55, 0.5)', border: '1px solid #374151', borderRadius: '8px', padding: '16px' }}>
-                    <div style={{ fontSize: '11px', color: '#9ca3af', textTransform: 'uppercase', marginBottom: '6px' }}>{m.label}</div>
-                    <div style={{ fontSize: '18px', fontWeight: '700', color: '#f9fafb', fontFamily: 'monospace' }}>{displayVal}</div>
-                  </div>
-                );
-              })}
-            </div>
-
-            {/* Feature Importances */}
-            <div style={{ background: 'rgba(31, 41, 55, 0.5)', border: '1px solid #374151', borderRadius: '8px', padding: '20px', marginBottom: '24px' }}>
-              <h3 style={{ fontSize: '14px', fontWeight: '700', color: '#f9fafb', margin: '0 0 12px 0' }}>Feature Importances (top 8)</h3>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                {sortedImp.map((f) => (
-                  <div key={f.name} style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                    <span style={{ fontSize: '12px', color: '#9ca3af', width: '140px' }}>{f.name}</span>
-                    <div style={{ flex: 1, height: '6px', background: '#374151', borderRadius: '3px', overflow: 'hidden' }}>
-                      <div style={{ height: '100%', background: 'linear-gradient(90deg, #3b82f6, #8b5cf6)', width: `${f.pct.toFixed(1)}%` }}></div>
+            {/* Backtest Results */}
+            {curBt && !curBt.error && (
+              <>
+                {/* Backtest summary */}
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: '12px', marginBottom: '24px' }}>
+                  {[
+                    { label: 'Total Return', val: curBt.totalReturnPercent > 0 ? `+${curBt.totalReturnPercent.toFixed(2)}%` : curBt.totalReturnPercent.toFixed(2) + '%', color: curBt.totalReturnPercent > 0 ? '#10b981' : '#f87171' },
+                    { label: 'Profit Factor', val: curBt.profitFactor.toFixed(2), color: '#f9fafb' },
+                    { label: 'Win Rate', val: curBt.winRate.toFixed(1) + '%', color: curBt.winRate > 50 ? '#10b981' : '#f59e0b' },
+                    { label: 'Max Drawdown', val: `-${curBt.maxDrawdownPercent.toFixed(2)}%`, color: '#f87171' },
+                    { label: 'Total Trades', val: curBt.totalTrades.toString(), color: '#f9fafb' },
+                    { label: 'Expectancy R', val: curBt.expectancyR.toFixed(2) + 'R', color: curBt.expectancyR > 0 ? '#10b981' : '#f87171' },
+                  ].map((m) => (
+                    <div key={m.label} style={{ background: 'rgba(31, 41, 55, 0.5)', border: '1px solid #374151', borderRadius: '8px', padding: '16px' }}>
+                      <div style={{ fontSize: '11px', color: '#9ca3af', textTransform: 'uppercase', marginBottom: '6px' }}>{m.label}</div>
+                      <div style={{ fontSize: '18px', fontWeight: '700', color: m.color, fontFamily: 'monospace' }}>{m.val}</div>
                     </div>
-                    <span style={{ fontSize: '11px', color: '#9ca3af', fontFamily: 'monospace', width: '40px', textAlign: 'right' }}>{f.pct.toFixed(1)}%</span>
-                  </div>
-                ))}
-              </div>
-            </div>
+                  ))}
+                </div>
 
-            {/* Raw JSON */}
-            <div style={{ background: '#111827', border: '1px solid #374151', borderRadius: '8px', padding: '16px', fontSize: '11px', color: '#9ca3af', fontFamily: 'monospace', overflowX: 'auto' }}>
-              <div style={{ fontSize: '12px', color: '#f9fafb', fontWeight: '600', marginBottom: '8px' }}>Meta (raw)</div>
-              <div>{JSON.stringify(curMeta, null, 2)}</div>
-            </div>
+                {/* Trade List Table */}
+                <div style={{ background: 'rgba(31, 41, 55, 0.5)', border: '1px solid #374151', borderRadius: '8px', padding: '20px', marginBottom: '24px' }}>
+                  <h3 style={{ fontSize: '14px', fontWeight: '700', color: '#f9fafb', margin: '0 0 12px 0' }}>📋 Trade List ({curBt.totalTrades} trades)</h3>
+                  <div style={{ overflowX: 'auto', marginBottom: '12px' }}>
+                    <table style={{ width: '100%', minWidth: '900px', borderCollapse: 'collapse', fontSize: '11px' }}>
+                      <thead>
+                        <tr style={{ borderBottom: '1px solid #374151' }}>
+                          {['#', 'Masuk', 'Keluar', 'Arah', 'Entry → Exit', 'Hasil', 'Exit via', 'Bar', 'Saldo'].map((h) => (
+                            <th key={h} style={{ padding: '8px 10px', textAlign: 'left', fontSize: '10px', fontWeight: '700', color: '#9ca3af', textTransform: 'uppercase', letterSpacing: '0.5px', whiteSpace: 'nowrap' }}>
+                              {h}
+                            </th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {curBt.trades.slice(-20).map((t) => {
+                          const exitDate = t.exitTime ? new Date(t.exitTime * 1000).toISOString().slice(0, 10) : '—';
+                          const entryDate = new Date(t.entryTime * 1000).toISOString().slice(0, 10);
+                          const pnlColor = t.pnl > 0 ? '#10b981' : '#ef4444';
+                          return (
+                            <tr key={t.id} style={{ borderBottom: '1px solid #1f2937' }}>
+                              <td style={{ padding: '8px 10px', color: '#9ca3af', fontSize: '11px' }}>{t.id}</td>
+                              <td style={{ padding: '8px 10px', color: '#9ca3af', fontSize: '11px', whiteSpace: 'nowrap' }}>{entryDate}</td>
+                              <td style={{ padding: '8px 10px', color: '#9ca3af', fontSize: '11px', whiteSpace: 'nowrap' }}>{exitDate}</td>
+                              <td style={{ padding: '8px 10px', color: '#fbbf24', fontSize: '11px' }}>Long</td>
+                              <td style={{ padding: '8px 10px', color: '#9ca3af', fontSize: '11px', whiteSpace: 'nowrap' }}>{t.entryPrice?.toFixed(2)} → {t.exitPrice?.toFixed(2)}</td>
+                              <td style={{ padding: '8px 10px', color: pnlColor, fontSize: '11px', fontWeight: '700' }}>{t.pnl > 0 ? '+' : ''}{t.pnl.toFixed(2)} ({t.pnlPercent.toFixed(2)}%)</td>
+                              <td style={{ padding: '8px 10px', color: '#9ca3af', fontSize: '11px' }}>{t.exitReason}</td>
+                              <td style={{ padding: '8px 10px', color: '#9ca3af', fontSize: '11px' }}>{t.barsHeld}</td>
+                              <td style={{ padding: '8px 10px', color: '#f9fafb', fontSize: '11px' }}>{t.pnl > 0 ? '+' : ''}${(1000 + curBt.trades.slice(0, t.id).reduce((a, x) => a + x.pnl, 0)).toFixed(2)}</td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                  {curBt.totalTrades > 20 && (
+                    <p style={{ fontSize: '11px', color: '#9ca3af', marginTop: '8px' }}>
+                      Menampilkan 20 trade terakhir dari {curBt.totalTrades} total.
+                    </p>
+                  )}
+                </div>
+
+                {/* Monte Carlo */}
+                {mcStats && (
+                  <div style={{ background: 'rgba(31, 41, 55, 0.5)', border: '1px solid #374151', borderRadius: '8px', padding: '20px', marginBottom: '24px' }}>
+                    <h3 style={{ fontSize: '14px', fontWeight: '700', color: '#f9fafb', margin: '0 0 12px 0' }}>🎲 Monte Carlo Bootstrap (300 iterasi, 1% risiko/trade)</h3>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(110px, 1fr))', gap: '8px' }}>
+                      {[
+                        { label: 'Peluang Profit', val: (mcStats.winProb * 100).toFixed(0) + '%', color: '#10b981' },
+                        { label: 'Persentil 5', val: (mcStats.p5 * 100).toFixed(1) + '%', color: '#f9fafb' },
+                        { label: 'Median', val: (mcStats.median * 100).toFixed(1) + '%', color: '#f9fafb' },
+                        { label: 'Persentil 95', val: (mcStats.p95 * 100).toFixed(1) + '%', color: '#f9fafb' },
+                        { label: 'Terburuk', val: (mcStats.worst * 100).toFixed(1) + '%', color: '#f87171' },
+                      ].map((m) => (
+                        <div key={m.label} style={{ background: 'rgba(17, 24, 39, 0.6)', border: '1px solid #374151', borderRadius: '6px', padding: '12px' }}>
+                          <div style={{ fontSize: '10px', color: '#9ca3af', textTransform: 'uppercase', marginBottom: '4px' }}>{m.label}</div>
+                          <div style={{ fontSize: '16px', fontWeight: '700', color: m.color, fontFamily: 'monospace' }}>{m.val}</div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Walk-forward OOS */}
+                <div style={{ background: 'rgba(31, 41, 55, 0.5)', border: '1px solid #374151', borderRadius: '8px', padding: '20px', marginBottom: '24px' }}>
+                  <h3 style={{ fontSize: '14px', fontWeight: '700', color: '#f9fafb', margin: '0 0 12px 0' }}>🔄 Walk-Forward Out-of-Sample</h3>
+                  <div style={{ overflowX: 'auto' }}>
+                    <table style={{ width: '100%', minWidth: '700px', borderCollapse: 'collapse', fontSize: '11px' }}>
+                      <thead>
+                        <tr style={{ borderBottom: '1px solid #374151' }}>
+                          {['Jendela', 'Trade', 'Return', 'PF', 'DD', 'Expectancy'].map((h) => (
+                            <th key={h} style={{ padding: '8px 10px', textAlign: 'left', fontSize: '10px', fontWeight: '700', color: '#9ca3af', textTransform: 'uppercase', letterSpacing: '0.5px', whiteSpace: 'nowrap' }}>
+                              {h}
+                            </th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {Object.entries(oos.windows || {}).map(([key, w]: [string, any]) => (
+                          <tr key={key} style={{ borderBottom: '1px solid #1f2937' }}>
+                            <td style={{ padding: '8px 10px', color: '#9ca3af', fontSize: '11px' }}>{w.label || key}</td>
+                            <td style={{ padding: '8px 10px', color: '#9ca3af', fontSize: '11px' }}>{w.oos_trades ?? 0}</td>
+                            <td style={{ padding: '8px 10px', color: w.oos_totalPnLPercent > 0 ? '#10b981' : '#f87171', fontSize: '11px' }}>{w.oos_totalPnLPercent?.toFixed(2) ?? 0}%</td>
+                            <td style={{ padding: '8px 10px', color: '#9ca3af', fontSize: '11px' }}>{w.oos_pf?.toFixed(2) ?? 0}</td>
+                            <td style={{ padding: '8px 10px', color: '#f87171', fontSize: '11px' }}>{w.oos_maxDrawdownPercent?.toFixed(2) ?? 0}%</td>
+                            <td style={{ padding: '8px 10px', color: '#9ca3af', fontSize: '11px' }}>{w.oos_expectancyR?.toFixed(2) ?? 0}R</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+
+                {/* Feature Importances */}
+                <div style={{ background: 'rgba(31, 41, 55, 0.5)', border: '1px solid #374151', borderRadius: '8px', padding: '20px', marginBottom: '24px' }}>
+                  <h3 style={{ fontSize: '14px', fontWeight: '700', color: '#f9fafb', margin: '0 0 12px 0' }}>📊 Feature Importances (top 8)</h3>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                    {sortedImp.map((f) => (
+                      <div key={f.name} style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                        <span style={{ fontSize: '12px', color: '#9ca3af', width: '140px' }}>{f.name}</span>
+                        <div style={{ flex: 1, height: '6px', background: '#374151', borderRadius: '3px', overflow: 'hidden' }}>
+                          <div style={{ height: '100%', background: 'linear-gradient(90deg, #3b82f6, #8b5cf6)', width: `${f.pct.toFixed(1)}%` }}></div>
+                        </div>
+                        <span style={{ fontSize: '11px', color: '#9ca3af', fontFamily: 'monospace', width: '40px', textAlign: 'right' }}>{f.pct.toFixed(1)}%</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Raw JSON */}
+                <div style={{ background: '#111827', border: '1px solid #374151', borderRadius: '8px', padding: '16px', fontSize: '11px', color: '#9ca3af', fontFamily: 'monospace', overflowX: 'auto' }}>
+                  <div style={{ fontSize: '12px', color: '#f9fafb', fontWeight: '600', marginBottom: '8px' }}>Meta (raw)</div>
+                  <div>{JSON.stringify(curMeta, null, 2)}</div>
+                </div>
+              </>
+            )}
           </>
         )}
       </div>
