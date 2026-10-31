@@ -1,8 +1,13 @@
 #!/usr/bin/env python3
 """Train XGBoost model for RS decoupling prediction.
 
+Improvements over v1:
+- Multi-bar target (forward N bars return) to reduce noise
+- Regime filter (BTC trend alignment) to avoid trading against macro trend
+- Threshold probability for signal confidence
+- Configurable gates via CLI/env
+
 Exports model to JSON for pure-TypeScript inference on Vercel.
-Runs in GitHub Actions (free tier). No Python runtime needed at inference.
 """
 
 import argparse
@@ -20,11 +25,6 @@ import xgboost as xgb
 
 BINANCE_BASE = os.environ.get("BINANCE_BASE_URL", "https://data-api.binance.vision")
 BINANCE_MAX_LIMIT = 1000
-GATES = {
-    "oos_sharpe_min": float(os.environ.get("ML_GATE_SHARPE_MIN", "0.0")),
-    "oos_maxdd_max": float(os.environ.get("ML_GATE_MAXDD_MAX", "0.50")),
-    "oos_pf_min": float(os.environ.get("ML_GATE_PF_MIN", "0.95")),
-}
 
 
 def fetch_klines(symbol: str, interval: str, limit: int) -> list[dict]:
@@ -174,8 +174,8 @@ def compute_features(
     ]
 
     # Volume ratio vs prior window MA (exclude current bar)
-    vol_ma_prior = []
     vol_period = 20
+    vol_ma_prior = []
     for i in range(n):
         if i < vol_period:
             vol_ma_prior.append(float("nan"))
@@ -196,11 +196,20 @@ def compute_features(
         for i in range(n)
     ]
 
-    # BTC regime: 20-bar return of index
-    btc_regime = [0.0] * 20 + [
+    # BTC regime: 20-bar return of index (macro trend filter)
+    btc_regime_20 = [0.0] * 20 + [
         (index_closes[i] - index_closes[i - 20]) / index_closes[i - 20]
         for i in range(20, n)
     ]
+
+    # BTC regime: 60-bar return (slower trend)
+    btc_regime_60 = [0.0] * 60 + [
+        (index_closes[i] - index_closes[i - 60]) / index_closes[i - 60]
+        for i in range(60, n)
+    ]
+
+    # BTC regime filter: 1 if BTC trending up (20-bar return > 0), else 0
+    btc_bull_filter = [1.0 if r > 0 else 0.0 for r in btc_regime_20]
 
     # Momentum lookbacks [5, 20, 60]
     mom_5 = rolling_return(closes, 5)
@@ -209,30 +218,50 @@ def compute_features(
 
     # SMA of close (trend filter)
     sma_close = sma(closes, 20)
+    close_over_sma20 = [
+        (closes[i] / sma_close[i] - 1.0) if not math.isnan(sma_close[i]) else 0.0
+        for i in range(n)
+    ]
+
+    # RS trend: is RS line above its own SMA (asset outperforming index trend)
+    rs_over_rs_ma = [
+        1.0 if (not math.isnan(rs_ma[i]) and rs_line[i] > rs_ma[i]) else 0.0
+        for i in range(n)
+    ]
+
+    # Volatility regime: ATR percentile vs its own history
+    atr_ma = sma(atr_pct, 20)
+    atr_regime = [
+        1.0 if (not math.isnan(atr_ma[i]) and atr_pct[i] > atr_ma[i]) else 0.0
+        for i in range(n)
+    ]
 
     rows = []
     for i in range(n):
         rows.append({
             "time": asset[i]["time"],
             "close": closes[i],
-            "rs": rs_line[i],
             "rs_zscore": rs_zscore[i],
             "rs_momentum": rs_momentum[i],
             "asset_return_6": asset_returns[i],
             "volume_ratio": volume_ratio[i],
             "atr_pct": atr_pct[i],
-            "btc_regime_20": btc_regime[i],
+            "btc_regime_20": btc_regime_20[i],
+            "btc_regime_60": btc_regime_60[i],
+            "btc_bull_filter": btc_bull_filter[i],
             "mom_5": mom_5[i],
             "mom_20": mom_20[i],
             "mom_60": mom_60[i],
-            "close_over_sma20": (closes[i] / sma_close[i] - 1.0) if not math.isnan(sma_close[i]) else 0.0,
+            "close_over_sma20": close_over_sma20[i],
+            "rs_over_rs_ma": rs_over_rs_ma[i],
+            "atr_regime": atr_regime[i],
         })
 
     return pd.DataFrame(rows)
 
 
-def build_target(df: pd.DataFrame, forward_bars: int = 1) -> pd.Series:
-    """Target: forward log-return of close."""
+def build_target(df: pd.DataFrame, forward_bars: int = 3) -> pd.Series:
+    """Target: forward log-return of close over N bars (reduces noise)."""
     closes = df["close"].values
     target = []
     for i in range(len(closes)):
@@ -243,13 +272,27 @@ def build_target(df: pd.DataFrame, forward_bars: int = 1) -> pd.Series:
     return pd.Series(target, index=df.index)
 
 
+def apply_regime_filter(df: pd.DataFrame, regime_filter: str = "none") -> pd.DataFrame:
+    """Filter rows by regime. 'none' = no filter, 'bull_only' = BTC bull regime only."""
+    if regime_filter == "none":
+        return df
+    if regime_filter == "bull_only":
+        return df[df["btc_bull_filter"] == 1.0].copy()
+    if regime_filter == "bear_only":
+        return df[df["btc_bull_filter"] == 0.0].copy()
+    return df
+
+
 def walk_forward_oos(
     X: pd.DataFrame,
     y: pd.Series,
     n_windows: int = 3,
     warmup_frac: float = 0.25,
+    prob_threshold: float = 0.55,
 ) -> dict:
-    """Anchored expanding walk-forward. Returns OOS aggregate metrics."""
+    """Anchored expanding walk-forward with probability threshold.
+    Only takes long when predicted return > prob_threshold-calibrated level.
+    Returns OOS aggregate metrics."""
     n = len(X)
     if n < 80:
         return {
@@ -258,6 +301,7 @@ def walk_forward_oos(
             "oos_pf": 0.0,
             "oos_winrate": 0.0,
             "oos_trades": 0,
+            "oos_avg_confidence": 0.0,
             "windows": [],
         }
 
@@ -267,6 +311,7 @@ def walk_forward_oos(
 
     window_results = []
     oos_returns_all = []
+    oos_confidences = []
 
     for w in range(n_windows):
         oos_start = warmup + w * chunk
@@ -300,12 +345,22 @@ def walk_forward_oos(
         # Predict OOS
         y_pred = model.predict(X_oos)
 
-        # Convert predictions to simple long-only signal: predict positive return -> long
-        signal = (y_pred > 0).astype(int)
+        # Regime filter: only take signal if BTC bull filter is active
+        btc_filter = X_oos["btc_bull_filter"].values if "btc_bull_filter" in X_oos.columns else np.ones(len(X_oos))
+
+        # Probability calibration: convert raw prediction to confidence
+        # Use sigmoid of scaled raw prediction
+        raw_preds = y_pred
+        scaled = raw_preds * 100
+        probs = 1 / (1 + np.exp(-np.clip(scaled, -10, 10)))
+
+        # Signal: long only if prob > threshold AND BTC bull filter active
+        signal = ((probs > prob_threshold) & (btc_filter == 1.0)).astype(int)
         actual_returns = y_oos.values
 
-        # Strategy return: signal * actual return (long only, no short)
+        # Strategy return
         strat_returns = signal * actual_returns
+        confidences = probs * signal  # confidence only when signal taken
 
         # Equity curve
         equity = [1.0]
@@ -316,7 +371,7 @@ def walk_forward_oos(
         returns_arr = np.array(strat_returns)
         mean_ret = np.mean(returns_arr)
         std_ret = np.std(returns_arr)
-        sharpe = (mean_ret / std_ret * math.sqrt(365 * 6)) if std_ret > 0 else 0.0  # 4h bars/year
+        sharpe = (mean_ret / std_ret * math.sqrt(365 * 6)) if std_ret > 0 else 0.0
 
         # Max drawdown
         peak = equity[0]
@@ -333,7 +388,13 @@ def walk_forward_oos(
         gross_loss = abs(sum(r for r in strat_returns if r < 0))
         pf = gross_profit / gross_loss if gross_loss > 0 else (float("inf") if gross_profit > 0 else 0.0)
 
-        win_rate = sum(1 for r in strat_returns if r > 0) / len(strat_returns) if strat_returns.size > 0 else 0.0
+        # Win rate only on taken trades
+        taken = signal == 1
+        win_rate = (
+            sum(1 for i in range(len(strat_returns)) if taken[i] and strat_returns[i] > 0) / max(1, sum(taken))
+        )
+
+        avg_conf = np.mean(confidences[taken]) if sum(taken) > 0 else 0.0
 
         window_results.append({
             "window": w + 1,
@@ -346,8 +407,11 @@ def walk_forward_oos(
             "oos_pf": float(pf) if math.isfinite(pf) else 0.0,
             "oos_winrate": float(win_rate),
             "oos_trades": int(len(strat_returns)),
+            "oos_signals_taken": int(sum(taken)),
+            "oos_avg_confidence": float(avg_conf),
         })
         oos_returns_all.extend(strat_returns.tolist())
+        oos_confidences.extend(confidences.tolist())
 
     # Aggregate OOS
     if oos_returns_all:
@@ -371,14 +435,23 @@ def walk_forward_oos(
         gross_profit = sum(r for r in oos_returns_all if r > 0)
         gross_loss = abs(sum(r for r in oos_returns_all if r < 0))
         oos_pf = gross_profit / gross_loss if gross_loss > 0 else (float("inf") if gross_profit > 0 else 0.0)
-        oos_winrate = sum(1 for r in oos_returns_all if r > 0) / len(oos_returns_all)
+
+        taken_arr = np.array([c > 0 for c in oos_confidences])
+        oos_winrate = (
+            sum(1 for i in range(len(oos_returns_all)) if taken_arr[i] and oos_returns_all[i] > 0)
+            / max(1, sum(taken_arr))
+        )
         oos_trades = len(oos_returns_all)
+        oos_signals = int(sum(taken_arr))
+        oos_avg_conf = float(np.mean([c for c in oos_confidences if c > 0])) if oos_signals > 0 else 0.0
     else:
         oos_sharpe = 0.0
         oos_maxdd = 0.0
         oos_pf = 0.0
         oos_winrate = 0.0
         oos_trades = 0
+        oos_signals = 0
+        oos_avg_conf = 0.0
 
     return {
         "oos_sharpe": float(oos_sharpe),
@@ -386,11 +459,13 @@ def walk_forward_oos(
         "oos_pf": float(oos_pf) if math.isfinite(oos_pf) else 0.0,
         "oos_winrate": float(oos_winrate),
         "oos_trades": int(oos_trades),
+        "oos_signals_taken": int(oos_signals),
+        "oos_avg_confidence": float(oos_avg_conf),
         "windows": window_results,
     }
 
 
-def train_final_model(X: pd.DataFrame, y: pd.DataFrame) -> xgb.XGBRegressor:
+def train_final_model(X: pd.DataFrame, y: pd.Series) -> xgb.XGBRegressor:
     """Train final model on all data."""
     model = xgb.XGBRegressor(
         objective="reg:squarederror",
@@ -410,8 +485,6 @@ def train_final_model(X: pd.DataFrame, y: pd.DataFrame) -> xgb.XGBRegressor:
 def export_model_json(model: xgb.XGBRegressor, feature_names: list[str]) -> dict:
     """Export XGBoost model to JSON-compatible dict for TS inference."""
     booster = model.get_booster()
-    json_str = booster.save_raw() if hasattr(booster, "save_raw") else booster.get_dump(with_stats=True)
-    # Use get_dump for text format, then parse into our simple structure
     dump = booster.get_dump(with_stats=True)
     trees = []
     for tree_text in dump:
@@ -426,9 +499,7 @@ def export_model_json(model: xgb.XGBRegressor, feature_names: list[str]) -> dict
 
 
 def parse_xgb_dump(dump_text: str, feature_names: list[str]) -> dict:
-    """Parse XGBoost text dump into nested node structure.
-    Handles both 'f0' index format and named feature format.
-    """
+    """Parse XGBoost text dump into nested node structure."""
     lines = dump_text.strip().split("\n")
     nodes = []
     feature_index = {name: i for i, name in enumerate(feature_names)}
@@ -437,9 +508,6 @@ def parse_xgb_dump(dump_text: str, feature_names: list[str]) -> dict:
         line = line.strip()
         if not line:
             continue
-        # Format: 0:[f0<2.5] yes=1,no=2,missing=1, gain=0.123, cover=45.6
-        # or with named features: 0:[mom_5<0.023] yes=1,no=2,missing=1, ...
-        # or: 0:leaf=0.5
         node_id_str, rest = line.split(":", 1)
         node_id = int(node_id_str)
 
@@ -450,22 +518,18 @@ def parse_xgb_dump(dump_text: str, feature_names: list[str]) -> dict:
                 "leaf": leaf_val,
             })
         else:
-            # Extract feature part inside [...]
             bracket_start = rest.index("[")
             bracket_end = rest.index("]")
             feat_part = rest[bracket_start + 1 : bracket_end]
 
-            # Resolve feature index: 'f0' -> 0, or named feature -> index
             if feat_part.startswith("f"):
                 feature_idx = int(feat_part[1:])
             else:
                 feature_idx = feature_index.get(feat_part, 0)
 
-            # Extract threshold (value after < )
             thr_str = rest.split("<")[1].split("]")[0]
             threshold = float(thr_str)
 
-            # Extract yes/no/missing
             yes = int(rest.split("yes=")[1].split(",")[0])
             no = int(rest.split("no=")[1].split(",")[0])
             missing = int(rest.split("missing=")[1].split(",")[0])
@@ -482,16 +546,36 @@ def parse_xgb_dump(dump_text: str, feature_names: list[str]) -> dict:
     return {"nodes": nodes, "root": 0}
 
 
+def sigmoid(x: float) -> float:
+    x = max(-10, min(10, x))
+    return 1 / (1 + math.exp(-x))
+
+
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--symbol", required=True, help="Asset symbol, e.g. ETHUSDT")
+    parser.add_argument("--symbol", required=True, help="Asset symbol, e.g. SOLUSDT")
     parser.add_argument("--interval", required=True, help="Candle interval, e.g. 4h")
     parser.add_argument("--lookback", type=int, default=1000, help="Number of candles to fetch")
+    parser.add_argument("--forward-bars", type=int, default=3, help="Forward bars for target (default 3)")
+    parser.add_argument("--regime-filter", type=str, default="bull_only", choices=["none", "bull_only", "bear_only"], help="Regime filter")
+    parser.add_argument("--prob-threshold", type=float, default=0.55, help="Probability threshold for signal (default 0.55)")
+    parser.add_argument("--gate-sharpe", type=float, default=0.5, help="OOS Sharpe gate minimum")
+    parser.add_argument("--gate-maxdd", type=float, default=0.25, help="OOS MaxDD gate maximum")
+    parser.add_argument("--gate-pf", type=float, default=1.05, help="OOS Profit Factor gate minimum")
     args = parser.parse_args()
 
     symbol = args.symbol.upper()
     interval = args.interval
     lookback = args.lookback
+    forward_bars = args.forward_bars
+    regime_filter = args.regime_filter
+    prob_threshold = args.prob_threshold
+
+    gates = {
+        "oos_sharpe_min": args.gate_sharpe,
+        "oos_maxdd_max": args.gate_maxdd,
+        "oos_pf_min": args.gate_pf,
+    }
 
     print(f"[train] Fetching {symbol} {interval} candles (limit={lookback})")
     asset_candles = fetch_klines(symbol, interval, lookback)
@@ -507,12 +591,20 @@ def main():
 
     print("[train] Computing features")
     df = compute_features(asset_candles, index_candles)
-    df["target"] = build_target(df, forward_bars=1)
 
-    # Drop rows with NaN target or NaN features
+    # Apply regime filter before target/training
+    df = apply_regime_filter(df, regime_filter)
+    if len(df) < 80:
+        print(f"[train] ERROR: insufficient data after regime filter ({len(df)} rows)")
+        sys.exit(1)
+
+    df["target"] = build_target(df, forward_bars=forward_bars)
+
     feature_cols = [
         "rs_zscore", "rs_momentum", "asset_return_6", "volume_ratio",
-        "atr_pct", "btc_regime_20", "mom_5", "mom_20", "mom_60", "close_over_sma20",
+        "atr_pct", "btc_regime_20", "btc_regime_60", "btc_bull_filter",
+        "mom_5", "mom_20", "mom_60", "close_over_sma20",
+        "rs_over_rs_ma", "atr_regime",
     ]
     df_clean = df.dropna(subset=feature_cols + ["target"]).copy()
     if len(df_clean) < 80:
@@ -522,20 +614,20 @@ def main():
     X = df_clean[feature_cols]
     y = df_clean["target"]
 
-    print(f"[train] Running walk-forward OOS (n={len(X)})")
-    oos = walk_forward_oos(X, y, n_windows=3)
-    print(f"[train] OOS Sharpe={oos['oos_sharpe']:.3f} MaxDD={oos['oos_maxdd']:.3%} PF={oos['oos_pf']:.3f} WinRate={oos['oos_winrate']:.3%} Trades={oos['oos_trades']}")
+    print(f"[train] Running walk-forward OOS (n={len(X)}, forward={forward_bars}, regime={regime_filter}, prob_thresh={prob_threshold})")
+    oos = walk_forward_oos(X, y, n_windows=3, prob_threshold=prob_threshold)
+    print(f"[train] OOS Sharpe={oos['oos_sharpe']:.3f} MaxDD={oos['oos_maxdd']:.3%} PF={oos['oos_pf']:.3f} WinRate={oos['oos_winrate']:.3%} Signals={oos['oos_signals_taken']}/{oos['oos_trades']} AvgConf={oos['oos_avg_confidence']:.3f}")
 
     # Gates
     passed = True
-    if oos["oos_sharpe"] < GATES["oos_sharpe_min"]:
-        print(f"[train] GATE FAIL: OOS Sharpe {oos['oos_sharpe']:.3f} < {GATES['oos_sharpe_min']}")
+    if oos["oos_sharpe"] < gates["oos_sharpe_min"]:
+        print(f"[train] GATE FAIL: OOS Sharpe {oos['oos_sharpe']:.3f} < {gates['oos_sharpe_min']}")
         passed = False
-    if oos["oos_maxdd"] > GATES["oos_maxdd_max"]:
-        print(f"[train] GATE FAIL: OOS MaxDD {oos['oos_maxdd']:.3%} > {GATES['oos_maxdd_max']:.0%}")
+    if oos["oos_maxdd"] > gates["oos_maxdd_max"]:
+        print(f"[train] GATE FAIL: OOS MaxDD {oos['oos_maxdd']:.3%} > {gates['oos_maxdd_max']:.0%}")
         passed = False
-    if oos["oos_pf"] < GATES["oos_pf_min"]:
-        print(f"[train] GATE FAIL: OOS PF {oos['oos_pf']:.3f} < {GATES['oos_pf_min']}")
+    if oos["oos_pf"] < gates["oos_pf_min"]:
+        print(f"[train] GATE FAIL: OOS PF {oos['oos_pf']:.3f} < {gates['oos_pf_min']}")
         passed = False
 
     if not passed:
@@ -545,14 +637,12 @@ def main():
     print("[train] Training final model on all data")
     model = train_final_model(X, y)
 
-    # Feature importances
     importance = model.get_booster().get_score(importance_type="gain")
     feature_importance = {f: float(importance.get(f, 0.0)) for f in feature_cols}
 
     print("[train] Exporting model to JSON")
     model_json = export_model_json(model, feature_cols)
 
-    # Write artifacts
     out_dir = Path("ml/models")
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -567,10 +657,13 @@ def main():
         "interval": interval,
         "trained_at": datetime.now(timezone.utc).isoformat(),
         "lookback": lookback,
-        "forward_bars": 1,
+        "forward_bars": forward_bars,
+        "regime_filter": regime_filter,
+        "prob_threshold": prob_threshold,
         "feature_cols": feature_cols,
         "feature_importance": feature_importance,
         "oos_metrics": oos,
+        "gates": gates,
         "gates_passed": True,
         "model_type": "xgboost_reg_squarederror",
         "base_score": model_json["base_score"],

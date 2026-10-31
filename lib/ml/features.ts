@@ -16,10 +16,14 @@ export interface FeatureVector {
  *   3: volume_ratio
  *   4: atr_pct
  *   5: btc_regime_20
- *   6: mom_5
- *   7: mom_20
- *   8: mom_60
- *   9: close_over_sma20
+ *   6: btc_regime_60
+ *   7: btc_bull_filter
+ *   8: mom_5
+ *   9: mom_20
+ *   10: mom_60
+ *   11: close_over_sma20
+ *   12: rs_over_rs_ma
+ *   13: atr_regime
  */
 export function buildFeatures(
   assetCandles: Candle[],
@@ -60,7 +64,6 @@ export function buildFeatures(
 
   // ---- Volume ratio vs prior-window MA (exclude current bar) ----
   const volPeriod = 20;
-  const volumeMA = sma(volumes, volPeriod);
   const volumeRatio: number[] = [];
   for (let i = 0; i < n; i++) {
     const priorMA = i >= volPeriod ? sum(volumes.slice(i - volPeriod, i)) / volPeriod : NaN;
@@ -82,6 +85,16 @@ export function buildFeatures(
     else btcRegime20.push((indexCloses[i] - indexCloses[i - 20]) / indexCloses[i - 20]);
   }
 
+  // ---- BTC regime: 60-bar return of index ----
+  const btcRegime60: number[] = [];
+  for (let i = 0; i < n; i++) {
+    if (i < 60) btcRegime60.push(0);
+    else btcRegime60.push((indexCloses[i] - indexCloses[i - 60]) / indexCloses[i - 60]);
+  }
+
+  // ---- BTC bull filter: 1 if 20-bar return > 0 ----
+  const btcBullFilter = btcRegime20.map((r) => (r > 0 ? 1 : 0));
+
   // ---- Momentum lookbacks ----
   const mom5 = rollingReturn(closes, 5);
   const mom20 = rollingReturn(closes, 20);
@@ -92,6 +105,19 @@ export function buildFeatures(
   const closeOverSMA20 = closes.map((c, i) => {
     if (Number.isNaN(smaClose[i]) || smaClose[i] <= 0) return 0;
     return c / smaClose[i] - 1;
+  });
+
+  // ---- RS over RS MA: 1 if RS line above its own SMA ----
+  const rsOverRsMa = rsLine.map((rs, i) => {
+    if (Number.isNaN(rsMA[i])) return 0;
+    return rs > rsMA[i] ? 1 : 0;
+  });
+
+  // ---- ATR regime: 1 if ATR% above its own 20-bar MA ----
+  const atrMa = sma(atrPct, 20);
+  const atrRegime = atrPct.map((a, i) => {
+    if (Number.isNaN(atrMa[i])) return 0;
+    return a > atrMa[i] ? 1 : 0;
   });
 
   const out: FeatureVector[] = [];
@@ -106,10 +132,14 @@ export function buildFeatures(
         volumeRatio[i],
         atrPct[i],
         btcRegime20[i],
+        btcRegime60[i],
+        btcBullFilter[i],
         mom5[i],
         mom20[i],
         mom60[i],
         closeOverSMA20[i],
+        rsOverRsMa[i],
+        atrRegime[i],
       ],
     });
   }

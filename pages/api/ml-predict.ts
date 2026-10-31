@@ -2,7 +2,7 @@ import type { NextApiRequest, NextApiResponse } from 'next';
 import { Candle } from '../../lib/types';
 import { fetchKlinesRouted } from '../../lib/universe';
 import { buildFeatures } from '../../lib/ml/features';
-import { loadModelFromJSON, predict } from '../../lib/ml/inference';
+import { loadModelFromJSON, loadMetaFromJSON, predict } from '../../lib/ml/inference';
 import fs from 'fs';
 import path from 'path';
 
@@ -12,9 +12,14 @@ interface MLPredictResponse {
   prediction: number;
   probabilityUp: number;
   confidence: number;
+  signal: 'long' | 'flat';
+  regimePass: boolean;
   source: 'model' | 'fallback';
   modelVersion?: string;
   featuresUsed: string[];
+  forwardBars?: number;
+  probThreshold?: number;
+  regimeFilter?: string;
   timestamp: number;
   error?: string;
 }
@@ -32,7 +37,7 @@ function loadModelFile(symbol: string, interval: string): any | null {
   }
 }
 
-function loadMetaFile(symbol: string, interval: string): { trained_at?: string; oos_metrics?: any } | null {
+function loadMetaFile(symbol: string, interval: string): any | null {
   try {
     const filePath = path.join(MODEL_DIR, `${symbol}_${interval}.meta.json`);
     if (!fs.existsSync(filePath)) return null;
@@ -50,10 +55,14 @@ const FEATURE_NAMES = [
   'volume_ratio',
   'atr_pct',
   'btc_regime_20',
+  'btc_regime_60',
+  'btc_bull_filter',
   'mom_5',
   'mom_20',
   'mom_60',
   'close_over_sma20',
+  'rs_over_rs_ma',
+  'atr_regime',
 ];
 
 export default async function handler(
@@ -62,19 +71,30 @@ export default async function handler(
 ) {
   if (req.method !== 'GET') {
     res.setHeader('Allow', 'GET');
-    return res.status(405).json({ error: 'Method not allowed', symbol: '', interval: '', prediction: 0, probabilityUp: 0.5, confidence: 0, source: 'fallback', featuresUsed: [], timestamp: Date.now() } as any);
+    return res.status(405).json({
+      error: 'Method not allowed',
+      symbol: '',
+      interval: '',
+      prediction: 0,
+      probabilityUp: 0.5,
+      confidence: 0,
+      signal: 'flat',
+      regimePass: true,
+      source: 'fallback',
+      featuresUsed: FEATURE_NAMES,
+      timestamp: Date.now(),
+    } as any);
   }
 
-  const { symbol = 'ETHUSDT', interval = '4h', limit = '500' } = req.query;
+  const { symbol = 'SOLUSDT', interval = '4h' } = req.query;
   const sym = (symbol as string).toUpperCase().replace(/USDT$/, '') + 'USDT';
   const iv = interval as string;
-  const parsedLimit = Math.min(Math.max(parseInt(limit as string, 10) || 500, 100), 1000);
 
   try {
     // Fetch asset candles and BTC benchmark in parallel
     const [assetCandles, btcCandles] = await Promise.all([
-      fetchKlinesRouted(sym, iv, parsedLimit),
-      fetchKlinesRouted('BTCUSDT', iv, parsedLimit),
+      fetchKlinesRouted(sym, iv, 500),
+      fetchKlinesRouted('BTCUSDT', iv, 500),
     ]);
 
     if (assetCandles.length < 80 || btcCandles.length < 80) {
@@ -84,6 +104,8 @@ export default async function handler(
         prediction: 0,
         probabilityUp: 0.5,
         confidence: 0,
+        signal: 'flat',
+        regimePass: true,
         source: 'fallback',
         featuresUsed: FEATURE_NAMES,
         timestamp: Date.now(),
@@ -100,6 +122,8 @@ export default async function handler(
         prediction: 0,
         probabilityUp: 0.5,
         confidence: 0,
+        signal: 'flat',
+        regimePass: true,
         source: 'fallback',
         featuresUsed: FEATURE_NAMES,
         timestamp: Date.now(),
@@ -110,13 +134,17 @@ export default async function handler(
     // Use the most recent feature vector
     const latest = fv[fv.length - 1];
 
-    // Load model
+    // Load model and meta
     const modelObj = loadModelFile(sym, iv);
     const model = modelObj ? loadModelFromJSON(modelObj) : null;
-    const meta = loadMetaFile(sym, iv);
+    const metaObj = loadMetaFile(sym, iv);
+    const meta = metaObj ? loadMetaFromJSON(metaObj) : null;
+
+    // BTC bull filter from latest feature (index 7 = btc_bull_filter)
+    const btcBullFilter = latest.features.length > 7 ? latest.features[7] : 1;
 
     // Predict
-    const result = predict(model, latest.features);
+    const result = predict(model, meta, latest.features, btcBullFilter);
 
     const response: MLPredictResponse = {
       symbol: sym,
@@ -124,9 +152,14 @@ export default async function handler(
       prediction: result.value,
       probabilityUp: result.probabilityUp,
       confidence: result.confidence,
+      signal: result.signal,
+      regimePass: result.regimePass,
       source: result.source,
       modelVersion: meta?.trained_at,
       featuresUsed: FEATURE_NAMES,
+      forwardBars: meta?.forward_bars,
+      probThreshold: meta?.prob_threshold,
+      regimeFilter: meta?.regime_filter,
       timestamp: latest.time * 1000,
     };
 
@@ -138,6 +171,8 @@ export default async function handler(
       prediction: 0,
       probabilityUp: 0.5,
       confidence: 0,
+      signal: 'flat',
+      regimePass: true,
       source: 'fallback',
       featuresUsed: FEATURE_NAMES,
       timestamp: Date.now(),
