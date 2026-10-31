@@ -1,9 +1,10 @@
 import { Candle } from './types';
 import { BINANCE_BASE_URL } from './config';
 import { fetchWithRetry, fetchBinanceKlines } from './api';
-import { fetchGateCandles, fetchHyperliquidCandles } from './marketData/index';
+import { fetchGateCandles, fetchHyperliquidCandles, fetchAssetCandles, mapIntervalForSource, parseAssetId, rangeForLimit } from './marketData/index';
+import { fetchYahooChart, toYahooSymbol } from './yahoo';
 
-export type UniverseSource = 'binance' | 'gate' | 'hyperliquid';
+export type UniverseSource = 'binance' | 'gate' | 'hyperliquid' | 'yahoo';
 
 export interface UniverseEntry {
   /** Internal/display symbol, e.g. LINKUSDT, XYZUSDT, HYPEUSDT */
@@ -28,7 +29,7 @@ export interface UniverseSnapshot {
 const UNIVERSE_TTL_MS = 60 * 60 * 1000;
 const CACHE_KEY = 'v1';
 
-const SOURCE_ORDER: UniverseSource[] = ['binance', 'gate', 'hyperliquid'];
+const SOURCE_ORDER: UniverseSource[] = ['binance', 'gate', 'yahoo', 'hyperliquid'];
 
 const STABLE_BASES = new Set([
   'USDC', 'USDT', 'FDUSD', 'TUSD', 'BUSD', 'DAI', 'USDP', 'USDD', 'USDS', 'PYUSD',
@@ -184,7 +185,7 @@ function mergeListings(lists: (RawListing[] | null)[]): UniverseSnapshot {
   }
 
   const bySymbol = new Map<string, UniverseEntry>();
-  const sourceCounts: Record<UniverseSource, number> = { binance: 0, gate: 0, hyperliquid: 0 };
+  const sourceCounts: Record<UniverseSource, number> = { binance: 0, gate: 0, yahoo: 0, hyperliquid: 0 };
 
   for (let rank = 0; rank < SOURCE_ORDER.length; rank++) {
     const source = SOURCE_ORDER[rank];
@@ -320,6 +321,17 @@ export async function fetchKlinesRouted(
       } else if (source === 'gate') {
         const pair = entry?.source === 'gate' ? entry.rawPair : deriveGatePair(base);
         candles = await fetchGateCandles(pair, interval, limit);
+      } else if (source === 'yahoo') {
+        // Yahoo needs its own symbol form (e.g. GC=F, ^GSPC, AAPL) and interval mapping.
+        // Use the original symbol when it already looks like a Yahoo ticker; otherwise
+        // derive from the cleaned form.
+        const looksLikeYahoo = /[=^.]/.test(symbol) || /^[A-Z]{1,5}$/.test(symbol.toUpperCase());
+        const ySymbol = entry?.source === 'yahoo' ? entry.symbol : (looksLikeYahoo ? symbol : toYahooSymbol(clean));
+        const yInterval = mapIntervalForSource('yahoo', interval);
+        candles = await fetchYahooChart(ySymbol, yInterval, rangeForLimit(yInterval, limit), {
+          deep: options.deep,
+          skipCache: options.skipCache,
+        });
       } else {
         const coin = entry?.source === 'hyperliquid' ? entry.rawPair : base;
         candles = await fetchHyperliquidCandles(coin, interval, limit);

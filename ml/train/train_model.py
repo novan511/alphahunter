@@ -28,12 +28,79 @@ import xgboost as xgb
 
 BINANCE_BASE = os.environ.get("BINANCE_BASE_URL", "https://data-api.binance.vision")
 BINANCE_MAX_LIMIT = 1000
+YAHOO_BASE = "https://query1.finance.yahoo.com/v8/finance/chart"
+HYPERLIQUID_BASE = os.environ.get("HYPERLIQUID_BASE_URL", "https://api.hyperliquid.xyz")
 
 # Probability calibration scaling: raw log-return * SIGMOID_SCALE -> probability
 SIGMOID_SCALE = 300.0
 
 
-def fetch_klines(symbol: str, interval: str, limit: int) -> list[dict]:
+def detect_source(symbol: str) -> str:
+    """Detect which source a symbol belongs to based on its format."""
+    s = symbol.upper().strip()
+    # Yahoo commodity futures
+    if s.endswith('=F') or s.endswith('=X') or s.endswith('.JK') or '.' in s and not s.endswith('USDT'):
+        return 'yahoo'
+    # Yahoo indices
+    if s.startswith('^'):
+        return 'yahoo'
+    # Yahoo equities (no USDT suffix, not crypto-like)
+    if not s.endswith('USDT') and not s.endswith('USDC') and len(s) <= 5 and s.isalpha():
+        return 'yahoo'
+    # Default: crypto on Binance
+    return 'binance'
+
+
+def to_yahoo_symbol(symbol: str) -> str:
+    """Convert a symbol to Yahoo Finance format."""
+    s = symbol.upper().strip()
+    # Already in Yahoo format (GC=F, ^GSPC, etc.)
+    if '=' in s or s.startswith('^') or '.' in s:
+        return s
+    # US equity -> append nothing (Yahoo uses plain ticker)
+    if s.isalpha() and len(s) <= 5:
+        return s
+    # Crypto pair BTCUSDT -> BTC-USD for Yahoo
+    if s.endswith('USDT'):
+        return s.replace('USDT', '-USD')
+    if s.endswith('USDC'):
+        return s.replace('USDC', '-USD')
+    return s
+
+
+def yahoo_interval_map(interval: str) -> str:
+    """Map interval to Yahoo-supported interval."""
+    allowed = {'1m', '5m', '15m', '30m', '60m', '90m', '1h', '1d', '5d', '1wk', '1mo', '3mo'}
+    if interval in allowed:
+        return interval
+    if interval in ('4h', '2h', '3h'):
+        return '1h'
+    if interval == '1w':
+        return '1wk'
+    if interval == '1d':
+        return '1d'
+    return '1d'
+
+
+def yahoo_range_for(interval: str, deep: bool) -> str:
+    """Prefer deep ranges for daily+ so commodities get multi-year history."""
+    iv = yahoo_interval_map(interval)
+    if not deep:
+        if iv in ('1m', '5m', '15m', '30m', '60m', '1h'):
+            return '3mo'
+        if iv == '1wk':
+            return '2y'
+        return '2y'
+    if iv in ('1m', '5m'):
+        return '1mo'
+    if iv in ('15m', '30m', '1h', '60m'):
+        return '2y'
+    if iv == '1wk':
+        return '10y'
+    return '10y'
+
+
+def fetch_binance_klines(symbol: str, interval: str, limit: int) -> list[dict]:
     """Fetch klines from Binance, paginated if needed."""
     all_candles = []
     end_time = None
@@ -80,6 +147,163 @@ def fetch_klines(symbol: str, interval: str, limit: int) -> list[dict]:
 
     all_candles.sort(key=lambda c: c["time"])
     return all_candles
+
+
+def fetch_yahoo_klines(symbol: str, interval: str, limit: int) -> list[dict]:
+    """Fetch klines from Yahoo Finance."""
+    y_symbol = to_yahoo_symbol(symbol)
+    y_interval = yahoo_interval_map(interval)
+    y_range = yahoo_range_for(interval, deep=(limit > 800))
+
+    url = f"{YAHOO_BASE}/{y_symbol}"
+    params = {
+        "interval": y_interval,
+        "range": y_range,
+    }
+
+    resp = requests.get(
+        url,
+        params=params,
+        headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "application/json",
+        },
+        timeout=30,
+    )
+    if resp.status_code != 200:
+        raise RuntimeError(f"Yahoo API error {resp.status_code}: {resp.text[:200]}")
+
+    data = resp.json()
+    chart = data.get("chart", {})
+    result = chart.get("result")
+    if not result:
+        raise RuntimeError(f"Yahoo returned no result for {symbol}")
+
+    res0 = result[0]
+    timestamps = res0.get("timestamp", [])
+    quotes = res0.get("indicators", {}).get("quote", [{}])[0]
+
+    opens = quotes.get("open", [])
+    highs = quotes.get("high", [])
+    lows = quotes.get("low", [])
+    closes = quotes.get("close", [])
+    volumes = quotes.get("volume", [])
+
+    candles = []
+    for i, ts in enumerate(timestamps):
+        try:
+            o = float(opens[i]) if i < len(opens) else 0
+            h = float(highs[i]) if i < len(highs) else 0
+            l = float(lows[i]) if i < len(lows) else 0
+            c = float(closes[i]) if i < len(closes) else 0
+            v = float(volumes[i]) if i < len(volumes) else 0
+            if NumberIsFinite(o) and NumberIsFinite(c) and o > 0 and c > 0:
+                candles.append({
+                    "time": int(ts),
+                    "open": o,
+                    "high": h,
+                    "low": l,
+                    "close": c,
+                    "volume": v,
+                })
+        except (ValueError, TypeError):
+            continue
+
+    candles.sort(key=lambda c: c["time"])
+    return candles[-limit:] if len(candles) > limit else candles
+
+
+def NumberIsFinite(val) -> bool:
+    try:
+        return math.isfinite(float(val))
+    except (TypeError, ValueError):
+        return False
+
+
+def fetch_hyperliquid_klines(symbol: str, interval: str, limit: int) -> list[dict]:
+    """Fetch klines from Hyperliquid."""
+    end = int(__import__('time').time() * 1000)
+    iv_ms_map = {
+        '1m': 60_000, '3m': 180_000, '5m': 300_000, '15m': 900_000,
+        '30m': 1_800_000, '1h': 3_600_000, '2h': 7_200_000, '4h': 14_400_000,
+        '6h': 21_600_000, '8h': 28_800_000, '12h': 43_200_000, '1d': 86_400_000,
+    }
+    iv_ms = iv_ms_map.get(interval, 14_400_000)
+    start = end - int(iv_ms * max(limit, 50) * 1.2)
+
+    coin = symbol.replace('/USDT', '').replace('USDT', '').upper()
+    body = {
+        "type": "candleSnapshot",
+        "req": {
+            "coin": coin,
+            "interval": interval,
+            "startTime": start,
+            "endTime": end,
+        },
+    }
+
+    resp = requests.post(
+        f"{HYPERLIQUID_BASE}/info",
+        json=body,
+        headers={"Content-Type": "application/json", "User-Agent": "althunter-ml-train/1.0"},
+        timeout=30,
+    )
+    if resp.status_code != 200:
+        raise RuntimeError(f"Hyperliquid API error {resp.status_code}: {resp.text[:200]}")
+
+    raw = resp.json()
+    if not isinstance(raw, list):
+        return []
+
+    candles = []
+    for k in raw:
+        try:
+            candles.append({
+                "time": int(k.get("t", 0)) // 1000,
+                "open": float(k.get("o", 0)),
+                "high": float(k.get("h", 0)),
+                "low": float(k.get("l", 0)),
+                "close": float(k.get("c", 0)),
+                "volume": float(k.get("v", 0)),
+            })
+        except (ValueError, TypeError):
+            continue
+
+    candles.sort(key=lambda c: c["time"])
+    return candles[-limit:] if len(candles) > limit else candles
+
+
+def fetch_klines(symbol: str, interval: str, limit: int) -> list[dict]:
+    """Fetch klines with multi-source fallback: Binance → Yahoo → Hyperliquid."""
+    source = detect_source(symbol)
+
+    # If the symbol is explicitly a non-Binance source, try that first
+    if source == 'yahoo':
+        try:
+            return fetch_yahoo_klines(symbol, interval, limit)
+        except Exception as e:
+            # Fallback to Binance if Yahoo fails (e.g. symbol might be on Binance)
+            try:
+                return fetch_binance_klines(symbol, interval, limit)
+            except Exception:
+                raise RuntimeError(f"Both Yahoo and Binance failed for {symbol}. Last error: {e}")
+
+    # For crypto/USDT symbols, try Binance first
+    try:
+        return fetch_binance_klines(symbol, interval, limit)
+    except Exception as e_binance:
+        # Binance failed — try Yahoo fallback
+        try:
+            return fetch_yahoo_klines(symbol, interval, limit)
+        except Exception as e_yahoo:
+            # Try Hyperliquid as last resort for crypto
+            try:
+                return fetch_hyperliquid_klines(symbol, interval, limit)
+            except Exception as e_hl:
+                raise RuntimeError(
+                    f"All sources failed for {symbol}. "
+                    f"Binance: {e_binance}; Yahoo: {e_yahoo}; Hyperliquid: {e_hl}"
+                )
 
 
 def sma(values: list[float], period: int) -> list[float]:

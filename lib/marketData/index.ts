@@ -197,7 +197,7 @@ export async function fetchAssetCandles(
   throw new Error(`Unknown market data source: ${(asset as AssetRef).source}`);
 }
 
-function rangeForLimit(interval: string, limit: number): string {
+export function rangeForLimit(interval: string, limit: number): string {
   // Yahoo membatasi interval menit ke ~60 hari: range lebih panjang → HTTP 422
   if (interval === '1m') return '5d';
   if (interval === '5m' || interval === '15m' || interval === '30m') return '1mo';

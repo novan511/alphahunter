@@ -26,12 +26,13 @@ import { parseRanges } from './ranges';
 import { getMarketCaps, lookupCap, CapInfo } from './marketCap';
 
 const TIMEFRAMES = ['1h', '4h', '1d'];
-const SOURCE_ORDER: UniverseSource[] = ['binance', 'gate', 'hyperliquid'];
+const SOURCE_ORDER: UniverseSource[] = ['binance', 'gate', 'yahoo', 'hyperliquid'];
 
 // Pacing per source (measured: Gate tolerates ~19 rps @ conc 20; Binance by weight; HL very permissive).
 const SOURCE_CONCURRENCY: Record<UniverseSource, number> = {
   binance: 6,
   gate: 8,
+  yahoo: 4,
   hyperliquid: 4,
 };
 
@@ -246,7 +247,7 @@ export async function runAutonomousChunk(opts: ChunkOptions = {}): Promise<Chunk
     ordered = opts.entries.filter((e) => e.symbol !== indexClean);
     universeIdOut = `custom:${orderId(ordered.map((e) => e.symbol))}`;
     universeTotalOut = ordered.length;
-    sourcesOut = { binance: 0, gate: 0, hyperliquid: 0 };
+    sourcesOut = { binance: 0, gate: 0, yahoo: 0, hyperliquid: 0 };
     for (const e of ordered) sourcesOut[e.source]++;
     scanOrderOut = wantCapOrder ? 'cap' : 'volume';
   } else if ((opts.universeMode ?? 'curated') === 'curated') {
@@ -255,7 +256,7 @@ export async function runAutonomousChunk(opts: ChunkOptions = {}): Promise<Chunk
     ordered = curated.entries.filter((e) => e.symbol !== indexClean);
     universeIdOut = curated.id;
     universeTotalOut = ordered.length;
-    sourcesOut = { binance: 0, gate: 0, hyperliquid: 0 };
+    sourcesOut = { binance: 0, gate: 0, yahoo: 0, hyperliquid: 0 };
     for (const e of ordered) sourcesOut[e.source]++;
     scanOrderOut = 'cap';
     console.log(
