@@ -25,7 +25,7 @@ jobs:
     strategy:
       max-parallel: 4
       matrix:
-        symbol: ${{ fromJson(github.event.inputs.symbols && github.event.inputs.symbols != '' && format('[\"{0}\"]', replace(github.event.inputs.symbols, ',', '","')) || '["ETHUSDT","SOLUSDT","BNBUSDT","XRPUSDT"]') }}
+        symbol: [ETHUSDT, SOLUSDT, BNBUSDT, XRPUSDT]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
