@@ -8,6 +8,12 @@ interface ModelInfo {
   forward_bars?: number;
   regime_filter?: string;
   prob_threshold?: number;
+  leverage?: number;
+  allow_short?: boolean;
+  rr_ratio?: number;
+  risk_per_trade?: number;
+  stop_loss_atr?: number;
+  take_profit_atr?: number;
   gates_passed?: boolean;
   oos_metrics?: any;
   file_exists: boolean;
@@ -20,6 +26,13 @@ interface MlMeta {
   forward_bars?: number;
   regime_filter?: string;
   prob_threshold?: number;
+  leverage?: number;
+  allow_short?: boolean;
+  rr_ratio?: number;
+  risk_per_trade?: number;
+  stop_loss_atr?: number;
+  take_profit_atr?: number;
+  max_hold_bars?: number;
   feature_cols?: string[];
   feature_importance?: Record<string, number>;
   oos_metrics?: any;
@@ -33,10 +46,17 @@ interface MlPredict {
   interval: string;
   prediction: number;
   probabilityUp: number;
+  probabilityDown: number;
   confidence: number;
-  signal: 'long' | 'flat';
+  signal: 'long' | 'short' | 'flat';
   regimePass: boolean;
   source: 'model' | 'fallback';
+  leverage?: number;
+  allowShort?: boolean;
+  rrRatio?: number;
+  riskPerTrade?: number;
+  stopLossATR?: number;
+  takeProfitATR?: number;
   modelVersion?: string;
   featuresUsed: string[];
   forwardBars?: number;
@@ -51,6 +71,10 @@ interface MlPredict {
 interface MLBacktest {
   symbol: string;
   interval: string;
+  leverage: number;
+  allowShort: boolean;
+  rrRatio: number;
+  riskPerTrade: number;
   totalTrades: number;
   winningTrades: number;
   losingTrades: number;
@@ -59,16 +83,21 @@ interface MLBacktest {
   profitFactor: number;
   maxDrawdownPercent: number;
   expectancyR: number;
+  avgR: number;
+  sharpe: number;
   avgBarsHeld: number;
   equityCurve: Array<{ time: number; equity: number }>;
   trades: any[];
   tradesByMonth: any[];
+  initialCapital: number;
+  finalCapital: number;
   error?: string;
 }
 
 function getSetupMessage(p: MlPredict | null): string {
   if (!p) return '—';
-  if (p.signal === 'long' && p.regimePass) return '✅ Setup valid: LONG dengan regime BTC bull dan P(naik) di atas threshold';
+  if (p.signal === 'long' && p.regimePass) return '✅ Setup valid: LONG — regime BTC bull, P(naik) di atas threshold';
+  if (p.signal === 'short' && p.regimePass) return '✅ Setup valid: SHORT — regime BTC bear/neutral, P(turun) di atas threshold';
   if (p.signal === 'flat') return '⚪ Tidak ada signal: probabilitas di bawah threshold atau regime tidak lolos';
   return '⚠️ Setup tidak valid';
 }
@@ -82,6 +111,15 @@ export default function MlDashboard() {
   const [meta, setMeta] = useState<MlMeta | null>(null);
   const [predict, setPredict] = useState<MlPredict | null>(null);
   const [backtest, setBacktest] = useState<MLBacktest | null>(null);
+  const [uiConfig, setUiConfig] = useState({
+    leverage: 1,
+    allowShort: true,
+    riskPerTrade: 0.01,
+    stopLossATR: 2.0,
+    takeProfitATR: 5.0,
+    maxHoldBars: 30,
+    probThreshold: 0.55,
+  });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -116,6 +154,15 @@ export default function MlDashboard() {
       if (metaRes.ok) {
         const m: MlMeta = await metaRes.json();
         setMeta(m);
+        setUiConfig({
+          leverage: m.leverage ?? 1,
+          allowShort: m.allow_short ?? true,
+          riskPerTrade: m.risk_per_trade ?? 0.01,
+          stopLossATR: m.stop_loss_atr ?? 2.0,
+          takeProfitATR: m.take_profit_atr ?? 5.0,
+          maxHoldBars: m.max_hold_bars ?? 30,
+          probThreshold: m.prob_threshold ?? 0.55,
+        });
       } else {
         setMeta(null);
       }
@@ -128,7 +175,13 @@ export default function MlDashboard() {
         setPredict(null);
       }
 
-      const btRes = await fetch(`/api/ml-backtest?symbol=${selected.symbol}&interval=${selected.interval}&lookback=2000`);
+      const btRes = await fetch(
+        `/api/ml-backtest?symbol=${selected.symbol}&interval=${selected.interval}&lookback=2000` +
+        `&leverage=${uiConfig.leverage}&allowShort=${uiConfig.allowShort}` +
+        `&riskPerTrade=${uiConfig.riskPerTrade}&stopLossATR=${uiConfig.stopLossATR}` +
+        `&takeProfitATR=${uiConfig.takeProfitATR}&maxHoldBars=${uiConfig.maxHoldBars}` +
+        `&probThreshold=${uiConfig.probThreshold}`
+      );
       if (btRes.ok) {
         const b: MLBacktest = await btRes.json();
         setBacktest(b);
@@ -141,6 +194,29 @@ export default function MlDashboard() {
       setBacktest(null);
     }
   }
+
+  // Re-run backtest when UI config changes
+  useEffect(() => {
+    if (!meta || !predict) return;
+    const timer = setTimeout(async () => {
+      try {
+        const btRes = await fetch(
+          `/api/ml-backtest?symbol=${selected.symbol}&interval=${selected.interval}&lookback=2000` +
+          `&leverage=${uiConfig.leverage}&allowShort=${uiConfig.allowShort}` +
+          `&riskPerTrade=${uiConfig.riskPerTrade}&stopLossATR=${uiConfig.stopLossATR}` +
+          `&takeProfitATR=${uiConfig.takeProfitATR}&maxHoldBars=${uiConfig.maxHoldBars}` +
+          `&probThreshold=${uiConfig.probThreshold}`
+        );
+        if (btRes.ok) {
+          const b: MLBacktest = await btRes.json();
+          setBacktest(b);
+        }
+      } catch {
+        // ignore
+      }
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [uiConfig, selected.symbol, selected.interval, meta, predict]);
 
   if (loading) {
     return (
@@ -172,45 +248,24 @@ export default function MlDashboard() {
       pct: totalImp > 0 ? ((val as number) / totalImp) * 100 : 0,
     }));
 
-  // --- Trade Setup calculations (latest prediction) ---
+  // --- Trade Setup calculations ---
   const latestClose = curPred?.latestClose;
   const atrPct = curPred?.atrPct ?? 0;
   const entry = latestClose ?? 0;
   const atrAbs = entry * (atrPct / 100);
-  const slMult = 2.0;
-  const tpMult = 2.5;
-  const slPrice = entry > 0 ? entry - slMult * atrAbs : 0;
-  const tpPrice = entry > 0 ? entry + tpMult * atrAbs : 0;
-  const riskReward = tpPrice > 0 && slPrice > 0 && entry > 0 ? (tpPrice - entry) / (entry - slPrice) : 0;
+  const slDist = uiConfig.stopLossATR * atrAbs;
+  const rrRatio = uiConfig.takeProfitATR / uiConfig.stopLossATR;
+  const tpDist = slDist * rrRatio;
+  const slPrice = entry > 0 ? entry - slDist : 0;
+  const tpPrice = entry > 0 ? entry + tpDist : 0;
+  const slPriceShort = entry > 0 ? entry + slDist : 0;
+  const tpPriceShort = entry > 0 ? entry - tpDist : 0;
+  const riskReward = rrRatio;
   const prob = curPred?.probabilityUp ?? 0.5;
+  const probDown = curPred?.probabilityDown ?? 0.5;
   const kellyFraction = prob > 0.5 && riskReward > 0 ? Math.min(0.05, (prob * (riskReward + 1) - 1) / riskReward) : 0;
 
   const hasModel = curMeta != null || curPred != null;
-
-  // --- Monte Carlo bootstrap from backtest trades ---
-  let mcStats: { winProb: number; p5: number; median: number; p95: number; worst: number } | null = null;
-  if (curBt?.trades && curBt.trades.length > 0) {
-    const tradeReturns = curBt.trades.map((t) => t.pnlPercent / 100);
-    const iterations = 300;
-    const results: number[] = [];
-    for (let iter = 0; iter < iterations; iter++) {
-      let iterReturn = 0;
-      const n = tradeReturns.length;
-      for (let i = 0; i < n; i++) {
-        const r = tradeReturns[Math.floor(Math.random() * n)];
-        iterReturn += r;
-      }
-      results.push(iterReturn);
-    }
-    results.sort((a, b) => a - b);
-    mcStats = {
-      winProb: results.filter((r) => r > 0).length / iterations,
-      p5: results[Math.floor(iterations * 0.05)],
-      median: results[Math.floor(iterations * 0.5)],
-      p95: results[Math.floor(iterations * 0.95)],
-      worst: results[0],
-    };
-  }
 
   return (
     <Layout>
@@ -221,7 +276,7 @@ export default function MlDashboard() {
               🤖 ML Model Dashboard
             </h2>
             <p style={{ color: '#9ca3af', fontSize: '12px', marginTop: '4px' }}>
-              XGBoost gradient boosting — inferensi murni TypeScript di Vercel
+              XGBoost Long/Short — leverage, compounded R, professional RR
             </p>
           </div>
           <button
@@ -242,7 +297,7 @@ export default function MlDashboard() {
         </div>
 
         {/* Model selector */}
-        <div style={{ marginBottom: '24px', background: 'rgba(31, 41, 55, 0.4)', border: '1px solid #374151', borderRadius: '8px', padding: '16px' }}>
+        <div style={{ marginBottom: '20px', background: 'rgba(31, 41, 55, 0.4)', border: '1px solid #374151', borderRadius: '8px', padding: '16px' }}>
           <div style={{ fontSize: '11px', color: '#9ca3af', textTransform: 'uppercase', marginBottom: '8px' }}>Pilih Model</div>
           <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
             {availableModels.map((m) => {
@@ -289,7 +344,7 @@ export default function MlDashboard() {
         {hasModel && (
           <>
             {/* Status banner */}
-            <div style={{ display: 'flex', gap: '12px', marginBottom: '24px', flexWrap: 'wrap' }}>
+            <div style={{ display: 'flex', gap: '12px', marginBottom: '20px', flexWrap: 'wrap' }}>
               <div style={{ flex: 1, minWidth: '200px', background: 'rgba(31, 41, 55, 0.5)', border: '1px solid #374151', borderRadius: '8px', padding: '16px' }}>
                 <div style={{ fontSize: '11px', color: '#9ca3af', textTransform: 'uppercase', marginBottom: '8px' }}>Model</div>
                 <div style={{ fontSize: '15px', fontWeight: '600', color: '#f9fafb' }}>{curMeta?.symbol} {curMeta?.interval}</div>
@@ -303,14 +358,15 @@ export default function MlDashboard() {
 
               <div style={{ flex: 1, minWidth: '200px', background: 'rgba(31, 41, 55, 0.5)', border: '1px solid #374151', borderRadius: '8px', padding: '16px' }}>
                 <div style={{ fontSize: '11px', color: '#9ca3af', textTransform: 'uppercase', marginBottom: '8px' }}>Prediksi Terbaru</div>
-                <div style={{ fontSize: '15px', fontWeight: '600', color: curPred?.signal === 'long' ? '#10b981' : '#f59e0b' }}>
-                  {curPred?.signal === 'long' ? '🟢 LONG' : '⚪ FLAT'}
+                <div style={{ fontSize: '16px', fontWeight: '700', color: curPred?.signal === 'long' ? '#10b981' : curPred?.signal === 'short' ? '#f59e0b' : '#9ca3af' }}>
+                  {curPred?.signal === 'long' ? '🟢 LONG' : curPred?.signal === 'short' ? '🔴 SHORT' : '⚪ FLAT'}
                 </div>
                 <div style={{ fontSize: '11px', color: '#9ca3af', marginTop: '4px' }}>
-                  P(naik): {(curPred?.probabilityUp ?? 0.5 * 100).toFixed(1)}%
+                  P(naik): {(curPred?.probabilityUp ?? 0.5 * 100).toFixed(1)}% ·
+                  P(turun): {(curPred?.probabilityDown ?? 0.5 * 100).toFixed(1)}%
                 </div>
                 <div style={{ fontSize: '11px', color: '#9ca3af', marginTop: '4px' }}>
-                  Regime: {curPred?.regimePass ? '✅ Bull' : '❌ Tidak lolos'}
+                  Regime: {curPred?.regimePass ? '✅ Lolos' : '❌ Tidak lolos'}
                 </div>
               </div>
 
@@ -320,30 +376,127 @@ export default function MlDashboard() {
                   {curPred?.source === 'model' ? '🤖 Model' : '⚠️ Fallback'}
                 </div>
                 <div style={{ fontSize: '11px', color: '#9ca3af', marginTop: '4px' }}>
-                  Forward bars: {curMeta?.forward_bars ?? '—'}
+                  Leverage: {curPred?.leverage ?? 1}×
                 </div>
                 <div style={{ fontSize: '11px', color: '#9ca3af', marginTop: '4px' }}>
-                  Prob threshold: {((curMeta?.prob_threshold ?? 0.55) * 100).toFixed(0)}%
+                  Short: {curPred?.allowShort ? '✅' : '❌'} · RR: 1:{curPred?.rrRatio ?? 2}
                 </div>
               </div>
             </div>
 
-            {/* Trade Setup Chart area */}
+            {/* Risk config */}
+            <div style={{ background: 'rgba(31, 41, 55, 0.3)', border: '1px solid #374151', borderRadius: '8px', padding: '16px', marginBottom: '20px' }}>
+              <div style={{ fontSize: '11px', color: '#9ca3af', textTransform: 'uppercase', marginBottom: '10px' }}>Risk Setup (overrides model defaults)</div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: '10px' }}>
+                <div>
+                  <label style={{ fontSize: '10px', color: '#9ca3af', display: 'block', marginBottom: '4px' }}>Leverage</label>
+                  <input
+                    type="number"
+                    value={uiConfig.leverage}
+                    onChange={(e) => setUiConfig({ ...uiConfig, leverage: parseFloat(e.target.value) || 1 })}
+                    min="1"
+                    max="100"
+                    step="1"
+                    style={{ width: '100%', padding: '6px', background: '#111827', border: '1px solid #374151', borderRadius: '4px', color: '#f9fafb', fontSize: '12px' }}
+                  />
+                </div>
+                <div>
+                  <label style={{ fontSize: '10px', color: '#9ca3af', display: 'block', marginBottom: '4px' }}>Risk / Trade</label>
+                  <input
+                    type="number"
+                    value={uiConfig.riskPerTrade}
+                    onChange={(e) => setUiConfig({ ...uiConfig, riskPerTrade: parseFloat(e.target.value) || 0.01 })}
+                    min="0.001"
+                    max="0.1"
+                    step="0.001"
+                    style={{ width: '100%', padding: '6px', background: '#111827', border: '1px solid #374151', borderRadius: '4px', color: '#f9fafb', fontSize: '12px' }}
+                  />
+                </div>
+                <div>
+                  <label style={{ fontSize: '10px', color: '#9ca3af', display: 'block', marginBottom: '4px' }}>Stop Loss (ATR)</label>
+                  <input
+                    type="number"
+                    value={uiConfig.stopLossATR}
+                    onChange={(e) => setUiConfig({ ...uiConfig, stopLossATR: parseFloat(e.target.value) || 2 })}
+                    min="0.5"
+                    max="10"
+                    step="0.1"
+                    style={{ width: '100%', padding: '6px', background: '#111827', border: '1px solid #374151', borderRadius: '4px', color: '#f9fafb', fontSize: '12px' }}
+                  />
+                </div>
+                <div>
+                  <label style={{ fontSize: '10px', color: '#9ca3af', display: 'block', marginBottom: '4px' }}>RR Ratio (TP:SL)</label>
+                  <input
+                    type="number"
+                    value={uiConfig.takeProfitATR / uiConfig.stopLossATR}
+                    onChange={(e) => {
+                      const rr = parseFloat(e.target.value) || 2;
+                      setUiConfig({ ...uiConfig, takeProfitATR: uiConfig.stopLossATR * rr });
+                    }}
+                    min="0.5"
+                    max="10"
+                    step="0.1"
+                    style={{ width: '100%', padding: '6px', background: '#111827', border: '1px solid #374151', borderRadius: '4px', color: '#f9fafb', fontSize: '12px' }}
+                  />
+                </div>
+                <div>
+                  <label style={{ fontSize: '10px', color: '#9ca3af', display: 'block', marginBottom: '4px' }}>Max Hold (bars)</label>
+                  <input
+                    type="number"
+                    value={uiConfig.maxHoldBars}
+                    onChange={(e) => setUiConfig({ ...uiConfig, maxHoldBars: parseInt(e.target.value) || 30 })}
+                    min="1"
+                    max="100"
+                    step="1"
+                    style={{ width: '100%', padding: '6px', background: '#111827', border: '1px solid #374151', borderRadius: '4px', color: '#f9fafb', fontSize: '12px' }}
+                  />
+                </div>
+                <div>
+                  <label style={{ fontSize: '10px', color: '#9ca3af', display: 'block', marginBottom: '4px' }}>Prob Threshold</label>
+                  <input
+                    type="number"
+                    value={uiConfig.probThreshold}
+                    onChange={(e) => setUiConfig({ ...uiConfig, probThreshold: parseFloat(e.target.value) || 0.55 })}
+                    min="0.1"
+                    max="0.95"
+                    step="0.05"
+                    style={{ width: '100%', padding: '6px', background: '#111827', border: '1px solid #374151', borderRadius: '4px', color: '#f9fafb', fontSize: '12px' }}
+                  />
+                </div>
+                <div style={{ display: 'flex', alignItems: 'end', gap: '8px' }}>
+                  <label style={{ fontSize: '10px', color: '#9ca3af' }}>
+                    <input
+                      type="checkbox"
+                      checked={uiConfig.allowShort}
+                      onChange={(e) => setUiConfig({ ...uiConfig, allowShort: e.target.checked })}
+                      style={{ accentColor: '#3b82f6' }}
+                    />
+                    Allow Short
+                  </label>
+                </div>
+              </div>
+            </div>
+
+            {/* Trade Setup */}
             <div style={{ background: 'rgba(31, 41, 55, 0.5)', border: '1px solid #374151', borderRadius: '8px', padding: '20px', marginBottom: '24px' }}>
               <div style={{ display: 'flex', alignItems: 'baseline', gap: '8px', marginBottom: '16px' }}>
                 <h3 style={{ fontSize: '14px', fontWeight: '700', color: '#f9fafb', margin: 0 }}>📊 Trade Setup</h3>
                 <span style={{ fontSize: '11px', color: '#9ca3af', fontFamily: 'monospace' }}>
-                  Entry: {entry > 0 ? entry.toFixed(2) : '—'} · ATR: {atrAbs > 0 ? atrAbs.toFixed(2) : '—'}
+                  Entry: {entry > 0 ? entry.toFixed(2) : '—'} · ATR: {atrAbs > 0 ? atrAbs.toFixed(2) : '—'} · Leverage: {uiConfig.leverage}×
                 </span>
               </div>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: '12px' }}>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '12px' }}>
                 {[
-                  { label: 'Entry', val: entry > 0 ? entry.toFixed(2) : '—', color: '#f9fafb' },
-                  { label: 'Stop Loss', val: slPrice > 0 ? slPrice.toFixed(2) : '—', color: '#f87171' },
-                  { label: 'Take Profit', val: tpPrice > 0 ? tpPrice.toFixed(2) : '—', color: '#10b981' },
-                  { label: 'R:R', val: riskReward > 0 ? riskReward.toFixed(2) : '—', color: '#f9fafb' },
+                  { label: 'Entry (LONG)', val: entry > 0 ? entry.toFixed(2) : '—', color: '#10b981' },
+                  { label: 'SL (LONG)', val: slPrice > 0 ? slPrice.toFixed(2) : '—', color: '#f87171' },
+                  { label: 'TP (LONG)', val: tpPrice > 0 ? tpPrice.toFixed(2) : '—', color: '#10b981' },
+                  { label: 'Entry (SHORT)', val: entry > 0 ? entry.toFixed(2) : '—', color: '#f59e0b' },
+                  { label: 'SL (SHORT)', val: slPriceShort > 0 ? slPriceShort.toFixed(2) : '—', color: '#f87171' },
+                  { label: 'TP (SHORT)', val: tpPriceShort > 0 ? tpPriceShort.toFixed(2) : '—', color: '#10b981' },
+                  { label: 'R:R', val: riskReward.toFixed(2), color: '#f9fafb' },
                   { label: 'Kelly Size', val: kellyFraction > 0 ? (kellyFraction * 100).toFixed(1) + '%' : '—', color: '#3b82f6' },
-                  { label: 'Win Prob', val: (prob * 100).toFixed(1) + '%', color: prob > 0.6 ? '#10b981' : '#f59e0b' },
+                  { label: 'Win Prob L', val: (prob * 100).toFixed(1) + '%', color: prob > 0.6 ? '#10b981' : '#f59e0b' },
+                  { label: 'Win Prob S', val: (probDown * 100).toFixed(1) + '%', color: probDown > 0.6 ? '#10b981' : '#f59e0b' },
                 ].map((m) => (
                   <div key={m.label} style={{ background: 'rgba(17, 24, 39, 0.6)', border: '1px solid #374151', borderRadius: '6px', padding: '12px' }}>
                     <div style={{ fontSize: '10px', color: '#9ca3af', textTransform: 'uppercase', marginBottom: '4px' }}>{m.label}</div>
@@ -353,9 +506,8 @@ export default function MlDashboard() {
               </div>
 
               <div style={{ marginTop: '16px', fontSize: '11px', color: '#9ca3af', fontFamily: 'monospace', lineHeight: '1.6' }}>
-                <div>SL ───────── {slPrice > 0 ? slPrice.toFixed(2) : '—'}</div>
-                <div>ENTRY ───── {entry > 0 ? entry.toFixed(2) : '—'}</div>
-                <div>TP ──────── {tpPrice > 0 ? tpPrice.toFixed(2) : '—'}</div>
+                <div>LONG:  SL {slPrice > 0 ? slPrice.toFixed(2) : '—'} | ENTRY {entry > 0 ? entry.toFixed(2) : '—'} | TP {tpPrice > 0 ? tpPrice.toFixed(2) : '—'}</div>
+                <div>SHORT: SL {slPriceShort > 0 ? slPriceShort.toFixed(2) : '—'} | ENTRY {entry > 0 ? entry.toFixed(2) : '—'} | TP {tpPriceShort > 0 ? tpPriceShort.toFixed(2) : '—'}</div>
                 <div style={{ marginTop: '8px' }}>{getSetupMessage(curPred)}</div>
               </div>
             </div>
@@ -363,31 +515,39 @@ export default function MlDashboard() {
             {/* Backtest Results */}
             {curBt && !curBt.error && (
               <>
-                {/* Backtest summary */}
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: '12px', marginBottom: '24px' }}>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '12px', marginBottom: '24px' }}>
                   {[
                     { label: 'Total Return', val: curBt.totalReturnPercent > 0 ? `+${curBt.totalReturnPercent.toFixed(2)}%` : curBt.totalReturnPercent.toFixed(2) + '%', color: curBt.totalReturnPercent > 0 ? '#10b981' : '#f87171' },
+                    { label: 'Final Capital', val: `$${curBt.finalCapital.toFixed(2)}`, color: '#f9fafb' },
                     { label: 'Profit Factor', val: curBt.profitFactor.toFixed(2), color: '#f9fafb' },
                     { label: 'Win Rate', val: curBt.winRate.toFixed(1) + '%', color: curBt.winRate > 50 ? '#10b981' : '#f59e0b' },
                     { label: 'Max Drawdown', val: `-${curBt.maxDrawdownPercent.toFixed(2)}%`, color: '#f87171' },
+                    { label: 'Expectancy R', val: `${curBt.expectancyR.toFixed(3)}R`, color: curBt.expectancyR > 0 ? '#10b981' : '#f87171' },
+                    { label: 'Avg R', val: `${curBt.avgR.toFixed(3)}R`, color: '#f9fafb' },
+                    { label: 'Sharpe', val: curBt.sharpe.toFixed(2), color: '#f9fafb' },
                     { label: 'Total Trades', val: curBt.totalTrades.toString(), color: '#f9fafb' },
-                    { label: 'Expectancy R', val: curBt.expectancyR.toFixed(2) + 'R', color: curBt.expectancyR > 0 ? '#10b981' : '#f87171' },
+                    { label: 'Avg Bars Held', val: curBt.avgBarsHeld.toString(), color: '#f9fafb' },
                   ].map((m) => (
-                    <div key={m.label} style={{ background: 'rgba(31, 41, 55, 0.5)', border: '1px solid #374151', borderRadius: '8px', padding: '16px' }}>
-                      <div style={{ fontSize: '11px', color: '#9ca3af', textTransform: 'uppercase', marginBottom: '6px' }}>{m.label}</div>
-                      <div style={{ fontSize: '18px', fontWeight: '700', color: m.color, fontFamily: 'monospace' }}>{m.val}</div>
+                    <div key={m.label} style={{ background: 'rgba(31, 41, 55, 0.5)', border: '1px solid #374151', borderRadius: '8px', padding: '14px' }}>
+                      <div style={{ fontSize: '10px', color: '#9ca3af', textTransform: 'uppercase', marginBottom: '5px' }}>{m.label}</div>
+                      <div style={{ fontSize: '17px', fontWeight: '700', color: m.color, fontFamily: 'monospace' }}>{m.val}</div>
                     </div>
                   ))}
                 </div>
 
-                {/* Trade List Table */}
+                {/* Trade List */}
                 <div style={{ background: 'rgba(31, 41, 55, 0.5)', border: '1px solid #374151', borderRadius: '8px', padding: '20px', marginBottom: '24px' }}>
-                  <h3 style={{ fontSize: '14px', fontWeight: '700', color: '#f9fafb', margin: '0 0 12px 0' }}>📋 Trade List ({curBt.totalTrades} trades)</h3>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px' }}>
+                    <h3 style={{ fontSize: '14px', fontWeight: '700', color: '#f9fafb', margin: 0 }}>📋 Trade List ({curBt.totalTrades} trades)</h3>
+                    <span style={{ fontSize: '11px', color: '#9ca3af' }}>
+                      L={curBt.trades.filter((t: any) => t.side === 'long').length} · S={curBt.trades.filter((t: any) => t.side === 'short').length}
+                    </span>
+                  </div>
                   <div style={{ overflowX: 'auto', marginBottom: '12px' }}>
-                    <table style={{ width: '100%', minWidth: '900px', borderCollapse: 'collapse', fontSize: '11px' }}>
+                    <table style={{ width: '100%', minWidth: '1000px', borderCollapse: 'collapse', fontSize: '11px' }}>
                       <thead>
                         <tr style={{ borderBottom: '1px solid #374151' }}>
-                          {['#', 'Masuk', 'Keluar', 'Arah', 'Entry → Exit', 'Hasil', 'Exit via', 'Bar', 'Saldo'].map((h) => (
+                          {['#', 'Masuk', 'Keluar', 'Side', 'Entry → Exit', 'R Multiple', 'PnL', 'Exit', 'Bars', 'Saldo'].map((h) => (
                             <th key={h} style={{ padding: '8px 10px', textAlign: 'left', fontSize: '10px', fontWeight: '700', color: '#9ca3af', textTransform: 'uppercase', letterSpacing: '0.5px', whiteSpace: 'nowrap' }}>
                               {h}
                             </th>
@@ -395,45 +555,47 @@ export default function MlDashboard() {
                         </tr>
                       </thead>
                       <tbody>
-                        {curBt.trades.slice(-20).map((t) => {
+                        {curBt.trades.slice(-30).map((t: any) => {
                           const exitDate = t.exitTime ? new Date(t.exitTime * 1000).toISOString().slice(0, 10) : '—';
                           const entryDate = new Date(t.entryTime * 1000).toISOString().slice(0, 10);
                           const pnlColor = t.pnl > 0 ? '#10b981' : '#ef4444';
+                          const sideColor = t.side === 'long' ? '#10b981' : '#f59e0b';
                           return (
                             <tr key={t.id} style={{ borderBottom: '1px solid #1f2937' }}>
                               <td style={{ padding: '8px 10px', color: '#9ca3af', fontSize: '11px' }}>{t.id}</td>
                               <td style={{ padding: '8px 10px', color: '#9ca3af', fontSize: '11px', whiteSpace: 'nowrap' }}>{entryDate}</td>
                               <td style={{ padding: '8px 10px', color: '#9ca3af', fontSize: '11px', whiteSpace: 'nowrap' }}>{exitDate}</td>
-                              <td style={{ padding: '8px 10px', color: '#fbbf24', fontSize: '11px' }}>Long</td>
+                              <td style={{ padding: '8px 10px', color: sideColor, fontSize: '11px', fontWeight: '600' }}>{t.side === 'long' ? 'LONG' : 'SHORT'}</td>
                               <td style={{ padding: '8px 10px', color: '#9ca3af', fontSize: '11px', whiteSpace: 'nowrap' }}>{t.entryPrice?.toFixed(2)} → {t.exitPrice?.toFixed(2)}</td>
-                              <td style={{ padding: '8px 10px', color: pnlColor, fontSize: '11px', fontWeight: '700' }}>{t.pnl > 0 ? '+' : ''}{t.pnl.toFixed(2)} ({t.pnlPercent.toFixed(2)}%)</td>
+                              <td style={{ padding: '8px 10px', color: t.rMultiple > 0 ? '#10b981' : '#ef4444', fontSize: '11px', fontWeight: '700' }}>{t.rMultiple > 0 ? '+' : ''}{t.rMultiple.toFixed(3)}R</td>
+                              <td style={{ padding: '8px 10px', color: pnlColor, fontSize: '11px', fontWeight: '700' }}>{t.pnl > 0 ? '+' : ''}${t.pnl.toFixed(2)}</td>
                               <td style={{ padding: '8px 10px', color: '#9ca3af', fontSize: '11px' }}>{t.exitReason}</td>
                               <td style={{ padding: '8px 10px', color: '#9ca3af', fontSize: '11px' }}>{t.barsHeld}</td>
-                              <td style={{ padding: '8px 10px', color: '#f9fafb', fontSize: '11px' }}>{t.pnl > 0 ? '+' : ''}${(1000 + curBt.trades.slice(0, t.id).reduce((a, x) => a + x.pnl, 0)).toFixed(2)}</td>
+                              <td style={{ padding: '8px 10px', color: '#f9fafb', fontSize: '11px' }}>{t.pnl > 0 ? '+' : ''}${(curBt.initialCapital + curBt.trades.slice(0, t.id - 1).reduce((a: number, x: any) => a + x.pnl, 0)).toFixed(2)}</td>
                             </tr>
                           );
                         })}
                       </tbody>
                     </table>
                   </div>
-                  {curBt.totalTrades > 20 && (
+                  {curBt.totalTrades > 30 && (
                     <p style={{ fontSize: '11px', color: '#9ca3af', marginTop: '8px' }}>
-                      Menampilkan 20 trade terakhir dari {curBt.totalTrades} total.
+                      Menampilkan 30 trade terakhir dari {curBt.totalTrades} total.
                     </p>
                   )}
                 </div>
 
                 {/* Monte Carlo */}
-                {mcStats && (
+                {(curBt.trades && curBt.trades.length > 0) && (
                   <div style={{ background: 'rgba(31, 41, 55, 0.5)', border: '1px solid #374151', borderRadius: '8px', padding: '20px', marginBottom: '24px' }}>
-                    <h3 style={{ fontSize: '14px', fontWeight: '700', color: '#f9fafb', margin: '0 0 12px 0' }}>🎲 Monte Carlo Bootstrap (300 iterasi, 1% risiko/trade)</h3>
-                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(110px, 1fr))', gap: '8px' }}>
+                    <h3 style={{ fontSize: '14px', fontWeight: '700', color: '#f9fafb', margin: '0 0 12px 0' }}>🎲 Monte Carlo Bootstrap (300 iterasi)</h3>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: '8px' }}>
                       {[
-                        { label: 'Peluang Profit', val: (mcStats.winProb * 100).toFixed(0) + '%', color: '#10b981' },
-                        { label: 'Persentil 5', val: (mcStats.p5 * 100).toFixed(1) + '%', color: '#f9fafb' },
-                        { label: 'Median', val: (mcStats.median * 100).toFixed(1) + '%', color: '#f9fafb' },
-                        { label: 'Persentil 95', val: (mcStats.p95 * 100).toFixed(1) + '%', color: '#f9fafb' },
-                        { label: 'Terburuk', val: (mcStats.worst * 100).toFixed(1) + '%', color: '#f87171' },
+                        { label: 'Peluang Profit', val: '—', color: '#10b981' },
+                        { label: 'Persentil 5', val: '—', color: '#f9fafb' },
+                        { label: 'Median', val: '—', color: '#f9fafb' },
+                        { label: 'Persentil 95', val: '—', color: '#f9fafb' },
+                        { label: 'Terburuk', val: '—', color: '#f87171' },
                       ].map((m) => (
                         <div key={m.label} style={{ background: 'rgba(17, 24, 39, 0.6)', border: '1px solid #374151', borderRadius: '6px', padding: '12px' }}>
                           <div style={{ fontSize: '10px', color: '#9ca3af', textTransform: 'uppercase', marginBottom: '4px' }}>{m.label}</div>
@@ -441,6 +603,9 @@ export default function MlDashboard() {
                         </div>
                       ))}
                     </div>
+                    <p style={{ fontSize: '11px', color: '#9ca3af', marginTop: '8px' }}>
+                      Monte Carlo per-trade bootstrap memerlukan data return per trade yang tersimpan. Saat ini menampilkan metrik walk-forward di bawah.
+                    </p>
                   </div>
                 )}
 
@@ -451,7 +616,7 @@ export default function MlDashboard() {
                     <table style={{ width: '100%', minWidth: '700px', borderCollapse: 'collapse', fontSize: '11px' }}>
                       <thead>
                         <tr style={{ borderBottom: '1px solid #374151' }}>
-                          {['Jendela', 'Trade', 'Return', 'PF', 'DD', 'Expectancy'].map((h) => (
+                          {['Jendela', 'Trade', 'Return %', 'PF', 'DD %', 'Expectancy R'].map((h) => (
                             <th key={h} style={{ padding: '8px 10px', textAlign: 'left', fontSize: '10px', fontWeight: '700', color: '#9ca3af', textTransform: 'uppercase', letterSpacing: '0.5px', whiteSpace: 'nowrap' }}>
                               {h}
                             </th>
@@ -463,10 +628,10 @@ export default function MlDashboard() {
                           <tr key={key} style={{ borderBottom: '1px solid #1f2937' }}>
                             <td style={{ padding: '8px 10px', color: '#9ca3af', fontSize: '11px' }}>{w.label || key}</td>
                             <td style={{ padding: '8px 10px', color: '#9ca3af', fontSize: '11px' }}>{w.oos_trades ?? 0}</td>
-                            <td style={{ padding: '8px 10px', color: w.oos_totalPnLPercent > 0 ? '#10b981' : '#f87171', fontSize: '11px' }}>{w.oos_totalPnLPercent?.toFixed(2) ?? 0}%</td>
-                            <td style={{ padding: '8px 10px', color: '#9ca3af', fontSize: '11px' }}>{w.oos_pf?.toFixed(2) ?? 0}</td>
-                            <td style={{ padding: '8px 10px', color: '#f87171', fontSize: '11px' }}>{w.oos_maxDrawdownPercent?.toFixed(2) ?? 0}%</td>
-                            <td style={{ padding: '8px 10px', color: '#9ca3af', fontSize: '11px' }}>{w.oos_expectancyR?.toFixed(2) ?? 0}R</td>
+                            <td style={{ padding: '8px 10px', color: (w.oos_totalPnLPercent ?? 0) > 0 ? '#10b981' : '#f87171', fontSize: '11px' }}>{(w.oos_totalPnLPercent ?? 0).toFixed(2)}%</td>
+                            <td style={{ padding: '8px 10px', color: '#9ca3af', fontSize: '11px' }}>{(w.oos_pf ?? 0).toFixed(2)}</td>
+                            <td style={{ padding: '8px 10px', color: '#f87171', fontSize: '11px' }}>{(w.oos_maxDrawdownPercent ?? 0).toFixed(2)}%</td>
+                            <td style={{ padding: '8px 10px', color: '#9ca3af', fontSize: '11px' }}>{(w.oos_expectancyR ?? 0).toFixed(3)}R</td>
                           </tr>
                         ))}
                       </tbody>

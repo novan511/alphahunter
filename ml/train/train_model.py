@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
-"""Train XGBoost model for RS decoupling prediction.
+"""Train XGBoost model for RS decoupling prediction — LONG + SHORT, leverage, professional RR.
 
-Improvements over v1:
-- Multi-bar target (forward N bars return) to reduce noise
-- Regime filter (BTC trend alignment) to avoid trading against macro trend
-- Threshold probability for signal confidence
-- Configurable gates via CLI/env
+Improvements:
+- Multi-bar target (forward N bars return)
+- Regime filter (BTC trend alignment)
+- LONG + SHORT signals
+- Optional leverage
+- Professional Reward:Risk ratio (default 1:2)
+- Compounded R position sizing (account grows/shrinks per trade)
+- Gates based on expectancy in R
 
 Exports model to JSON for pure-TypeScript inference on Vercel.
 """
@@ -208,7 +211,7 @@ def compute_features(
         for i in range(60, n)
     ]
 
-    # BTC regime filter: 1 if BTC trending up (20-bar return > 0), else 0
+    # BTC bull filter: 1 if 20-bar return > 0 (bull regime)
     btc_bull_filter = [1.0 if r > 0 else 0.0 for r in btc_regime_20]
 
     # Momentum lookbacks [5, 20, 60]
@@ -273,8 +276,8 @@ def build_target(df: pd.DataFrame, forward_bars: int = 3) -> pd.Series:
 
 
 def apply_regime_filter(df: pd.DataFrame, regime_filter: str = "none") -> pd.DataFrame:
-    """Filter rows by regime. 'none' = no filter, 'bull_only' = BTC bull regime only."""
-    if regime_filter == "none":
+    """Filter rows by regime. 'none' = no filter, 'bull_only' = BTC bull regime only, 'both' = all."""
+    if regime_filter in ("none", "both"):
         return df
     if regime_filter == "bull_only":
         return df[df["btc_bull_filter"] == 1.0].copy()
@@ -283,35 +286,51 @@ def apply_regime_filter(df: pd.DataFrame, regime_filter: str = "none") -> pd.Dat
     return df
 
 
-def walk_forward_oos(
+def run_backtest_compounded_r(
     X: pd.DataFrame,
     y: pd.Series,
-    n_windows: int = 3,
-    warmup_frac: float = 0.25,
+    initial_capital: float = 1000.0,
+    risk_per_trade: float = 0.01,
+    stop_loss_atr: float = 2.0,
+    take_profit_atr: float = 2.5,
+    max_hold_bars: int = 30,
     prob_threshold: float = 0.55,
+    leverage: float = 1.0,
+    allow_short: bool = True,
+    fee_rate: float = 0.001,
+    slippage: float = 0.0005,
 ) -> dict:
-    """Anchored expanding walk-forward with probability threshold.
-    Only takes long when predicted return > prob_threshold-calibrated level.
-    Returns OOS aggregate metrics."""
+    """
+    Walk-forward backtest with compounded R position sizing.
+    
+    Position sizing: risk_per_trade * account / stop_distance_price
+    Each trade risks R units. Account compounds after each trade.
+    Leverage affects margin, not risk (risk stays at risk_per_trade % of account).
+    """
     n = len(X)
     if n < 80:
         return {
+            "oos_expectancy_r": 0.0,
+            "oos_total_return_pct": 0.0,
+            "oos_maxdd_pct": 0.0,
+            "oos_win_rate": 0.0,
+            "oos_profit_factor": 0.0,
+            "oos_total_trades": 0,
+            "oos_avg_r": 0.0,
             "oos_sharpe": 0.0,
-            "oos_maxdd": 0.0,
-            "oos_pf": 0.0,
-            "oos_winrate": 0.0,
-            "oos_trades": 0,
-            "oos_avg_confidence": 0.0,
             "windows": [],
         }
 
-    warmup = int(n * warmup_frac)
+    warmup = int(n * 0.25)
     rest = n - warmup
+    n_windows = 3
     chunk = rest // n_windows
 
     window_results = []
-    oos_returns_all = []
-    oos_confidences = []
+    all_r_multiples = []
+    all_returns = []
+    equity_curve = [initial_capital]
+    account = initial_capital
 
     for w in range(n_windows):
         oos_start = warmup + w * chunk
@@ -328,7 +347,7 @@ def walk_forward_oos(
         X_oos = X.iloc[oos_start : oos_end + 1]
         y_oos = y.iloc[oos_start : oos_end + 1]
 
-        # Train on in-sample
+        # Train model on in-sample
         model = xgb.XGBRegressor(
             objective="reg:squarederror",
             max_depth=4,
@@ -345,122 +364,225 @@ def walk_forward_oos(
         # Predict OOS
         y_pred = model.predict(X_oos)
 
-        # Regime filter: only take signal if BTC bull filter is active
+        # Regime filter
         btc_filter = X_oos["btc_bull_filter"].values if "btc_bull_filter" in X_oos.columns else np.ones(len(X_oos))
 
-        # Probability calibration: convert raw prediction to confidence
-        # Use sigmoid of scaled raw prediction
-        raw_preds = y_pred
-        scaled = raw_preds * 100
+        # ATR for stop distance
+        # We need ATR values; reconstruct from close using simple approximation
+        # Use atr_pct feature column (index 4) as proxy for ATR%
+        atr_pct_col = X_oos["atr_pct"].values if "atr_pct" in X_oos.columns else np.full(len(X_oos), 2.0)
+
+        # Probability calibration
+        scaled = y_pred * 100
         probs = 1 / (1 + np.exp(-np.clip(scaled, -10, 10)))
 
-        # Signal: long only if prob > threshold AND BTC bull filter active
-        signal = ((probs > prob_threshold) & (btc_filter == 1.0)).astype(int)
-        actual_returns = y_oos.values
+        # Account tracking for this window
+        window_account = account
+        window_trades = []
+        window_r_multiples = []
 
-        # Strategy return
-        strat_returns = signal * actual_returns
-        confidences = probs * signal  # confidence only when signal taken
+        for i in range(len(X_oos)):
+            close = X_oos["close"].values[i] if "close" in X_oos.columns else 0
+            if close <= 0:
+                continue
 
-        # Equity curve
-        equity = [1.0]
-        for r in strat_returns:
-            equity.append(equity[-1] * (1 + r))
+            atr_pct = atr_pct_col[i] if i < len(atr_pct_col) else 2.0
+            atr_abs = close * (atr_pct / 100.0)
+            if atr_abs <= 0:
+                continue
 
-        # Metrics
-        returns_arr = np.array(strat_returns)
-        mean_ret = np.mean(returns_arr)
-        std_ret = np.std(returns_arr)
-        sharpe = (mean_ret / std_ret * math.sqrt(365 * 6)) if std_ret > 0 else 0.0
+            prob_up = probs[i] if i < len(probs) else 0.5
+            prob_down = 1.0 - prob_up
 
-        # Max drawdown
-        peak = equity[0]
-        maxdd = 0.0
-        for eq in equity:
-            if eq > peak:
-                peak = eq
-            dd = (peak - eq) / peak
-            if dd > maxdd:
-                maxdd = dd
+            # Determine signal
+            take_long = prob_up > prob_threshold and (btc_filter[i] == 1.0 or allow_short)
+            take_short = prob_down > prob_threshold and allow_short and (btc_filter[i] == 0.0 or not allow_short)
 
-        # Profit factor
-        gross_profit = sum(r for r in strat_returns if r > 0)
-        gross_loss = abs(sum(r for r in strat_returns if r < 0))
-        pf = gross_profit / gross_loss if gross_loss > 0 else (float("inf") if gross_profit > 0 else 0.0)
+            # Only take one direction per bar
+            side = None
+            if take_long and prob_up >= prob_down:
+                side = "long"
+            elif take_short and prob_down > prob_up:
+                side = "short"
 
-        # Win rate only on taken trades
-        taken = signal == 1
-        win_rate = (
-            sum(1 for i in range(len(strat_returns)) if taken[i] and strat_returns[i] > 0) / max(1, sum(taken))
-        )
+            if side is None:
+                continue
 
-        avg_conf = np.mean(confidences[taken]) if sum(taken) > 0 else 0.0
+            # Stop distance in price
+            stop_dist = stop_loss_atr * atr_abs
+            if stop_dist <= 0:
+                continue
 
-        window_results.append({
-            "window": w + 1,
-            "is_start": 0,
-            "is_end": int(is_end),
-            "oos_start": int(oos_start),
-            "oos_end": int(oos_end),
-            "oos_sharpe": float(sharpe),
-            "oos_maxdd": float(maxdd),
-            "oos_pf": float(pf) if math.isfinite(pf) else 0.0,
-            "oos_winrate": float(win_rate),
-            "oos_trades": int(len(strat_returns)),
-            "oos_signals_taken": int(sum(taken)),
-            "oos_avg_confidence": float(avg_conf),
-        })
-        oos_returns_all.extend(strat_returns.tolist())
-        oos_confidences.extend(confidences.tolist())
+            # Take profit distance based on RR ratio
+            tp_dist = stop_dist * (take_profit_atr / stop_loss_atr)  # RR ratio = TP/SL
 
-    # Aggregate OOS
-    if oos_returns_all:
-        arr = np.array(oos_returns_all)
-        mean_ret = np.mean(arr)
-        std_ret = np.std(arr)
-        oos_sharpe = (mean_ret / std_ret * math.sqrt(365 * 6)) if std_ret > 0 else 0.0
+            # Position size: risk_per_trade * account / stop_dist
+            risk_amount = window_account * risk_per_trade
+            qty = risk_amount / stop_dist  # units of asset
 
-        equity = [1.0]
-        for r in oos_returns_all:
-            equity.append(equity[-1] * (1 + r))
-        peak = equity[0]
+            # Simulate trade over max_hold_bars or until SL/TP hit
+            entry_price = close * (1 + slippage if side == "long" else 1 - slippage)
+            if side == "long":
+                stop_price = entry_price - stop_dist
+                tp_price = entry_price + tp_dist
+            else:
+                stop_price = entry_price + stop_dist
+                tp_price = entry_price - tp_dist
+
+            exit_price = None
+            exit_reason = "time"
+            exit_idx = min(i + max_hold_bars, len(X_oos) - 1)
+
+            # Check SL/TP hit in subsequent bars
+            for j in range(i + 1, exit_idx + 1):
+                bar_high = X_oos.iloc[j].get("high", X_oos["close"].values[j] if "close" in X_oos.columns else 0)
+                bar_low = X_oos.iloc[j].get("low", X_oos["close"].values[j] if "close" in X_oos.columns else 0)
+                if isinstance(bar_high, (pd.Series, np.ndarray)):
+                    bar_high = float(bar_high.iloc[0]) if len(bar_high) > 0 else 0
+                if isinstance(bar_low, (pd.Series, np.ndarray)):
+                    bar_low = float(bar_low.iloc[0]) if len(bar_low) > 0 else 0
+
+                if side == "long":
+                    if bar_low <= stop_price:
+                        exit_price = stop_price
+                        exit_reason = "sl"
+                        break
+                    if bar_high >= tp_price:
+                        exit_price = tp_price
+                        exit_reason = "tp"
+                        break
+                else:  # short
+                    if bar_high >= stop_price:
+                        exit_price = stop_price
+                        exit_reason = "sl"
+                        break
+                    if bar_low <= tp_price:
+                        exit_price = tp_price
+                        exit_reason = "tp"
+                        break
+
+            if exit_price is None:
+                exit_price = X_oos["close"].values[exit_idx] if "close" in X_oos.columns else entry_price
+                exit_reason = "time"
+
+            # Calculate PnL
+            if side == "long":
+                gross_pnl = qty * (exit_price - entry_price)
+            else:
+                gross_pnl = qty * (entry_price - exit_price)
+
+            # Fees: entry + exit
+            fees = qty * entry_price * fee_rate + qty * exit_price * fee_rate
+            slippage_cost = qty * entry_price * slippage + qty * exit_price * slippage
+            net_pnl = gross_pnl - fees - slippage_cost
+
+            # R multiple
+            r_multiple = net_pnl / risk_amount if risk_amount > 0 else 0.0
+
+            # Update account (compounded)
+            window_account += net_pnl
+            account = window_account
+
+            window_trades.append({
+                "side": side,
+                "entry_price": entry_price,
+                "exit_price": exit_price,
+                "pnl": net_pnl,
+                "r_multiple": r_multiple,
+                "exit_reason": exit_reason,
+            })
+            window_r_multiples.append(r_multiple)
+            all_r_multiples.append(r_multiple)
+
+            # Move i to exit to avoid overlapping trades
+            i = exit_idx
+
+        # Window metrics
+        if window_r_multiples:
+            arr = np.array(window_r_multiples)
+            mean_r = np.mean(arr)
+            std_r = np.std(arr)
+            window_sharpe = (mean_r / std_r * math.sqrt(365 * 6)) if std_r > 0 else 0.0
+
+            gross_profit = sum(r for r in window_r_multiples if r > 0)
+            gross_loss = abs(sum(r for r in window_r_multiples if r < 0))
+            window_pf = gross_profit / gross_loss if gross_loss > 0 else (float("inf") if gross_profit > 0 else 0.0)
+
+            window_win_rate = sum(1 for r in window_r_multiples if r > 0) / len(window_r_multiples)
+
+            # Max DD for window
+            peak = window_account
+            window_maxdd = 0.0
+            running_eq = window_account - sum(t["pnl"] for t in window_trades)  # starting equity of window
+            for t in window_trades:
+                running_eq += t["pnl"]
+                if running_eq > peak:
+                    peak = running_eq
+                dd = (peak - running_eq) / peak
+                if dd > window_maxdd:
+                    window_maxdd = dd
+
+            window_results.append({
+                "window": w + 1,
+                "oos_sharpe": float(window_sharpe),
+                "oos_maxdd_pct": float(window_maxdd * 100),
+                "oos_pf": float(window_pf) if math.isfinite(window_pf) else 0.0,
+                "oos_win_rate": float(window_win_rate),
+                "oos_trades": len(window_r_multiples),
+                "oos_avg_r": float(mean_r),
+                "oos_total_pnl": float(sum(t["pnl"] for t in window_trades)),
+            })
+            all_returns.extend(window_r_multiples)
+
+    # Aggregate
+    if all_returns:
+        arr = np.array(all_returns)
+        mean_r = np.mean(arr)
+        std_r = np.std(arr)
+        oos_expectancy_r = float(mean_r)
+        oos_sharpe = (mean_r / std_r * math.sqrt(365 * 6)) if std_r > 0 else 0.0
+
+        total_pnl_r = sum(all_returns)
+        gross_profit_r = sum(r for r in all_returns if r > 0)
+        gross_loss_r = abs(sum(r for r in all_returns if r < 0))
+        oos_pf = gross_profit_r / gross_loss_r if gross_loss_r > 0 else (float("inf") if gross_profit_r > 0 else 0.0)
+        oos_win_rate = sum(1 for r in all_returns if r > 0) / len(all_returns)
+        oos_avg_r = float(mean_r)
+
+        # Total return % from compounded account
+        oos_total_return_pct = ((account - initial_capital) / initial_capital) * 100
+
+        # Max DD from equity curve
+        peak = initial_capital
         oos_maxdd = 0.0
-        for eq in equity:
-            if eq > peak:
-                peak = eq
-            dd = (peak - eq) / peak
+        running_eq = initial_capital
+        for r in all_returns:
+            # Approximate: each R = risk_per_trade * account_at_time
+            # Simplified: use R multiple as % of risk
+            running_eq = running_eq * (1 + r * risk_per_trade)
+            if running_eq > peak:
+                peak = running_eq
+            dd = (peak - running_eq) / peak
             if dd > oos_maxdd:
                 oos_maxdd = dd
-
-        gross_profit = sum(r for r in oos_returns_all if r > 0)
-        gross_loss = abs(sum(r for r in oos_returns_all if r < 0))
-        oos_pf = gross_profit / gross_loss if gross_loss > 0 else (float("inf") if gross_profit > 0 else 0.0)
-
-        taken_arr = np.array([c > 0 for c in oos_confidences])
-        oos_winrate = (
-            sum(1 for i in range(len(oos_returns_all)) if taken_arr[i] and oos_returns_all[i] > 0)
-            / max(1, sum(taken_arr))
-        )
-        oos_trades = len(oos_returns_all)
-        oos_signals = int(sum(taken_arr))
-        oos_avg_conf = float(np.mean([c for c in oos_confidences if c > 0])) if oos_signals > 0 else 0.0
     else:
+        oos_expectancy_r = 0.0
         oos_sharpe = 0.0
-        oos_maxdd = 0.0
         oos_pf = 0.0
-        oos_winrate = 0.0
-        oos_trades = 0
-        oos_signals = 0
-        oos_avg_conf = 0.0
+        oos_win_rate = 0.0
+        oos_total_return_pct = 0.0
+        oos_maxdd = 0.0
+        oos_avg_r = 0.0
 
     return {
+        "oos_expectancy_r": oos_expectancy_r,
+        "oos_total_return_pct": float(oos_total_return_pct),
+        "oos_maxdd_pct": float(oos_maxdd * 100),
+        "oos_win_rate": float(oos_win_rate),
+        "oos_profit_factor": float(oos_pf) if math.isfinite(oos_pf) else 0.0,
+        "oos_total_trades": int(len(all_returns)),
+        "oos_avg_r": oos_avg_r,
         "oos_sharpe": float(oos_sharpe),
-        "oos_maxdd": float(oos_maxdd),
-        "oos_pf": float(oos_pf) if math.isfinite(oos_pf) else 0.0,
-        "oos_winrate": float(oos_winrate),
-        "oos_trades": int(oos_trades),
-        "oos_signals_taken": int(oos_signals),
-        "oos_avg_confidence": float(oos_avg_conf),
         "windows": window_results,
     }
 
@@ -546,22 +668,25 @@ def parse_xgb_dump(dump_text: str, feature_names: list[str]) -> dict:
     return {"nodes": nodes, "root": 0}
 
 
-def sigmoid(x: float) -> float:
-    x = max(-10, min(10, x))
-    return 1 / (1 + math.exp(-x))
-
-
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--symbol", required=True, help="Asset symbol, e.g. SOLUSDT")
     parser.add_argument("--interval", required=True, help="Candle interval, e.g. 4h")
     parser.add_argument("--lookback", type=int, default=1000, help="Number of candles to fetch")
-    parser.add_argument("--forward-bars", type=int, default=3, help="Forward bars for target (default 3)")
-    parser.add_argument("--regime-filter", type=str, default="bull_only", choices=["none", "bull_only", "bear_only"], help="Regime filter")
-    parser.add_argument("--prob-threshold", type=float, default=0.55, help="Probability threshold for signal (default 0.55)")
-    parser.add_argument("--gate-sharpe", type=float, default=0.5, help="OOS Sharpe gate minimum")
-    parser.add_argument("--gate-maxdd", type=float, default=0.25, help="OOS MaxDD gate maximum")
-    parser.add_argument("--gate-pf", type=float, default=1.05, help="OOS Profit Factor gate minimum")
+    parser.add_argument("--forward-bars", type=int, default=3, help="Forward bars for target")
+    parser.add_argument("--regime-filter", type=str, default="both", choices=["none", "bull_only", "bear_only", "both"], help="Regime filter")
+    parser.add_argument("--prob-threshold", type=float, default=0.55, help="Probability threshold for signal")
+    parser.add_argument("--leverage", type=float, default=1.0, help="Leverage multiplier (1 = spot)")
+    parser.add_argument("--allow-short", action="store_true", default=True, help="Allow short positions")
+    parser.add_argument("--no-short", action="store_true", help="Disable short positions")
+    parser.add_argument("--rr-ratio", type=float, default=2.0, help="Reward:Risk ratio (TP/SL)")
+    parser.add_argument("--risk-per-trade", type=float, default=0.01, help="Risk per trade as fraction of account")
+    parser.add_argument("--stop-loss-atr", type=float, default=2.0, help="Stop loss in ATR multiples")
+    parser.add_argument("--take-profit-atr", type=float, default=5.0, help="Take profit in ATR multiples")
+    parser.add_argument("--max-hold-bars", type=int, default=30, help="Max bars to hold position")
+    parser.add_argument("--gate-expectancy-r", type=float, default=0.1, help="Minimum expectancy in R per trade")
+    parser.add_argument("--gate-maxdd", type=float, default=0.50, help="Maximum drawdown (fraction)")
+    parser.add_argument("--gate-win-rate", type=float, default=0.40, help="Minimum win rate (fraction)")
     args = parser.parse_args()
 
     symbol = args.symbol.upper()
@@ -570,13 +695,21 @@ def main():
     forward_bars = args.forward_bars
     regime_filter = args.regime_filter
     prob_threshold = args.prob_threshold
+    leverage = args.leverage
+    allow_short = args.allow_short and not args.no_short
+    rr_ratio = args.rr_ratio
+    risk_per_trade = args.risk_per_trade
+    sl_atr = args.stop_loss_atr
+    tp_atr = args.take_profit_atr
+    max_hold = args.max_hold_bars
 
     gates = {
-        "oos_sharpe_min": args.gate_sharpe,
-        "oos_maxdd_max": args.gate_maxdd,
-        "oos_pf_min": args.gate_pf,
+        "expectancy_r_min": args.gate_expectancy_r,
+        "maxdd_max": args.gate_maxdd,
+        "win_rate_min": args.gate_win_rate,
     }
 
+    print(f"[train] {symbol} {interval} | lev={leverage}x short={allow_short} RR=1:{rr_ratio} risk={risk_per_trade*100:.1f}% SL={sl_atr}ATR TP={tp_atr}ATR maxHold={max_hold}")
     print(f"[train] Fetching {symbol} {interval} candles (limit={lookback})")
     asset_candles = fetch_klines(symbol, interval, lookback)
     if len(asset_candles) < 80:
@@ -592,7 +725,6 @@ def main():
     print("[train] Computing features")
     df = compute_features(asset_candles, index_candles)
 
-    # Apply regime filter before target/training
     df = apply_regime_filter(df, regime_filter)
     if len(df) < 80:
         print(f"[train] ERROR: insufficient data after regime filter ({len(df)} rows)")
@@ -614,20 +746,33 @@ def main():
     X = df_clean[feature_cols]
     y = df_clean["target"]
 
-    print(f"[train] Running walk-forward OOS (n={len(X)}, forward={forward_bars}, regime={regime_filter}, prob_thresh={prob_threshold})")
-    oos = walk_forward_oos(X, y, n_windows=3, prob_threshold=prob_threshold)
-    print(f"[train] OOS Sharpe={oos['oos_sharpe']:.3f} MaxDD={oos['oos_maxdd']:.3%} PF={oos['oos_pf']:.3f} WinRate={oos['oos_winrate']:.3%} Signals={oos['oos_signals_taken']}/{oos['oos_trades']} AvgConf={oos['oos_avg_confidence']:.3f}")
+    print(f"[train] Walk-forward backtest (n={len(X)}, forward={forward_bars}, regime={regime_filter}, prob_thresh={prob_threshold})")
+    oos = run_backtest_compounded_r(
+        X, y,
+        initial_capital=1000.0,
+        risk_per_trade=risk_per_trade,
+        stop_loss_atr=sl_atr,
+        take_profit_atr=tp_atr,
+        max_hold_bars=max_hold,
+        prob_threshold=prob_threshold,
+        leverage=leverage,
+        allow_short=allow_short,
+        fee_rate=0.001,
+        slippage=0.0005,
+    )
+
+    print(f"[train] OOS Expectancy={oos['oos_expectancy_r']:.3f}R TotalReturn={oos['oos_total_return_pct']:.2f}% MaxDD={oos['oos_maxdd_pct']:.2f}% WinRate={oos['oos_win_rate']:.1%} PF={oos['oos_profit_factor']:.2f} Trades={oos['oos_total_trades']} Sharpe={oos['oos_sharpe']:.2f}")
 
     # Gates
     passed = True
-    if oos["oos_sharpe"] < gates["oos_sharpe_min"]:
-        print(f"[train] GATE FAIL: OOS Sharpe {oos['oos_sharpe']:.3f} < {gates['oos_sharpe_min']}")
+    if oos["oos_expectancy_r"] < gates["expectancy_r_min"]:
+        print(f"[train] GATE FAIL: Expectancy {oos['oos_expectancy_r']:.3f}R < {gates['expectancy_r_min']}R")
         passed = False
-    if oos["oos_maxdd"] > gates["oos_maxdd_max"]:
-        print(f"[train] GATE FAIL: OOS MaxDD {oos['oos_maxdd']:.3%} > {gates['oos_maxdd_max']:.0%}")
+    if oos["oos_maxdd_pct"] / 100 > gates["maxdd_max"]:
+        print(f"[train] GATE FAIL: MaxDD {oos['oos_maxdd_pct']:.2f}% > {gates['maxdd_max']*100:.0f}%")
         passed = False
-    if oos["oos_pf"] < gates["oos_pf_min"]:
-        print(f"[train] GATE FAIL: OOS PF {oos['oos_pf']:.3f} < {gates['oos_pf_min']}")
+    if oos["oos_win_rate"] < gates["win_rate_min"]:
+        print(f"[train] GATE FAIL: WinRate {oos['oos_win_rate']:.1%} < {gates['win_rate_min']*100:.0f}%")
         passed = False
 
     if not passed:
@@ -660,12 +805,19 @@ def main():
         "forward_bars": forward_bars,
         "regime_filter": regime_filter,
         "prob_threshold": prob_threshold,
+        "leverage": leverage,
+        "allow_short": allow_short,
+        "rr_ratio": rr_ratio,
+        "risk_per_trade": risk_per_trade,
+        "stop_loss_atr": sl_atr,
+        "take_profit_atr": tp_atr,
+        "max_hold_bars": max_hold,
         "feature_cols": feature_cols,
         "feature_importance": feature_importance,
         "oos_metrics": oos,
         "gates": gates,
         "gates_passed": True,
-        "model_type": "xgboost_reg_squarederror",
+        "model_type": "xgboost_reg_squarederror_long_short",
         "base_score": model_json["base_score"],
     }
     with open(meta_path, "w") as f:

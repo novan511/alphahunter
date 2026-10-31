@@ -12,10 +12,17 @@ interface MLPredictResponse {
   interval: string;
   prediction: number;
   probabilityUp: number;
+  probabilityDown: number;
   confidence: number;
-  signal: 'long' | 'flat';
+  signal: 'long' | 'short' | 'flat';
   regimePass: boolean;
   source: 'model' | 'fallback';
+  leverage?: number;
+  allowShort?: boolean;
+  rrRatio?: number;
+  riskPerTrade?: number;
+  stopLossATR?: number;
+  takeProfitATR?: number;
   modelVersion?: string;
   featuresUsed: string[];
   forwardBars?: number;
@@ -80,6 +87,7 @@ export default async function handler(
       interval: '',
       prediction: 0,
       probabilityUp: 0.5,
+      probabilityDown: 0.5,
       confidence: 0,
       signal: 'flat',
       regimePass: true,
@@ -94,7 +102,6 @@ export default async function handler(
   const iv = interval as string;
 
   try {
-    // Fetch asset candles and BTC benchmark in parallel
     const [assetCandles, btcCandles] = await Promise.all([
       fetchKlinesRouted(sym, iv, 500),
       fetchKlinesRouted('BTCUSDT', iv, 500),
@@ -106,6 +113,7 @@ export default async function handler(
         interval: iv,
         prediction: 0,
         probabilityUp: 0.5,
+        probabilityDown: 0.5,
         confidence: 0,
         signal: 'flat',
         regimePass: true,
@@ -116,7 +124,6 @@ export default async function handler(
       } as any);
     }
 
-    // Build features (must match Python training exactly)
     const fv = buildFeatures(assetCandles, btcCandles);
     if (fv.length === 0) {
       return res.status(400).json({
@@ -124,6 +131,7 @@ export default async function handler(
         interval: iv,
         prediction: 0,
         probabilityUp: 0.5,
+        probabilityDown: 0.5,
         confidence: 0,
         signal: 'flat',
         regimePass: true,
@@ -134,26 +142,21 @@ export default async function handler(
       } as any);
     }
 
-    // Use the most recent feature vector
     const latest = fv[fv.length - 1];
 
-    // Latest close and ATR% for trade setup chart
     const closes = assetCandles.map((c) => c.close);
     const latestClose = closes[closes.length - 1];
     const atrSeries = atr(assetCandles, 14);
     const latestATRPct = atrSeries.length > 0 ? atrSeries[atrSeries.length - 1] : 0;
     const atrPct = Number.isFinite(latestATRPct) && latestClose > 0 ? (latestATRPct / latestClose) * 100 : 0;
 
-    // Load model and meta
     const modelObj = loadModelFile(sym, iv);
     const model = modelObj ? loadModelFromJSON(modelObj) : null;
     const metaObj = loadMetaFile(sym, iv);
     const meta = metaObj ? loadMetaFromJSON(metaObj) : null;
 
-    // BTC bull filter from latest feature (index 7 = btc_bull_filter)
     const btcBullFilter = latest.features.length > 7 ? latest.features[7] : 1;
 
-    // Predict
     const result = predict(model, meta, latest.features, btcBullFilter);
 
     const response: MLPredictResponse = {
@@ -161,10 +164,17 @@ export default async function handler(
       interval: iv,
       prediction: result.value,
       probabilityUp: result.probabilityUp,
+      probabilityDown: result.probabilityDown,
       confidence: result.confidence,
       signal: result.signal,
       regimePass: result.regimePass,
       source: result.source,
+      leverage: meta?.leverage,
+      allowShort: meta?.allow_short,
+      rrRatio: meta?.rr_ratio,
+      riskPerTrade: meta?.risk_per_trade,
+      stopLossATR: meta?.stop_loss_atr,
+      takeProfitATR: meta?.take_profit_atr,
       modelVersion: meta?.trained_at,
       featuresUsed: FEATURE_NAMES,
       forwardBars: meta?.forward_bars,
@@ -182,6 +192,7 @@ export default async function handler(
       interval: iv,
       prediction: 0,
       probabilityUp: 0.5,
+      probabilityDown: 0.5,
       confidence: 0,
       signal: 'flat',
       regimePass: true,

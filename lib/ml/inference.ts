@@ -1,9 +1,7 @@
 /**
  * XGBoost JSON model inference in pure TypeScript.
- * Traverses boosted tree ensemble: each tree outputs a leaf value, summed across trees,
- * plus base_score. No Python runtime, no npm ML deps.
- *
- * Supports probability threshold and regime filter (BTC bull) for signal gating.
+ * Supports LONG + SHORT signals with probability threshold and regime filter.
+ * No Python runtime, no npm ML deps.
  */
 
 export interface XGBoostTreeNode {
@@ -36,6 +34,13 @@ export interface MlMeta {
   forward_bars?: number;
   regime_filter?: string;
   prob_threshold?: number;
+  leverage?: number;
+  allow_short?: boolean;
+  rr_ratio?: number;
+  risk_per_trade?: number;
+  stop_loss_atr?: number;
+  take_profit_atr?: number;
+  max_hold_bars?: number;
   feature_cols?: string[];
   feature_importance?: Record<string, number>;
   oos_metrics?: any;
@@ -47,11 +52,12 @@ export interface MlMeta {
 export interface PredictionResult {
   value: number; // raw model output (log-return estimate)
   probabilityUp: number; // P(return > 0) in [0,1]
+  probabilityDown: number; // P(return < 0) in [0,1]
   confidence: number; // distance from 0.5 in [0,0.5]
-  signal: 'long' | 'flat'; // 'long' if prob > threshold AND regime passes
-  regimePass: boolean; // whether BTC bull filter passed
+  signal: 'long' | 'short' | 'flat'; // signal direction
+  regimePass: boolean; // whether regime filter passed
   source: 'model' | 'fallback';
-  meta?: MlMeta | null;
+  meta?: MlMeta | null | undefined;
 }
 
 /**
@@ -115,8 +121,7 @@ export function loadMetaFromJSON(obj: unknown): MlMeta | null {
 }
 
 /**
- * Predict using an XGBoost JSON model with regime filter and probability threshold.
- * Falls back to neutral (0.5 probability) if model is missing or invalid.
+ * Predict using an XGBoost JSON model with short support, regime filter, and probability threshold.
  */
 export function predict(
   model: XGBoostModel | null,
@@ -126,11 +131,13 @@ export function predict(
 ): PredictionResult {
   const probThreshold = meta?.prob_threshold ?? 0.55;
   const regimeFilter = meta?.regime_filter ?? 'none';
+  const allowShort = meta?.allow_short ?? true;
 
   if (!model) {
     return {
       value: 0,
       probabilityUp: 0.5,
+      probabilityDown: 0.5,
       confidence: 0,
       signal: 'flat',
       regimePass: true,
@@ -147,22 +154,38 @@ export function predict(
   // Calibrate probability from raw log-return estimate
   const scaled = raw * 100;
   const probabilityUp = sigmoid(scaled);
+  const probabilityDown = 1 - probabilityUp;
   const confidence = Math.abs(probabilityUp - 0.5);
 
-  // Regime filter: check BTC bull filter
+  // Regime filter
   // Feature index 7 = btc_bull_filter in our feature vector
   const btcBullFeature = features.length > 7 ? features[7] : 1;
-  const regimePass =
-    regimeFilter === 'none' ||
-    (regimeFilter === 'bull_only' && (btcBullFeature === 1 || btcBullFilter === 1)) ||
-    (regimeFilter === 'bear_only' && (btcBullFeature === 0 || btcBullFilter === 0));
+  let regimePass = true;
+  if (regimeFilter === 'bull_only') {
+    regimePass = btcBullFeature === 1 || btcBullFilter === 1;
+  } else if (regimeFilter === 'bear_only') {
+    regimePass = btcBullFeature === 0 || btcBullFilter === 0;
+  }
 
-  // Signal: long only if prob > threshold AND regime passes
-  const signal = probabilityUp > probThreshold && regimePass ? 'long' : 'flat';
+  // Signal determination
+  let signal: 'long' | 'short' | 'flat' = 'flat';
+
+  const takeLong = probabilityUp > probThreshold && regimePass;
+  const takeShort = allowShort && probabilityDown > probThreshold && regimePass;
+
+  if (takeLong && takeShort) {
+    // Both pass; pick the stronger one
+    signal = probabilityUp >= probabilityDown ? 'long' : 'short';
+  } else if (takeLong) {
+    signal = 'long';
+  } else if (takeShort) {
+    signal = 'short';
+  }
 
   return {
     value: raw,
     probabilityUp,
+    probabilityDown,
     confidence,
     signal,
     regimePass,
