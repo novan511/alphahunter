@@ -51,7 +51,7 @@ export interface PredictionResult {
   signal: 'long' | 'flat'; // 'long' if prob > threshold AND regime passes
   regimePass: boolean; // whether BTC bull filter passed
   source: 'model' | 'fallback';
-  meta?: MlMeta;
+  meta?: MlMeta | null;
 }
 
 /**
