@@ -1,12 +1,15 @@
 /**
- * ML Backtest Engine — Long/Short, leverage, compounded R position sizing.
+ * ML Backtest Engine — Arena-inspired.
+ * Long/Short, leverage, compounded R position sizing, exit ladder,
+ * loss streak de-risking, circuit breaker, knockout, correlation guardrail,
+ * per-symbol mistake ledger.
  * Used both in training (walk-forward gate) and API backtest endpoint.
  */
 
 import { Candle } from '../types';
 import { atr } from '../algorithms/indicators';
 import { buildFeatures } from './features';
-import { loadModelFromJSON, loadMetaFromJSON, predict } from './inference';
+import { loadModelFromJSON, loadMetaFromJSON, predict, createGuardrailState, managePosition, calculatePositionSize, OpenPosition } from './inference';
 import fs from 'fs';
 import path from 'path';
 
@@ -22,7 +25,7 @@ interface MLTrade {
   pnl: number;
   pnlPercent: number;
   rMultiple: number;
-  exitReason: 'tp' | 'sl' | 'time' | 'end';
+  exitReason: 'tp' | 'sl' | 'time' | 'partial' | 'end';
   barsHeld: number;
   probabilityUp: number;
   probabilityDown: number;
@@ -53,6 +56,12 @@ interface MLBacktestResult {
   tradesByMonth: Array<{ month: string; pnl: number; trades: number }>;
   initialCapital: number;
   finalCapital: number;
+  guardrailStats: {
+    lossStreak: number;
+    circuitBreakerTriggers: number;
+    knockout: boolean;
+    mistakeLedgerSymbols: Array<{ symbol: string; avgR: number; trades: number }>;
+  };
 }
 
 interface BacktestConfig {
@@ -67,6 +76,15 @@ interface BacktestConfig {
   feeRate: number;
   slippage: number;
 }
+
+// Arena guardrail constants (mirror Python)
+const CIRCUIT_R = -3.0;
+const KNOCKOUT_EQ = 500.0;
+const RISK_PER_TRADE_MAX = 0.03;
+const RISK_R_MAX = 0.06;
+const POS_MAX = 4;
+const TRAIL_R = 1.0;
+const PARTIAL_R = 1.5;
 
 export async function runMLBacktest(
   symbol: string,
@@ -112,6 +130,9 @@ export async function runMLBacktest(
   }
 
   const closes = assetCandles.map((c) => c.close);
+  const highs = assetCandles.map((c) => c.high);
+  const lows = assetCandles.map((c) => c.low);
+  const opens = assetCandles.map((c) => c.open);
   const atrSeries = atr(assetCandles, 14);
 
   const trades: MLTrade[] = [];
@@ -123,17 +144,32 @@ export async function runMLBacktest(
     { time: fv[0].time, equity: account },
   ];
 
+  // Guardrail state
+  const gr = createGuardrailState(config.initialCapital);
+  let circuitBreakerTriggers = 0;
+  let knockout = false;
+
+  // Per-symbol mistake ledger
+  const symbolTradeRs: Record<string, number[]> = {};
+
+  // Track last prediction result for closing remaining positions
+  let lastResult: { probabilityUp: number; probabilityDown: number } = { probabilityUp: 0.5, probabilityDown: 0.5 };
+
   while (i < fv.length) {
     const f = fv[i];
     const assetIdx = assetCandles.length - fv.length + i;
     const candle = assetCandles[assetIdx];
     const close = candle.close;
+    const high = candle.high;
+    const low = candle.low;
+    const openPx = candle.open;
     const currentATR = atrSeries[assetIdx];
     const atrAbs = Number.isFinite(currentATR) && currentATR > 0 ? currentATR : close * 0.02;
 
     // Predict signal
     const btcBullFeature = f.features.length > 7 ? f.features[7] : 1;
     const result = predict(model, meta, f.features, btcBullFeature);
+    lastResult = { probabilityUp: result.probabilityUp, probabilityDown: result.probabilityDown };
 
     // Determine stop distance
     const stopDist = slAtr * atrAbs;
@@ -143,77 +179,179 @@ export async function runMLBacktest(
       continue;
     }
 
-    // Check if we have an open trade to manage
-    const openTrade = trades.find((t) => t.exitTime === 0);
-    if (openTrade) {
-      const ot = openTrade;
-      let exitPrice = 0;
-      let exitReason: MLTrade['exitReason'] | null = null;
-      const barsHeld = i - fv.findIndex((x) => x.time === ot.entryTime);
+    // --- Manage open positions ---
+    const newPositions: OpenPosition[] = [];
 
-      // Check time stop
-      if (barsHeld >= maxHold) {
-        exitPrice = close;
-        exitReason = 'time';
-      } else if (ot.side === 'long') {
-        if (candle.low <= ot.entryPrice - slAtr * atrAbs) {
-          exitPrice = ot.entryPrice - slAtr * atrAbs;
+    for (const pos of gr.openPositions) {
+      pos.barsHeld += 1;
+      const dir = pos.side === 'long' ? 1 : -1;
+      const liveR = (close - pos.entryPrice) * dir / Math.max(1e-9, pos.riskUnit);
+
+      // Exit ladder: check stop loss first
+      let exitReason: MLTrade['exitReason'] | null = null;
+      let exitPx = 0;
+
+      if (pos.side === 'long') {
+        if (low <= pos.stopLoss) {
           exitReason = 'sl';
-        } else if (candle.high >= ot.entryPrice + tpAtr * atrAbs) {
-          exitPrice = ot.entryPrice + tpAtr * atrAbs;
+          exitPx = Math.min(pos.stopLoss, openPx);
+        } else if (high >= pos.takeProfit) {
           exitReason = 'tp';
+          exitPx = pos.takeProfit;
         }
       } else {
-        // short
-        if (candle.high >= ot.entryPrice + slAtr * atrAbs) {
-          exitPrice = ot.entryPrice + slAtr * atrAbs;
+        if (high >= pos.stopLoss) {
           exitReason = 'sl';
-        } else if (candle.low <= ot.entryPrice - tpAtr * atrAbs) {
-          exitPrice = ot.entryPrice - tpAtr * atrAbs;
+          exitPx = Math.max(pos.stopLoss, openPx);
+        } else if (low <= pos.takeProfit) {
           exitReason = 'tp';
+          exitPx = pos.takeProfit;
         }
       }
 
-      if (exitReason && exitPrice > 0) {
+      // Time stop
+      if (!exitReason && pos.barsHeld >= maxHold) {
+        exitReason = 'time';
+        exitPx = close;
+      }
+
+      if (exitReason) {
         // Calculate PnL
         let grossPnl: number;
-        if (ot.side === 'long') {
-          grossPnl = ot.qty * (exitPrice - ot.entryPrice);
+        if (pos.side === 'long') {
+          grossPnl = pos.qty * (exitPx - pos.entryPrice);
         } else {
-          grossPnl = ot.qty * (ot.entryPrice - exitPrice);
+          grossPnl = pos.qty * (pos.entryPrice - exitPx);
         }
-
-        // Fees + slippage on entry and exit
-        const fees = ot.qty * ot.entryPrice * config.feeRate + ot.qty * exitPrice * config.feeRate;
-        const slipCost = ot.qty * ot.entryPrice * config.slippage + ot.qty * exitPrice * config.slippage;
+        const fees = pos.qty * pos.entryPrice * config.feeRate + pos.qty * exitPx * config.feeRate;
+        const slipCost = pos.qty * pos.entryPrice * config.slippage + pos.qty * exitPx * config.slippage;
         const netPnl = grossPnl - fees - slipCost;
+        const rMultiple = pos.riskDollar > 0 ? netPnl / pos.riskDollar : 0;
 
-        // R multiple based on original risk
-        const riskAmount = ot.notional * (slAtr * atrAbs / ot.entryPrice); // approx risk at entry
-        const rMultiple = riskAmount > 0 ? netPnl / riskAmount : 0;
-
-        // Update account (compounded)
         account += netPnl;
 
-        ot.exitTime = f.time;
-        ot.exitPrice = exitPrice;
-        ot.pnl = Math.round(netPnl * 100) / 100;
-        ot.pnlPercent = Math.round(((exitPrice - ot.entryPrice) / ot.entryPrice) * (ot.side === 'long' ? 1 : -1) * 10000) / 100;
-        ot.rMultiple = Math.round(rMultiple * 1000) / 1000;
-        ot.exitReason = exitReason;
-        ot.barsHeld = barsHeld;
+        trades.push({
+          id: ++tradeId,
+          entryTime: pos.entryTime,
+          exitTime: f.time,
+          entryPrice: pos.entryPrice,
+          exitPrice: exitPx,
+          side: pos.side,
+          qty: pos.qty,
+          notional: pos.qty * pos.entryPrice,
+          pnl: Math.round(netPnl * 100) / 100,
+          pnlPercent: Math.round(((exitPx - pos.entryPrice) / pos.entryPrice) * (pos.side === 'long' ? 1 : -1) * 10000) / 100,
+          rMultiple: Math.round(rMultiple * 1000) / 1000,
+          exitReason,
+          barsHeld: pos.barsHeld,
+          probabilityUp: result.probabilityUp,
+          probabilityDown: result.probabilityDown,
+          regimePass: true,
+        });
 
-        equityCurve.push({ time: f.time, equity: Math.round(account * 100) / 100 });
+        // Track per-symbol R
+        if (!symbolTradeRs[symbol]) symbolTradeRs[symbol] = [];
+        symbolTradeRs[symbol].push(rMultiple);
 
-        i++; // move past this bar after exit
-        continue;
+        // Loss streak tracking
+        if (netPnl <= 0) gr.lossStreak++;
+        else gr.lossStreak = 0;
+
+        // Track exit reason
+        gr.exitReasonCounts[exitReason] = (gr.exitReasonCounts[exitReason] || 0) + 1;
+      } else {
+        // Apply exit ladder via managePosition
+        const managed = managePosition(
+          {
+            side: pos.side,
+            entryPrice: pos.entryPrice,
+            stopLoss: pos.stopLoss,
+            takeProfit: pos.takeProfit,
+            riskUnit: pos.riskUnit,
+            barsHeld: pos.barsHeld,
+            tookPartial: pos.tookPartial,
+            qty: pos.qty,
+          },
+          close,
+          currentATR,
+          maxHold,
+        );
+
+        pos.stopLoss = managed.pos.stopLoss;
+        pos.qty = managed.pos.qty;
+        pos.tookPartial = managed.pos.tookPartial;
+        pos.barsHeld = managed.pos.barsHeld;
+
+        if (managed.exitReason) {
+          // Partial exit
+          let grossPnl: number;
+          if (pos.side === 'long') {
+            grossPnl = pos.qty * (managed.exitPrice! - pos.entryPrice);
+          } else {
+            grossPnl = pos.qty * (pos.entryPrice - managed.exitPrice!);
+          }
+          const fees = pos.qty * pos.entryPrice * config.feeRate + pos.qty * managed.exitPrice! * config.feeRate;
+          const slipCost = pos.qty * pos.entryPrice * config.slippage + pos.qty * managed.exitPrice! * config.slippage;
+          const netPnl = grossPnl - fees - slipCost;
+          const rMultiple = pos.riskDollar > 0 ? netPnl / pos.riskDollar : 0;
+
+          account += netPnl;
+
+          trades.push({
+            id: ++tradeId,
+            entryTime: pos.entryTime,
+            exitTime: f.time,
+            entryPrice: pos.entryPrice,
+            exitPrice: managed.exitPrice!,
+            side: pos.side,
+            qty: pos.qty * 2, // half was closed, original was double
+            notional: pos.qty * pos.entryPrice * 2,
+            pnl: Math.round(netPnl * 100) / 100,
+            pnlPercent: Math.round(((managed.exitPrice! - pos.entryPrice) / pos.entryPrice) * (pos.side === 'long' ? 1 : -1) * 10000) / 100,
+            rMultiple: Math.round(rMultiple * 1000) / 1000,
+            exitReason: managed.exitReason,
+            barsHeld: pos.barsHeld,
+            probabilityUp: result.probabilityUp,
+            probabilityDown: result.probabilityDown,
+            regimePass: true,
+          });
+
+          if (!symbolTradeRs[symbol]) symbolTradeRs[symbol] = [];
+          symbolTradeRs[symbol].push(rMultiple);
+
+          if (netPnl <= 0) gr.lossStreak++;
+          else gr.lossStreak = 0;
+
+          gr.exitReasonCounts[managed.exitReason] = (gr.exitReasonCounts[managed.exitReason] || 0) + 1;
+        }
+
+        newPositions.push(pos);
       }
     }
 
-    // No open trade — look for new entry
-    if (!trades.find((t) => t.exitTime === 0)) {
+    gr.openPositions = newPositions;
+
+    // --- Circuit breaker calculation ---
+    let openUnrealizedR = 0;
+    let openRisk = 0;
+    for (const pos of gr.openPositions) {
+      const dir = pos.side === 'long' ? 1 : -1;
+      const liveR = (close - pos.entryPrice) * dir / Math.max(1e-9, pos.riskUnit);
+      openUnrealizedR += liveR;
+      openRisk += pos.riskDollar / account;
+    }
+
+    gr.circuitBlocked = openUnrealizedR <= CIRCUIT_R;
+    if (gr.circuitBlocked) circuitBreakerTriggers++;
+
+    gr.knockout = account <= KNOCKOUT_EQ;
+    if (gr.knockout) knockout = true;
+
+    // --- New entry (only if no open position and not blocked) ---
+    const hasOpen = gr.openPositions.length > 0;
+    if (!hasOpen && !gr.circuitBlocked && !gr.knockout) {
       const takeLong = result.signal === 'long' && result.regimePass;
-      const takeShort = config.allowShort && result.signal === 'short' && result.regimePass;
+      const takeShort = allowShort && result.signal === 'short' && result.regimePass;
 
       let side: 'long' | 'short' | null = null;
       if (takeLong && takeShort) {
@@ -225,66 +363,103 @@ export async function runMLBacktest(
       }
 
       if (side) {
-        const entryPrice = close * (1 + config.slippage); // approx entry with slippage
-        const riskAmount = account * riskPerTrade;
-        const qty = riskAmount / stopDist; // units of asset
-        const notional = qty * entryPrice;
-
-        if (qty > 0 && notional > 0) {
-          trades.push({
-            id: ++tradeId,
-            entryTime: f.time,
-            exitTime: 0,
-            entryPrice,
-            exitPrice: 0,
-            side,
-            qty,
-            notional,
-            pnl: 0,
-            pnlPercent: 0,
-            rMultiple: 0,
-            exitReason: 'end',
-            barsHeld: 0,
-            probabilityUp: result.probabilityUp,
-            probabilityDown: result.probabilityDown,
-            regimePass: true,
-          });
+        // Mistake ledger check: symbol banned if avgR ≤ -0.5 from ≥3 trades
+        const symRs = symbolTradeRs[symbol] || [];
+        if (symRs.length >= 3) {
+          const symAvgR = symRs.reduce((a, b) => a + b, 0) / symRs.length;
+          if (symAvgR <= -0.5) {
+            i++;
+            continue;
+          }
         }
+
+        // Loss streak de-risking
+        const streakCap = (
+          gr.lossStreak >= 5 ? 0.005 :
+          gr.lossStreak >= 4 ? 0.0075 :
+          gr.lossStreak >= 3 ? 0.01 :
+          gr.lossStreak >= 2 ? 0.015 :
+          gr.lossStreak >= 1 ? 0.02 : RISK_PER_TRADE_MAX
+        );
+        const effRisk = Math.min(riskPerTrade, streakCap);
+
+        // Check total open risk ≤ 6%
+        if (openRisk + effRisk > RISK_R_MAX) {
+          i++;
+          continue;
+        }
+
+        const entryPrice = close * (1 + config.slippage); // approx entry with slippage
+        const { qty, notional, riskDollar } = calculatePositionSize(account, effRisk, stopDist, entryPrice);
+        if (qty <= 0 || notional <= 0) {
+          i++;
+          continue;
+        }
+
+        const stopPrice = side === 'long' ? entryPrice - stopDist : entryPrice + stopDist;
+        const tpPrice = side === 'long' ? entryPrice + tpDist : entryPrice - tpDist;
+
+        gr.openPositions.push({
+          side,
+          entryPrice,
+          stopLoss: stopPrice,
+          takeProfit: tpPrice,
+          riskUnit: stopDist,
+          barsHeld: 0,
+          tookPartial: false,
+          qty,
+          entryTime: f.time,
+          riskDollar,
+        });
+
+        i++;
+        continue;
       }
     }
 
     i++;
   }
 
-  // Close remaining open trade at last close
-  const openTrade = trades.find((t) => t.exitTime === 0);
-  if (openTrade) {
-    const ot = openTrade;
-    const lastClose = closes[closes.length - 1];
-    const lastATR = atrSeries[atrSeries.length - 1];
-    const lastATRAbs = Number.isFinite(lastATR) && lastATR > 0 ? lastATR : lastClose * 0.02;
+  // Close remaining open positions at last close
+  const lastClose = closes[closes.length - 1];
+  for (const pos of gr.openPositions) {
     let grossPnl: number;
-    if (ot.side === 'long') {
-      grossPnl = ot.qty * (lastClose - ot.entryPrice);
+    if (pos.side === 'long') {
+      grossPnl = pos.qty * (lastClose - pos.entryPrice);
     } else {
-      grossPnl = ot.qty * (ot.entryPrice - lastClose);
+      grossPnl = pos.qty * (pos.entryPrice - lastClose);
     }
-    const fees = ot.qty * ot.entryPrice * config.feeRate + ot.qty * lastClose * config.feeRate;
-    const slipCost = ot.qty * ot.entryPrice * config.slippage + ot.qty * lastClose * config.slippage;
+    const fees = pos.qty * pos.entryPrice * config.feeRate + pos.qty * lastClose * config.feeRate;
+    const slipCost = pos.qty * pos.entryPrice * config.slippage + pos.qty * lastClose * config.slippage;
     const netPnl = grossPnl - fees - slipCost;
-    const riskAmount = ot.notional * (slAtr * lastATRAbs / ot.entryPrice);
-    const rMultiple = riskAmount > 0 ? netPnl / riskAmount : 0;
+    const rMultiple = pos.riskDollar > 0 ? netPnl / pos.riskDollar : 0;
+
     account += netPnl;
 
-    ot.exitTime = fv[fv.length - 1].time;
-    ot.exitPrice = lastClose;
-    ot.pnl = Math.round(netPnl * 100) / 100;
-    ot.pnlPercent = Math.round(((lastClose - ot.entryPrice) / ot.entryPrice) * (ot.side === 'long' ? 1 : -1) * 10000) / 100;
-    ot.rMultiple = Math.round(rMultiple * 1000) / 1000;
-    ot.exitReason = 'end';
-    ot.barsHeld = fv.length - 1 - fv.findIndex((x) => x.time === ot.entryTime);
+    trades.push({
+      id: ++tradeId,
+      entryTime: pos.entryTime,
+      exitTime: fv[fv.length - 1].time,
+      entryPrice: pos.entryPrice,
+      exitPrice: lastClose,
+      side: pos.side,
+      qty: pos.qty,
+      notional: pos.qty * pos.entryPrice,
+      pnl: Math.round(netPnl * 100) / 100,
+      pnlPercent: Math.round(((lastClose - pos.entryPrice) / pos.entryPrice) * (pos.side === 'long' ? 1 : -1) * 10000) / 100,
+      rMultiple: Math.round(rMultiple * 1000) / 1000,
+      exitReason: 'end',
+      barsHeld: pos.barsHeld,
+      probabilityUp: lastResult.probabilityUp,
+      probabilityDown: lastResult.probabilityDown,
+      regimePass: true,
+    });
 
-    equityCurve.push({ time: fv[fv.length - 1].time, equity: Math.round(account * 100) / 100 });
+    if (!symbolTradeRs[symbol]) symbolTradeRs[symbol] = [];
+    symbolTradeRs[symbol].push(rMultiple);
+
+    if (netPnl <= 0) gr.lossStreak++;
+    else gr.lossStreak = 0;
   }
 
   // Compute metrics
@@ -321,8 +496,8 @@ export async function runMLBacktest(
       ? Math.sqrt(
           rMultiples.reduce((a, b) => a + Math.pow(b - meanR, 2), 0) / (rMultiples.length - 1)
         )
-    : 0;
-  const sharpe = stdR > 0 ? (meanR / stdR) * Math.sqrt(365 * 6) : 0; // 4h bars/year approx
+      : 0;
+  const sharpe = stdR > 0 ? (meanR / stdR) * Math.sqrt(365 * 6) : 0;
 
   // Max drawdown from equity curve
   let peak = config.initialCapital;
@@ -345,6 +520,16 @@ export async function runMLBacktest(
   const tradesByMonth = Array.from(tradesByMonthMap.entries())
     .map(([month, v]) => ({ month, pnl: v.pnl, trades: v.trades }))
     .sort((a, b) => a.month.localeCompare(b.month));
+
+  // Mistake ledger symbols
+  const mistakeLedger = Object.entries(symbolTradeRs)
+    .filter(([, rs]) => rs.length >= 3)
+    .map(([sym, rs]) => ({
+      symbol: sym,
+      avgR: rs.reduce((a, b) => a + b, 0) / rs.length,
+      trades: rs.length,
+    }))
+    .filter((m) => m.avgR <= -0.5);
 
   return {
     symbol,
@@ -370,6 +555,12 @@ export async function runMLBacktest(
     tradesByMonth,
     initialCapital: config.initialCapital,
     finalCapital: Math.round(account * 100) / 100,
+    guardrailStats: {
+      lossStreak: gr.lossStreak,
+      circuitBreakerTriggers,
+      knockout,
+      mistakeLedgerSymbols: mistakeLedger,
+    },
   };
 }
 
@@ -402,6 +593,12 @@ function emptyResult(
     tradesByMonth: [],
     initialCapital: config.initialCapital,
     finalCapital: config.initialCapital,
+    guardrailStats: {
+      lossStreak: 0,
+      circuitBreakerTriggers: 0,
+      knockout: false,
+      mistakeLedgerSymbols: [],
+    },
   };
 }
 

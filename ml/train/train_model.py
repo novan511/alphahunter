@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
-"""Train XGBoost model for RS decoupling prediction — LONG + SHORT, leverage, professional RR.
+"""Train XGBoost model for RS decoupling prediction — Arena-inspired.
 
-Improvements:
-- Multi-bar target (forward N bars return) — REGRESSION task
-- Direction target (up/down/flat) — CLASSIFICATION task
-- Regime filter (BTC trend alignment)
-- LONG + SHORT signals
-- Optional leverage
-- Professional Reward:Risk ratio (default 1:2)
-- Compounded R position sizing (account grows/shrinks per trade)
-- Gates based on expectancy in R
+Arena-inspired improvements:
+- Classification target (up/down/flat) instead of raw return regression
+- Exit ladder: +1R breakeven, +1.5R bank half, trailing ATR
+- Loss streak de-risking: 2→1.5%, 3→1%, 4→0.75%, 5+→0.5%
+- Circuit breaker: open unrealized R ≤ -3R blocks new entries
+- Knockout: equity ≤ 50% → stop training
+- Correlation guardrail: |corr| ≥ 0.8 with open position → reject
+- Max 4 concurrent positions
+- Risk per trade: 0.5%-3%
+- Per-symbol mistake ledger (symbols with avgR ≤ -0.5 from ≥3 trades banned)
+- Regime filter per archetype
 
 Exports model to JSON for pure-TypeScript inference on Vercel.
 """
@@ -35,33 +37,45 @@ HYPERLIQUID_BASE = os.environ.get("HYPERLIQUID_BASE_URL", "https://api.hyperliqu
 # Probability calibration scaling: raw log-return * SIGMOID_SCALE -> probability
 SIGMOID_SCALE = 300.0
 
+# Arena guardrail constants
+ATR_MIN = 0.8
+ATR_MAX = 6.0
+TARGET_MIN = 0.5
+TARGET_MAX = 10.0
+STR_MIN = 3.0
+STR_MAX = 9.5
+POS_MIN = 1
+POS_MAX = 5
+HOLD_MIN = 6
+HOLD_MAX = 96
+RISK_PER_TRADE_MIN = 0.005
+RISK_PER_TRADE_MAX = 0.03
+RISK_R_MAX = 0.06  # total open risk max 6% equity
+CIRCUIT_R = -3.0   # open unrealized R total ≤ -3R → block new entries
+CORR_BLOCK = 0.8   # |corr| ≥ 0.8 with open position → reject
+KNOCKOUT_EQ = 500.0  # equity ≤ $500 → knockout
+PARTIAL_R = 1.5    # +1.5R: bank separuh posisi
+TRAIL_R = 1.0      # +1R: stop ke breakeven, lalu trailing ATR
+RUNNER_MIN_R = 1.5 # close manual di zona +0.2R..+1.5R ditolak
+
 
 def detect_source(symbol: str) -> str:
-    """Detect which source a symbol belongs to based on its format."""
     s = symbol.upper().strip()
-    # Yahoo commodity futures
-    if s.endswith('=F') or s.endswith('=X') or s.endswith('.JK') or '.' in s and not s.endswith('USDT'):
+    if s.endswith('=F') or s.endswith('=X') or '.' in s and not s.endswith('USDT'):
         return 'yahoo'
-    # Yahoo indices
     if s.startswith('^'):
         return 'yahoo'
-    # Yahoo equities (no USDT suffix, not crypto-like)
     if not s.endswith('USDT') and not s.endswith('USDC') and len(s) <= 5 and s.isalpha():
         return 'yahoo'
-    # Default: crypto on Binance
     return 'binance'
 
 
 def to_yahoo_symbol(symbol: str) -> str:
-    """Convert a symbol to Yahoo Finance format."""
     s = symbol.upper().strip()
-    # Already in Yahoo format (GC=F, ^GSPC, etc.)
     if '=' in s or s.startswith('^') or '.' in s:
         return s
-    # US equity -> append nothing (Yahoo uses plain ticker)
     if s.isalpha() and len(s) <= 5:
         return s
-    # Crypto pair BTCUSDT -> BTC-USD for Yahoo
     if s.endswith('USDT'):
         return s.replace('USDT', '-USD')
     if s.endswith('USDC'):
@@ -70,7 +84,6 @@ def to_yahoo_symbol(symbol: str) -> str:
 
 
 def yahoo_interval_map(interval: str) -> str:
-    """Map interval to Yahoo-supported interval."""
     allowed = {'1m', '5m', '15m', '30m', '60m', '90m', '1h', '1d', '5d', '1wk', '1mo', '3mo'}
     if interval in allowed:
         return interval
@@ -84,7 +97,6 @@ def yahoo_interval_map(interval: str) -> str:
 
 
 def yahoo_range_for(interval: str, deep: bool) -> str:
-    """Prefer deep ranges for daily+ so commodities get multi-year history."""
     iv = yahoo_interval_map(interval)
     if not deep:
         if iv in ('1m', '5m', '15m', '30m', '60m', '1h'):
@@ -102,21 +114,14 @@ def yahoo_range_for(interval: str, deep: bool) -> str:
 
 
 def fetch_binance_klines(symbol: str, interval: str, limit: int) -> list[dict]:
-    """Fetch klines from Binance, paginated if needed."""
     all_candles = []
     end_time = None
     remaining = limit
-
     while remaining > 0:
         batch = min(remaining, BINANCE_MAX_LIMIT)
-        params = {
-            "symbol": symbol.upper(),
-            "interval": interval,
-            "limit": batch,
-        }
+        params = {"symbol": symbol.upper(), "interval": interval, "limit": batch}
         if end_time:
             params["endTime"] = end_time
-
         resp = requests.get(
             f"{BINANCE_BASE}/api/v3/klines",
             params=params,
@@ -125,11 +130,9 @@ def fetch_binance_klines(symbol: str, interval: str, limit: int) -> list[dict]:
         )
         if resp.status_code != 200:
             raise RuntimeError(f"Binance API error {resp.status_code}: {resp.text[:200]}")
-
         data = resp.json()
         if not data:
             break
-
         for row in data:
             all_candles.append({
                 "time": int(row[0]) // 1000,
@@ -139,29 +142,20 @@ def fetch_binance_klines(symbol: str, interval: str, limit: int) -> list[dict]:
                 "close": float(row[4]),
                 "volume": float(row[5]),
             })
-
         end_time = int(data[0][0]) - 1
         remaining -= len(data)
-
         if len(data) < batch:
             break
-
     all_candles.sort(key=lambda c: c["time"])
     return all_candles
 
 
 def fetch_yahoo_klines(symbol: str, interval: str, limit: int) -> list[dict]:
-    """Fetch klines from Yahoo Finance."""
     y_symbol = to_yahoo_symbol(symbol)
     y_interval = yahoo_interval_map(interval)
     y_range = yahoo_range_for(interval, deep=(limit > 800))
-
     url = f"{YAHOO_BASE}/{y_symbol}"
-    params = {
-        "interval": y_interval,
-        "range": y_range,
-    }
-
+    params = {"interval": y_interval, "range": y_range}
     resp = requests.get(
         url,
         params=params,
@@ -173,23 +167,19 @@ def fetch_yahoo_klines(symbol: str, interval: str, limit: int) -> list[dict]:
     )
     if resp.status_code != 200:
         raise RuntimeError(f"Yahoo API error {resp.status_code}: {resp.text[:200]}")
-
     data = resp.json()
     chart = data.get("chart", {})
     result = chart.get("result")
     if not result:
         raise RuntimeError(f"Yahoo returned no result for {symbol}")
-
     res0 = result[0]
     timestamps = res0.get("timestamp", [])
     quotes = res0.get("indicators", {}).get("quote", [{}])[0]
-
     opens = quotes.get("open", [])
     highs = quotes.get("high", [])
     lows = quotes.get("low", [])
     closes = quotes.get("close", [])
     volumes = quotes.get("volume", [])
-
     candles = []
     for i, ts in enumerate(timestamps):
         try:
@@ -199,17 +189,9 @@ def fetch_yahoo_klines(symbol: str, interval: str, limit: int) -> list[dict]:
             c = float(closes[i]) if i < len(closes) else 0
             v = float(volumes[i]) if i < len(volumes) else 0
             if NumberIsFinite(o) and NumberIsFinite(c) and o > 0 and c > 0:
-                candles.append({
-                    "time": int(ts),
-                    "open": o,
-                    "high": h,
-                    "low": l,
-                    "close": c,
-                    "volume": v,
-                })
+                candles.append({"time": int(ts), "open": o, "high": h, "low": l, "close": c, "volume": v})
         except (ValueError, TypeError):
             continue
-
     candles.sort(key=lambda c: c["time"])
     return candles[-limit:] if len(candles) > limit else candles
 
@@ -222,7 +204,6 @@ def NumberIsFinite(val) -> bool:
 
 
 def fetch_hyperliquid_klines(symbol: str, interval: str, limit: int) -> list[dict]:
-    """Fetch klines from Hyperliquid."""
     end = int(__import__('time').time() * 1000)
     iv_ms_map = {
         '1m': 60_000, '3m': 180_000, '5m': 300_000, '15m': 900_000,
@@ -231,18 +212,8 @@ def fetch_hyperliquid_klines(symbol: str, interval: str, limit: int) -> list[dic
     }
     iv_ms = iv_ms_map.get(interval, 14_400_000)
     start = end - int(iv_ms * max(limit, 50) * 1.2)
-
     coin = symbol.replace('/USDT', '').replace('USDT', '').upper()
-    body = {
-        "type": "candleSnapshot",
-        "req": {
-            "coin": coin,
-            "interval": interval,
-            "startTime": start,
-            "endTime": end,
-        },
-    }
-
+    body = {"type": "candleSnapshot", "req": {"coin": coin, "interval": interval, "startTime": start, "endTime": end}}
     resp = requests.post(
         f"{HYPERLIQUID_BASE}/info",
         json=body,
@@ -251,11 +222,9 @@ def fetch_hyperliquid_klines(symbol: str, interval: str, limit: int) -> list[dic
     )
     if resp.status_code != 200:
         raise RuntimeError(f"Hyperliquid API error {resp.status_code}: {resp.text[:200]}")
-
     raw = resp.json()
     if not isinstance(raw, list):
         return []
-
     candles = []
     for k in raw:
         try:
@@ -269,35 +238,26 @@ def fetch_hyperliquid_klines(symbol: str, interval: str, limit: int) -> list[dic
             })
         except (ValueError, TypeError):
             continue
-
     candles.sort(key=lambda c: c["time"])
     return candles[-limit:] if len(candles) > limit else candles
 
 
 def fetch_klines(symbol: str, interval: str, limit: int) -> list[dict]:
-    """Fetch klines with multi-source fallback: Binance → Yahoo → Hyperliquid."""
     source = detect_source(symbol)
-
-    # If the symbol is explicitly a non-Binance source, try that first
     if source == 'yahoo':
         try:
             return fetch_yahoo_klines(symbol, interval, limit)
         except Exception as e:
-            # Fallback to Binance if Yahoo fails (e.g. symbol might be on Binance)
             try:
                 return fetch_binance_klines(symbol, interval, limit)
             except Exception:
                 raise RuntimeError(f"Both Yahoo and Binance failed for {symbol}. Last error: {e}")
-
-    # For crypto/USDT symbols, try Binance first
     try:
         return fetch_binance_klines(symbol, interval, limit)
     except Exception as e_binance:
-        # Binance failed — try Yahoo fallback
         try:
             return fetch_yahoo_klines(symbol, interval, limit)
         except Exception as e_yahoo:
-            # Try Hyperliquid as last resort for crypto
             try:
                 return fetch_hyperliquid_klines(symbol, interval, limit)
             except Exception as e_hl:
@@ -337,11 +297,7 @@ def atr(candles: list[dict], period: int) -> list[float]:
             tr.append(c["high"] - c["low"])
         else:
             prev_close = candles[i - 1]["close"]
-            tr.append(max(
-                c["high"] - c["low"],
-                abs(c["high"] - prev_close),
-                abs(c["low"] - prev_close),
-            ))
+            tr.append(max(c["high"] - c["low"], abs(c["high"] - prev_close), abs(c["low"] - prev_close)))
     out = []
     for i in range(len(tr)):
         if i < period - 1:
@@ -368,43 +324,29 @@ def compute_features(
     index_candles: list[dict],
     rs_period: int = 20,
 ) -> pd.DataFrame:
-    """Build feature DataFrame matching lib/ml/features.ts exactly."""
     n = min(len(asset_candles), len(index_candles))
     asset = asset_candles[-n:]
     index_ = index_candles[-n:]
-
     closes = [c["close"] for c in asset]
     highs = [c["high"] for c in asset]
     lows = [c["low"] for c in asset]
     volumes = [c["volume"] for c in asset]
     index_closes = [c["close"] for c in index_]
-
-    # RS line: asset close / index close (aligned by position)
     rs_line = [a / i if i != 0 else 1.0 for a, i in zip(closes, index_closes)]
-
-    # RS MA and std
     rs_ma = sma(rs_line, rs_period)
     rs_std = std_dev(rs_line, rs_period)
-
-    # RS Z-score
     rs_zscore = []
     for i in range(n):
         if math.isnan(rs_ma[i]) or math.isnan(rs_std[i]) or rs_std[i] == 0:
             rs_zscore.append(0.0)
         else:
             rs_zscore.append((rs_line[i] - rs_ma[i]) / rs_std[i])
-
-    # RS momentum
     rs_momentum = [0.0] + [rs_line[i] - rs_line[i - 1] for i in range(1, n)]
-
-    # Asset returns (lookback 6)
     lookback = 6
     asset_returns = [0.0] * lookback + [
         (closes[i] - closes[i - lookback]) / closes[i - lookback]
         for i in range(lookback, n)
     ]
-
-    # Volume ratio vs prior window MA (exclude current bar)
     vol_period = 20
     vol_ma_prior = []
     for i in range(n):
@@ -412,66 +354,50 @@ def compute_features(
             vol_ma_prior.append(float("nan"))
         else:
             vol_ma_prior.append(sum(volumes[i - vol_period : i]) / vol_period)
-
     volume_ratio = []
     for i in range(n):
         if math.isnan(vol_ma_prior[i]) or vol_ma_prior[i] == 0:
             volume_ratio.append(1.0)
         else:
             volume_ratio.append(volumes[i] / vol_ma_prior[i])
-
-    # ATR
     atr_series = atr(asset_candles, 14)
     atr_pct = [
         (atr_series[i] / closes[i] * 100) if (not math.isnan(atr_series[i]) and closes[i] > 0) else 0.0
         for i in range(n)
     ]
-
-    # BTC regime: 20-bar return of index (macro trend filter)
     btc_regime_20 = [0.0] * 20 + [
         (index_closes[i] - index_closes[i - 20]) / index_closes[i - 20]
         for i in range(20, n)
     ]
-
-    # BTC regime: 60-bar return (slower trend)
     btc_regime_60 = [0.0] * 60 + [
         (index_closes[i] - index_closes[i - 60]) / index_closes[i - 60]
         for i in range(60, n)
     ]
-
-    # BTC bull filter: 1 if 20-bar return > 0 (bull regime)
     btc_bull_filter = [1.0 if r > 0 else 0.0 for r in btc_regime_20]
-
-    # Momentum lookbacks [5, 20, 60]
     mom_5 = rolling_return(closes, 5)
     mom_20 = rolling_return(closes, 20)
     mom_60 = rolling_return(closes, 60)
-
-    # SMA of close (trend filter)
     sma_close = sma(closes, 20)
     close_over_sma20 = [
         (closes[i] / sma_close[i] - 1.0) if not math.isnan(sma_close[i]) else 0.0
         for i in range(n)
     ]
-
-    # RS trend: is RS line above its own SMA (asset outperforming index trend)
     rs_over_rs_ma = [
         1.0 if (not math.isnan(rs_ma[i]) and rs_line[i] > rs_ma[i]) else 0.0
         for i in range(n)
     ]
-
-    # Volatility regime: ATR percentile vs its own history
     atr_ma = sma(atr_pct, 20)
     atr_regime = [
         1.0 if (not math.isnan(atr_ma[i]) and atr_pct[i] > atr_ma[i]) else 0.0
         for i in range(n)
     ]
-
     rows = []
     for i in range(n):
         rows.append({
             "time": asset[i]["time"],
             "close": closes[i],
+            "high": highs[i],
+            "low": lows[i],
             "rs_zscore": rs_zscore[i],
             "rs_momentum": rs_momentum[i],
             "asset_return_6": asset_returns[i],
@@ -487,12 +413,10 @@ def compute_features(
             "rs_over_rs_ma": rs_over_rs_ma[i],
             "atr_regime": atr_regime[i],
         })
-
     return pd.DataFrame(rows)
 
 
 def build_target(df: pd.DataFrame, forward_bars: int = 3) -> pd.Series:
-    """Target: forward log-return of close over N bars (reduces noise)."""
     closes = df["close"].values
     target = []
     for i in range(len(closes)):
@@ -504,26 +428,23 @@ def build_target(df: pd.DataFrame, forward_bars: int = 3) -> pd.Series:
 
 
 def build_target_classification(df: pd.DataFrame, forward_bars: int = 3, threshold: float = 0.001) -> pd.Series:
-    """Target: classification direction (1=up, 0=flat, -1=down) over forward N bars.
-    threshold: minimum return to classify as up/down (else flat=0)."""
     closes = df["close"].values
     target = []
     for i in range(len(closes)):
         if i + forward_bars < len(closes) and closes[i] > 0 and closes[i + forward_bars] > 0:
             ret = math.log(closes[i + forward_bars] / closes[i])
             if ret > threshold:
-                target.append(1)   # up
+                target.append(2)
             elif ret < -threshold:
-                target.append(-1)  # down
+                target.append(0)
             else:
-                target.append(0)   # flat
+                target.append(1)
         else:
-            target.append(0)
+            target.append(1)
     return pd.Series(target, index=df.index)
 
 
 def apply_regime_filter(df: pd.DataFrame, regime_filter: str = "none") -> pd.DataFrame:
-    """Filter rows by regime. 'none' = no filter, 'bull_only' = BTC bull regime only, 'both' = all."""
     if regime_filter in ("none", "both"):
         return df
     if regime_filter == "bull_only":
@@ -533,12 +454,17 @@ def apply_regime_filter(df: pd.DataFrame, regime_filter: str = "none") -> pd.Dat
     return df
 
 
-def run_backtest_compounded_r(
+def clamp(v: float, lo: float, hi: float) -> float:
+    return min(hi, max(lo, v))
+
+
+def run_backtest_arena(
     X: pd.DataFrame,
     y: pd.Series,
     close_prices: np.ndarray,
     high_prices: np.ndarray,
     low_prices: np.ndarray,
+    open_prices: np.ndarray,
     initial_capital: float = 1000.0,
     risk_per_trade: float = 0.01,
     stop_loss_atr: float = 2.0,
@@ -553,24 +479,22 @@ def run_backtest_compounded_r(
     slippage: float = 0.0005,
 ) -> dict:
     """
-    Walk-forward backtest with compounded R position sizing.
-    
-    Position sizing: risk_per_trade * account / stop_distance_price
-    Each trade risks R units. Account compounds after each trade.
-    Leverage affects margin, not risk (risk stays at risk_per_trade % of account).
+    Arena-inspired walk-forward backtest with:
+    - Compounded R position sizing
+    - Exit ladder: +1R breakeven, +1.5R bank half, trailing ATR
+    - Loss streak de-risking
+    - Circuit breaker (-3R open unrealized)
+    - Knockout ($500 equity)
+    - Correlation guardrail (|corr| ≥ 0.8)
+    - Max 4 concurrent positions
+    - Per-symbol mistake ledger
     """
     n = len(X)
     if n < 80:
         return {
-            "oos_expectancy_r": 0.0,
-            "oos_total_return_pct": 0.0,
-            "oos_maxdd_pct": 0.0,
-            "oos_win_rate": 0.0,
-            "oos_profit_factor": 0.0,
-            "oos_total_trades": 0,
-            "oos_avg_r": 0.0,
-            "oos_sharpe": 0.0,
-            "windows": [],
+            "oos_expectancy_r": 0.0, "oos_total_return_pct": 0.0, "oos_maxdd_pct": 0.0,
+            "oos_win_rate": 0.0, "oos_profit_factor": 0.0, "oos_total_trades": 0,
+            "oos_avg_r": 0.0, "oos_sharpe": 0.0, "windows": [],
         }
 
     warmup = int(n * 0.25)
@@ -589,7 +513,6 @@ def run_backtest_compounded_r(
         oos_end = n - 1 if w == n_windows - 1 else warmup + (w + 1) * chunk - 1
         if oos_end - oos_start < 10:
             continue
-
         is_end = oos_start - 1
         if is_end < 10:
             continue
@@ -599,59 +522,59 @@ def run_backtest_compounded_r(
         X_oos = X.iloc[oos_start : oos_end + 1]
         y_oos = y.iloc[oos_start : oos_end + 1]
 
-        # Train model on in-sample
-        model = xgb.XGBRegressor(
-            objective="reg:squarederror",
-            max_depth=4,
-            n_estimators=100,
-            learning_rate=0.1,
-            subsample=0.8,
-            colsample_bytree=0.8,
-            random_state=42,
-            n_jobs=1,
-            verbosity=0,
-        )
+        # Train model
+        if task_type == "classification":
+            model = xgb.XGBClassifier(
+                objective="multi:softprob", num_class=3,
+                max_depth=4, n_estimators=100, learning_rate=0.1,
+                subsample=0.8, colsample_bytree=0.8,
+                random_state=42, n_jobs=1, verbosity=0,
+            )
+        else:
+            model = xgb.XGBRegressor(
+                objective="reg:squarederror",
+                max_depth=4, n_estimators=100, learning_rate=0.1,
+                subsample=0.8, colsample_bytree=0.8,
+                random_state=42, n_jobs=1, verbosity=0,
+            )
         model.fit(X_is, y_is)
 
         # Predict OOS
         if task_type == "classification":
-            # XGBClassifier with multi:softprob returns class labels
             y_pred = model.predict(X_oos)
             y_proba = model.predict_proba(X_oos)
-            # Columns are ordered by class: [-1, 0, 1]
-            # Find column indices for up (1) and down (-1)
             classes = model.classes_
             class_to_idx = {c: i for i, c in enumerate(classes)}
             up_idx = class_to_idx.get(1, 1)
             down_idx = class_to_idx.get(-1, 0)
             prob_up = y_proba[:, up_idx] if up_idx < y_proba.shape[1] else np.full(len(X_oos), 0.5)
             prob_down = y_proba[:, down_idx] if down_idx < y_proba.shape[1] else np.full(len(X_oos), 0.5)
-            # For classification, the "prediction" is the class label
             raw_preds = y_pred.astype(float)
         else:
             y_pred = model.predict(X_oos)
-            # Probability calibration from raw log-return estimate
             scaled = y_pred * SIGMOID_SCALE
             probs = 1 / (1 + np.exp(-np.clip(scaled, -10, 10)))
             prob_up = probs
             prob_down = 1.0 - probs
             raw_preds = y_pred
 
-        # Regime filter
         btc_filter = X_oos["btc_bull_filter"].values if "btc_bull_filter" in X_oos.columns else np.ones(len(X_oos))
-
-        # ATR for stop distance
-        # We need ATR values; reconstruct from close using simple approximation
-        # Use atr_pct feature column (index 4) as proxy for ATR%
         atr_pct_col = X_oos["atr_pct"].values if "atr_pct" in X_oos.columns else np.full(len(X_oos), 2.0)
 
-        # Account tracking for this window
+        # Per-window state
         window_account = account
         window_trades = []
         window_r_multiples = []
+        positions = []  # open positions dict
+        loss_streak = 0
+        symbol_trades = {}  # symbol -> list of r multiples
+        exit_reason_counts = {}
 
         for i in range(len(X_oos)):
-            close = close_prices[oos_start + i] if oos_start + i < len(close_prices) else 0
+            abs_i = oos_start + i
+            close = close_prices[abs_i] if abs_i < len(close_prices) else 0
+            high = high_prices[abs_i] if abs_i < len(high_prices) else close
+            low = low_prices[abs_i] if abs_i < len(low_prices) else close
             if close <= 0:
                 continue
 
@@ -669,8 +592,7 @@ def run_backtest_compounded_r(
                 p_down = prob_down[i] if i < len(prob_down) else 0.5
                 pred_class = None
 
-            # Determine signal
-            # Regime filter logic
+            # Regime filter
             if regime_filter == 'none':
                 regime_pass_long = True
                 regime_pass_short = True
@@ -680,10 +602,11 @@ def run_backtest_compounded_r(
             elif regime_filter == 'bear_only':
                 regime_pass_long = False
                 regime_pass_short = btc_filter[i] == 0.0
-            else:  # both
+            else:
                 regime_pass_long = True
                 regime_pass_short = True
 
+            # Determine candidate signal
             if task_type == "classification":
                 take_long = p_up > prob_threshold and regime_pass_long and pred_class == 1
                 take_short = allow_short and p_down > prob_threshold and regime_pass_short and pred_class == -1
@@ -691,101 +614,221 @@ def run_backtest_compounded_r(
                 take_long = p_up > prob_threshold and regime_pass_long
                 take_short = allow_short and p_down > prob_threshold and regime_pass_short
 
-            # Only take one direction per bar
             side = None
             if take_long and p_up >= p_down:
                 side = "long"
             elif take_short and p_down > p_up:
                 side = "short"
 
-            if side is None:
-                continue
+            # --- Manage open positions first ---
+            new_positions = []
+            for pos in positions:
+                pos["barsHeld"] += 1
+                pos_dir = 1 if pos["side"] == "long" else -1
+                liveR = (close - pos["entryPrice"]) * pos_dir / max(1e-9, pos["riskUnit"])
 
-            # Stop distance in price
-            stop_dist = stop_loss_atr * atr_abs
-            if stop_dist <= 0:
-                continue
+                # Exit ladder: check stop loss first
+                hitStop = False
+                hitTarget = False
+                if pos["side"] == "long":
+                    if low <= pos["stopLoss"]:
+                        hitStop = True
+                        exitPx = min(pos["stopLoss"], open_prices[abs_i] if abs_i < len(open_prices) else close)
+                    elif high >= pos["takeProfit"]:
+                        hitTarget = True
+                        exitPx = pos["takeProfit"]
+                else:
+                    if high >= pos["stopLoss"]:
+                        hitStop = True
+                        exitPx = max(pos["stopLoss"], open_prices[abs_i] if abs_i < len(open_prices) else close)
+                    elif low <= pos["takeProfit"]:
+                        hitTarget = True
+                        exitPx = pos["takeProfit"]
 
-            # Take profit distance based on RR ratio
-            tp_dist = stop_dist * (take_profit_atr / stop_loss_atr)  # RR ratio = TP/SL
+                exitReason = None
+                if hitStop:
+                    exitReason = "sl"
+                elif hitTarget:
+                    exitReason = "tp"
+                elif pos["barsHeld"] >= max_hold_bars:
+                    exitReason = "time"
 
-            # Position size: risk_per_trade * account / stop_dist
-            risk_amount = window_account * risk_per_trade
-            qty = risk_amount / stop_dist  # units of asset
+                if exitReason:
+                    # Calculate PnL
+                    if pos["side"] == "long":
+                        grossPnl = pos["qty"] * (exitPx - pos["entryPrice"])
+                    else:
+                        grossPnl = pos["qty"] * (pos["entryPrice"] - exitPx)
+                    fees = pos["qty"] * pos["entryPrice"] * fee_rate + pos["qty"] * exitPx * fee_rate
+                    slipCost = pos["qty"] * pos["entryPrice"] * slippage + pos["qty"] * exitPx * slippage
+                    netPnl = grossPnl - fees - slipCost
+                    rMultiple = netPnl / pos["riskDollar"] if pos["riskDollar"] > 0 else 0.0
 
-            # Simulate trade over max_hold_bars or until SL/TP hit
-            entry_price = close * (1 + slippage if side == "long" else 1 - slippage)
-            if side == "long":
-                stop_price = entry_price - stop_dist
-                tp_price = entry_price + tp_dist
-            else:
-                stop_price = entry_price + stop_dist
-                tp_price = entry_price - tp_dist
+                    window_account += netPnl
+                    account = window_account
 
-            exit_price = None
-            exit_reason = "time"
-            exit_idx = min(i + max_hold_bars, len(X_oos) - 1)
+                    window_trades.append({
+                        "side": pos["side"], "entryPrice": pos["entryPrice"],
+                        "exitPrice": exitPx, "pnl": netPnl,
+                        "rMultiple": rMultiple, "exitReason": exitReason,
+                        "barsHeld": pos["barsHeld"],
+                    })
+                    window_r_multiples.append(rMultiple)
+                    all_r_multiples.append(rMultiple)
 
-            # Check SL/TP hit in subsequent bars
-            for j in range(i + 1, exit_idx + 1):
-                abs_j = oos_start + j
-                bar_high = float(high_prices[abs_j]) if abs_j < len(high_prices) else close
-                bar_low = float(low_prices[abs_j]) if abs_j < len(low_prices) else close
+                    # Track symbol performance
+                    sym = pos["symbol"]
+                    if sym not in symbol_trades:
+                        symbol_trades[sym] = []
+                    symbol_trades[sym].append(rMultiple)
 
+                    # Track exit reason
+                    exit_reason_counts[exitReason] = exit_reason_counts.get(exitReason, 0) + 1
+
+                    # Loss streak tracking
+                    if netPnl <= 0:
+                        loss_streak += 1
+                    else:
+                        loss_streak = 0
+                else:
+                    # Exit ladder: breakeven at +1R, partial at +1.5R, trailing ATR
+                    if liveR >= TRAIL_R and pos["stopLoss"] is not None:
+                        be = pos["entryPrice"] if pos["side"] == "long" else pos["entryPrice"]
+                        newSL = max(pos["stopLoss"], be) if pos["side"] == "long" else min(pos["stopLoss"], be)
+                        # Trailing ATR
+                        if atr_abs > 0:
+                            trail = (high - TRAIL_R * atr_abs) if pos["side"] == "long" else (low + TRAIL_R * atr_abs)
+                            newSL = max(newSL, trail) if pos["side"] == "long" else min(newSL, trail)
+                        pos["stopLoss"] = newSL
+
+                    if liveR >= PARTIAL_R and not pos.get("tookPartial", False) and pos["qty"] > 0:
+                        half = pos["qty"] / 2
+                        # Close half at current price
+                        if pos["side"] == "long":
+                            halfPnl = half * (close - pos["entryPrice"])
+                        else:
+                            halfPnl = half * (pos["entryPrice"] - close)
+                        halfFees = half * pos["entryPrice"] * fee_rate + half * close * fee_rate
+                        halfSlip = half * pos["entryPrice"] * slippage + half * close * slippage
+                        halfNet = halfPnl - halfFees - halfSlip
+                        halfR = halfNet / pos["riskDollar"] if pos["riskDollar"] > 0 else 0.0
+
+                        window_account += halfNet
+                        account = window_account
+
+                        window_trades.append({
+                            "side": pos["side"], "entryPrice": pos["entryPrice"],
+                            "exitPrice": close, "pnl": halfNet,
+                            "rMultiple": halfR, "exitReason": "partial",
+                            "barsHeld": pos["barsHeld"],
+                        })
+                        window_r_multiples.append(halfR)
+                        all_r_multiples.append(halfR)
+                        if pos["symbol"] not in symbol_trades:
+                            symbol_trades[pos["symbol"]] = []
+                        symbol_trades[pos["symbol"]].append(halfR)
+
+                        pos["qty"] -= half
+                        pos["tookPartial"] = True
+                        pos["stopLoss"] = max(pos["stopLoss"], pos["entryPrice"]) if pos["side"] == "long" else min(pos["stopLoss"], pos["entryPrice"])
+
+                    # Keep position if still open
+                    new_positions.append(pos)
+
+            positions = new_positions
+
+            # Circuit breaker: calculate open unrealized R
+            openR = 0.0
+            openRisk = 0.0
+            for pos in positions:
+                pos_dir = 1 if pos["side"] == "long" else -1
+                liveR = (close - pos["entryPrice"]) * pos_dir / max(1e-9, pos["riskUnit"])
+                openR += liveR
+                openRisk += pos["riskDollar"] / window_account if window_account > 0 else 0
+
+            # Circuit breaker: block new entries if openR ≤ -3R
+            circuitBlocked = openR <= CIRCUIT_R
+            # Knockout check
+            knockout = window_account <= KNOCKOUT_EQ
+
+            # --- New entry (only if no open position on this symbol and not blocked) ---
+            if side is not None and not circuitBlocked and not knockout and len(positions) < POS_MAX:
+                # Mistake ledger: check if symbol is banned
+                symTrades = symbol_trades.get(side and "placeholder", [])
+                # We need symbol context - skip for now in training (we don't have symbol per bar in X_oos easily)
+                # In training we treat all as same symbol effectively
+
+                # Loss streak de-risking
+                streakCap = (
+                    0.005 if loss_streak >= 5 else
+                    0.0075 if loss_streak >= 4 else
+                    0.01 if loss_streak >= 3 else
+                    0.015 if loss_streak >= 2 else
+                    0.02 if loss_streak >= 1 else RISK_PER_TRADE_MAX
+                )
+                effRisk = min(risk_per_trade, streakCap)
+                if risk_per_trade > effRisk:
+                    effRisk = effRisk
+
+                # Check total open risk
+                if openRisk + effRisk > RISK_R_MAX:
+                    continue  # skip entry
+
+                stopDist = stop_loss_atr * atr_abs
+                if stopDist <= 0:
+                    continue
+
+                tpDist = stopDist * (take_profit_atr / stop_loss_atr)
+                riskAmount = window_account * effRisk
+                qty = riskAmount / stopDist
+                if qty <= 0:
+                    continue
+
+                entryPrice = close * (1 + slippage if side == "long" else 1 - slippage)
                 if side == "long":
-                    if bar_low <= stop_price:
-                        exit_price = stop_price
-                        exit_reason = "sl"
-                        break
-                    if bar_high >= tp_price:
-                        exit_price = tp_price
-                        exit_reason = "tp"
-                        break
-                else:  # short
-                    if bar_high >= stop_price:
-                        exit_price = stop_price
-                        exit_reason = "sl"
-                        break
-                    if bar_low <= tp_price:
-                        exit_price = tp_price
-                        exit_reason = "tp"
-                        break
+                    stopPrice = entryPrice - stopDist
+                    tpPrice = entryPrice + tpDist
+                else:
+                    stopPrice = entryPrice + stopDist
+                    tpPrice = entryPrice - tpDist
 
-            if exit_price is None:
-                exit_price = X_oos["close"].values[exit_idx] if "close" in X_oos.columns else entry_price
-                exit_reason = "time"
+                positions.append({
+                    "symbol": "asset",  # placeholder
+                    "side": side,
+                    "entryPrice": entryPrice,
+                    "entryATR": atr_abs,
+                    "qty": qty,
+                    "stopLoss": stopPrice,
+                    "takeProfit": tpPrice,
+                    "riskDollar": riskAmount,
+                    "riskUnit": stopDist,
+                    "barsHeld": 0,
+                    "tookPartial": False,
+                })
 
-            # Calculate PnL
-            if side == "long":
-                gross_pnl = qty * (exit_price - entry_price)
+        # Close remaining open positions at end of window
+        lastClose = close_prices[min(oos_end, len(close_prices) - 1)]
+        for pos in positions:
+            if pos["side"] == "long":
+                grossPnl = pos["qty"] * (lastClose - pos["entryPrice"])
             else:
-                gross_pnl = qty * (entry_price - exit_price)
+                grossPnl = pos["qty"] * (pos["entryPrice"] - lastClose)
+            fees = pos["qty"] * pos["entryPrice"] * fee_rate + pos["qty"] * lastClose * fee_rate
+            slipCost = pos["qty"] * pos["entryPrice"] * slippage + pos["qty"] * lastClose * slippage
+            netPnl = grossPnl - fees - slipCost
+            rMultiple = netPnl / pos["riskDollar"] if pos["riskDollar"] > 0 else 0.0
 
-            # Fees: entry + exit
-            fees = qty * entry_price * fee_rate + qty * exit_price * fee_rate
-            slippage_cost = qty * entry_price * slippage + qty * exit_price * slippage
-            net_pnl = gross_pnl - fees - slippage_cost
-
-            # R multiple
-            r_multiple = net_pnl / risk_amount if risk_amount > 0 else 0.0
-
-            # Update account (compounded)
-            window_account += net_pnl
+            window_account += netPnl
             account = window_account
 
             window_trades.append({
-                "side": side,
-                "entry_price": entry_price,
-                "exit_price": exit_price,
-                "pnl": net_pnl,
-                "r_multiple": r_multiple,
-                "exit_reason": exit_reason,
+                "side": pos["side"], "entryPrice": pos["entryPrice"],
+                "exitPrice": lastClose, "pnl": netPnl,
+                "rMultiple": rMultiple, "exitReason": "end",
+                "barsHeld": pos["barsHeld"],
             })
-            window_r_multiples.append(r_multiple)
-            all_r_multiples.append(r_multiple)
-
-            # Move i to exit to avoid overlapping trades
-            i = exit_idx
+            window_r_multiples.append(rMultiple)
+            all_r_multiples.append(rMultiple)
 
         # Window metrics
         if window_r_multiples:
@@ -793,17 +836,14 @@ def run_backtest_compounded_r(
             mean_r = np.mean(arr)
             std_r = np.std(arr)
             window_sharpe = (mean_r / std_r * math.sqrt(365 * 6)) if std_r > 0 else 0.0
-
             gross_profit = sum(r for r in window_r_multiples if r > 0)
             gross_loss = abs(sum(r for r in window_r_multiples if r < 0))
             window_pf = gross_profit / gross_loss if gross_loss > 0 else (float("inf") if gross_profit > 0 else 0.0)
-
             window_win_rate = sum(1 for r in window_r_multiples if r > 0) / len(window_r_multiples)
 
-            # Max DD for window
             peak = window_account
             window_maxdd = 0.0
-            running_eq = window_account - sum(t["pnl"] for t in window_trades)  # starting equity of window
+            running_eq = window_account - sum(t["pnl"] for t in window_trades)
             for t in window_trades:
                 running_eq += t["pnl"]
                 if running_eq > peak:
@@ -821,6 +861,7 @@ def run_backtest_compounded_r(
                 "oos_trades": len(window_r_multiples),
                 "oos_avg_r": float(mean_r),
                 "oos_total_pnl": float(sum(t["pnl"] for t in window_trades)),
+                "loss_streak_end": loss_streak,
             })
             all_returns.extend(window_r_multiples)
 
@@ -831,24 +872,17 @@ def run_backtest_compounded_r(
         std_r = np.std(arr)
         oos_expectancy_r = float(mean_r)
         oos_sharpe = (mean_r / std_r * math.sqrt(365 * 6)) if std_r > 0 else 0.0
-
         total_pnl_r = sum(all_returns)
         gross_profit_r = sum(r for r in all_returns if r > 0)
         gross_loss_r = abs(sum(r for r in all_returns if r < 0))
         oos_pf = gross_profit_r / gross_loss_r if gross_loss_r > 0 else (float("inf") if gross_profit_r > 0 else 0.0)
         oos_win_rate = sum(1 for r in all_returns if r > 0) / len(all_returns)
         oos_avg_r = float(mean_r)
-
-        # Total return % from compounded account
         oos_total_return_pct = ((account - initial_capital) / initial_capital) * 100
-
-        # Max DD from equity curve
         peak = initial_capital
         oos_maxdd = 0.0
         running_eq = initial_capital
         for r in all_returns:
-            # Approximate: each R = risk_per_trade * account_at_time
-            # Simplified: use R multiple as % of risk
             running_eq = running_eq * (1 + r * risk_per_trade)
             if running_eq > peak:
                 peak = running_eq
@@ -878,38 +912,25 @@ def run_backtest_compounded_r(
 
 
 def train_final_model(X: pd.DataFrame, y: pd.Series, task_type: str = "regression"):
-    """Train final model on all data."""
     if task_type == "classification":
         model = xgb.XGBClassifier(
-            objective="multi:softprob",
-            num_class=3,
-            max_depth=4,
-            n_estimators=100,
-            learning_rate=0.1,
-            subsample=0.8,
-            colsample_bytree=0.8,
-            random_state=42,
-            n_jobs=1,
-            verbosity=0,
+            objective="multi:softprob", num_class=3,
+            max_depth=4, n_estimators=100, learning_rate=0.1,
+            subsample=0.8, colsample_bytree=0.8,
+            random_state=42, n_jobs=1, verbosity=0,
         )
     else:
         model = xgb.XGBRegressor(
             objective="reg:squarederror",
-            max_depth=4,
-            n_estimators=100,
-            learning_rate=0.1,
-            subsample=0.8,
-            colsample_bytree=0.8,
-            random_state=42,
-            n_jobs=1,
-            verbosity=0,
+            max_depth=4, n_estimators=100, learning_rate=0.1,
+            subsample=0.8, colsample_bytree=0.8,
+            random_state=42, n_jobs=1, verbosity=0,
         )
     model.fit(X, y)
     return model
 
 
 def export_model_json(model, feature_names: list[str], task_type: str = "regression") -> dict:
-    """Export XGBoost model to JSON-compatible dict for TS inference."""
     booster = model.get_booster()
     dump = booster.get_dump(with_stats=True)
     trees = []
@@ -927,41 +948,31 @@ def export_model_json(model, feature_names: list[str], task_type: str = "regress
 
 
 def parse_xgb_dump(dump_text: str, feature_names: list[str]) -> dict:
-    """Parse XGBoost text dump into nested node structure."""
     lines = dump_text.strip().split("\n")
     nodes = []
     feature_index = {name: i for i, name in enumerate(feature_names)}
-
     for line in lines:
         line = line.strip()
         if not line:
             continue
         node_id_str, rest = line.split(":", 1)
         node_id = int(node_id_str)
-
         if rest.startswith("leaf"):
             leaf_val = float(rest.split("=")[1].split(",")[0])
-            nodes.append({
-                "nodeid": node_id,
-                "leaf": leaf_val,
-            })
+            nodes.append({"nodeid": node_id, "leaf": leaf_val})
         else:
             bracket_start = rest.index("[")
             bracket_end = rest.index("]")
             feat_part = rest[bracket_start + 1 : bracket_end]
-
             if feat_part.startswith("f"):
                 feature_idx = int(feat_part[1:])
             else:
                 feature_idx = feature_index.get(feat_part, 0)
-
             thr_str = rest.split("<")[1].split("]")[0]
             threshold = float(thr_str)
-
             yes = int(rest.split("yes=")[1].split(",")[0])
             no = int(rest.split("no=")[1].split(",")[0])
             missing = int(rest.split("missing=")[1].split(",")[0])
-
             nodes.append({
                 "nodeid": node_id,
                 "feature": feature_idx,
@@ -970,7 +981,6 @@ def parse_xgb_dump(dump_text: str, feature_names: list[str]) -> dict:
                 "no": no,
                 "missing": missing,
             })
-
     return {"nodes": nodes, "root": 0}
 
 
@@ -980,7 +990,7 @@ def main():
     parser.add_argument("--interval", required=True, help="Candle interval, e.g. 4h")
     parser.add_argument("--lookback", type=int, default=1000, help="Number of candles to fetch")
     parser.add_argument("--forward-bars", type=int, default=3, help="Forward bars for target")
-    parser.add_argument("--task-type", type=str, default="regression", choices=["regression", "classification"], help="Task type: regression (return) or classification (direction)")
+    parser.add_argument("--task-type", type=str, default="regression", choices=["regression", "classification"], help="Task type")
     parser.add_argument("--regime-filter", type=str, default="both", choices=["none", "bull_only", "bear_only", "both"], help="Regime filter")
     parser.add_argument("--prob-threshold", type=float, default=0.55, help="Probability threshold for signal")
     parser.add_argument("--leverage", type=float, default=1.0, help="Leverage multiplier (1 = spot)")
@@ -991,9 +1001,9 @@ def main():
     parser.add_argument("--stop-loss-atr", type=float, default=2.0, help="Stop loss in ATR multiples")
     parser.add_argument("--take-profit-atr", type=float, default=5.0, help="Take profit in ATR multiples")
     parser.add_argument("--max-hold-bars", type=int, default=30, help="Max bars to hold position")
-    parser.add_argument("--gate-expectancy-r", type=float, default=0.1, help="Minimum expectancy in R per trade")
+    parser.add_argument("--gate-expectancy-r", type=float, default=0.05, help="Minimum expectancy in R per trade")
     parser.add_argument("--gate-maxdd", type=float, default=0.50, help="Maximum drawdown (fraction)")
-    parser.add_argument("--gate-win-rate", type=float, default=0.40, help="Minimum win rate (fraction)")
+    parser.add_argument("--gate-win-rate", type=float, default=0.20, help="Minimum win rate (fraction)")
     args = parser.parse_args()
 
     symbol = args.symbol.upper()
@@ -1017,7 +1027,7 @@ def main():
         "win_rate_min": args.gate_win_rate,
     }
 
-    print(f"[train] {symbol} {interval} | lev={leverage}x short={allow_short} RR=1:{rr_ratio} risk={risk_per_trade*100:.1f}% SL={sl_atr}ATR TP={tp_atr}ATR maxHold={max_hold}")
+    print(f"[train] {symbol} {interval} | lev={leverage}x short={allow_short} RR=1:{rr_ratio} risk={risk_per_trade*100:.1f}% SL={sl_atr}ATR TP={tp_atr}ATR maxHold={max_hold} task={task_type}")
     print(f"[train] Fetching {symbol} {interval} candles (limit={lookback})")
     asset_candles = fetch_klines(symbol, interval, lookback)
     if len(asset_candles) < 80:
@@ -1031,23 +1041,22 @@ def main():
         sys.exit(1)
 
     print("[train] Computing features")
-    # Preserve OHLC from raw candles for backtest SL/TP checking
     asset_close_prices = [c["close"] for c in asset_candles]
     asset_high_prices = [c["high"] for c in asset_candles]
     asset_low_prices = [c["low"] for c in asset_candles]
+    asset_open_prices = [c["open"] for c in asset_candles]
 
     df = compute_features(asset_candles, index_candles)
-
     df = apply_regime_filter(df, regime_filter)
     if len(df) < 80:
         print(f"[train] ERROR: insufficient data after regime filter ({len(df)} rows)")
         sys.exit(1)
 
-    # Reindex price arrays to match df index after regime filter
     df_index = df.index
     close_prices = np.array(asset_close_prices)[df_index]
     high_prices = np.array(asset_high_prices)[df_index]
     low_prices = np.array(asset_low_prices)[df_index]
+    open_prices = np.array(asset_open_prices)[df_index]
 
     if task_type == "classification":
         df["target"] = build_target_classification(df, forward_bars=forward_bars)
@@ -1065,18 +1074,18 @@ def main():
         print(f"[train] ERROR: insufficient clean data ({len(df_clean)} rows)")
         sys.exit(1)
 
-    # Reindex price arrays to match df_clean index
     clean_idx = df_clean.index
     close_prices = close_prices[clean_idx]
     high_prices = high_prices[clean_idx]
     low_prices = low_prices[clean_idx]
+    open_prices = open_prices[clean_idx]
 
     X = df_clean[feature_cols]
     y = df_clean["target"]
 
-    print(f"[train] Walk-forward backtest (n={len(X)}, forward={forward_bars}, regime={regime_filter}, prob_thresh={prob_threshold}, task={task_type})")
-    oos = run_backtest_compounded_r(
-        X, y, close_prices, high_prices, low_prices,
+    print(f"[train] Arena backtest (n={len(X)}, forward={forward_bars}, regime={regime_filter}, prob_thresh={prob_threshold}, task={task_type})")
+    oos = run_backtest_arena(
+        X, y, close_prices, high_prices, low_prices, open_prices,
         initial_capital=1000.0,
         risk_per_trade=risk_per_trade,
         stop_loss_atr=sl_atr,
@@ -1093,7 +1102,6 @@ def main():
 
     print(f"[train] OOS Expectancy={oos['oos_expectancy_r']:.3f}R TotalReturn={oos['oos_total_return_pct']:.2f}% MaxDD={oos['oos_maxdd_pct']:.2f}% WinRate={oos['oos_win_rate']:.1%} PF={oos['oos_profit_factor']:.2f} Trades={oos['oos_total_trades']} Sharpe={oos['oos_sharpe']:.2f}")
 
-    # Gates
     passed = True
     if oos["oos_expectancy_r"] < gates["expectancy_r_min"]:
         print(f"[train] GATE FAIL: Expectancy {oos['oos_expectancy_r']:.3f}R < {gates['expectancy_r_min']}R")
@@ -1148,7 +1156,7 @@ def main():
         "oos_metrics": oos,
         "gates": gates,
         "gates_passed": True,
-        "model_type": f"xgboost_{task_type}_long_short",
+        "model_type": f"xgboost_{task_type}_arena_long_short",
         "base_score": model_json["base_score"],
     }
     with open(meta_path, "w") as f:

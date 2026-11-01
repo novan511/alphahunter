@@ -26,6 +26,7 @@ interface MLBacktestResponse {
   tradesByMonth: any[];
   initialCapital: number;
   finalCapital: number;
+  guardrailStats: any;
   error?: string;
 }
 
@@ -35,7 +36,7 @@ export default async function handler(
 ) {
   if (req.method !== 'GET') {
     res.setHeader('Allow', 'GET');
-    return res.status(405).json({ error: 'Method not allowed', symbol: '', interval: '', leverage: 1, allowShort: true, rrRatio: 2, riskPerTrade: 0.01, totalTrades: 0, winningTrades: 0, losingTrades: 0, winRate: 0, totalReturnPercent: 0, profitFactor: 0, maxDrawdownPercent: 0, expectancyR: 0, avgR: 0, sharpe: 0, avgBarsHeld: 0, equityCurve: [], trades: [], tradesByMonth: [], initialCapital: 1000, finalCapital: 1000 });
+    return res.status(405).json({ error: 'Method not allowed', symbol: '', interval: '', leverage: 1, allowShort: true, rrRatio: 2, riskPerTrade: 0.01, totalTrades: 0, winningTrades: 0, losingTrades: 0, winRate: 0, totalReturnPercent: 0, profitFactor: 0, maxDrawdownPercent: 0, expectancyR: 0, avgR: 0, sharpe: 0, avgBarsHeld: 0, equityCurve: [], trades: [], tradesByMonth: [], initialCapital: 1000, finalCapital: 1000, guardrailStats: {} });
   }
 
   const { symbol = 'SOLUSDT', interval = '4h', lookback = '2000', leverage = '1', allowShort = 'true', riskPerTrade = '0.01', stopLossATR = '2.0', takeProfitATR = '5.0', maxHoldBars = '30', probThreshold = '0.55' } = req.query;
@@ -43,7 +44,7 @@ export default async function handler(
   const iv = interval as string;
   const parsedLimit = Math.min(Math.max(parseInt(lookback as string, 10) || 2000, 200), 5000);
 
-    const config = {
+  const config = {
     initialCapital: 1000,
     riskPerTrade: parseFloat(riskPerTrade as string),
     stopLossATR: parseFloat(stopLossATR as string),
@@ -85,6 +86,7 @@ export default async function handler(
         tradesByMonth: [],
         initialCapital: config.initialCapital,
         finalCapital: config.initialCapital,
+        guardrailStats: {},
       });
     }
 
@@ -113,6 +115,7 @@ export default async function handler(
       tradesByMonth: result.tradesByMonth,
       initialCapital: result.initialCapital,
       finalCapital: result.finalCapital,
+      guardrailStats: result.guardrailStats,
     });
   } catch (err) {
     return res.status(500).json({
@@ -136,6 +139,7 @@ export default async function handler(
       tradesByMonth: [],
       initialCapital: config.initialCapital,
       finalCapital: config.initialCapital,
+      guardrailStats: {},
     });
   }
 }

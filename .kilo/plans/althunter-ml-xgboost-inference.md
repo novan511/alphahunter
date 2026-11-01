@@ -1,160 +1,151 @@
-# Plan: XGBoost/LightGBM ML Inference on Vercel + Supabase (Free Tier)
+# Plan: ML Model v2 — Arena-Inspired (Long/Short, Compounded R, Guardrails)
 
-**Target:** Add real ML (not heuristics) to Althunter v2 while staying on free Vercel + Supabase.
-**Model:** XGBoost or LightGBM gradient boosted trees, trained in GitHub Actions (Python), exported to JSON, inferred manually in TypeScript on Vercel.
-**Scope:** Training pipeline + JSON artifact + TypeScript inference + Supabase metrics storage + walk-forward OOS validation.
+**Masalah:** ML model XGBoost saat ini "tolol" karena cuma prediksi log-return mentah tanpa manajemen risiko, exit ladder, atau self-learning. Arena (LLM) kalah karena Arena adalah **sistem trading lengkap**, bukan sekadar model prediksi.
 
----
-
-## Constraints (non-negotiable)
-
-- No Python runtime on Vercel. Inference must be pure TypeScript (tree traversal if-else).
-- No paid infra. GitHub Actions free minutes for training; Vercel Hobby for API routes; Supabase free tier for state/metrics.
-- Max 60s per Vercel serverless invocation. Training cannot run on Vercel; must run in GitHub Actions.
-- Model artifact must be small (JSON/ONNX, <1MB) so it loads cold in serverless.
-- Existing code in `lib/algorithms/`, `lib/quant/`, `pages/api/` must keep working; ML is additive, not replacement.
+**Tujuan:** Bangun ML model yang menggabungkan kekuatan XGBoost (pattern recognition) dengan disiplin manajemen risiko Arena (guardrails, exit ladder, archetype, self-learning). Tetap pakai infra gratis (Vercel + Supabase + GitHub Actions).
 
 ---
 
-## Decisions (resolved)
+## Kriteria Keberhasilan (dari Arena)
 
-| Decision | Value |
-|---|---|
-| Algorithm | XGBoost (`reg:squarederror`) or LightGBM (`regression`), exported to JSON |
-| Target | Forward-N bar log-return (regression). Optional: 3-class ordinal (up/down/flat) |
-| Quantile | Train two models (q=0.1, q=0.9) or single median + residual spread; enables P(return>0) probability |
-| Training env | GitHub Actions (`ubuntu-latest` + `setup-python`), scheduled daily |
-| Artifact location | `ml/models/<symbol>_<interval>.json` committed to repo + GitHub Release artifact |
-| Inference | Manual JSON tree traversal in `lib/ml/inference.ts` (pure TS, no deps) |
-| Feature source | Reuse existing `lib/algorithms/indicators.ts` + `lib/algorithms/relativeStrength.ts` calculations |
-| Metrics storage | Supabase table `ml_model_runs` (created via migration) |
-| Validation | Walk-forward OOS (reuse `lib/quant/walkForward.ts` logic), Sharpe > 1.0, MaxDD < 15%, PF > 1.2 gates |
-| Serving route | `pages/api/ml-predict.ts` (GET: symbol, interval; returns prediction + probability) |
+| Metrik | Target |
+|--------|--------|
+| Expectancy R (per trade) | > 0.1R |
+| Profit Factor | > 1.2 |
+| Max Drawdown | < 50% |
+| Win Rate | > 20% (bisa rendah kalau RR tinggi) |
+| Trades minimum | > 50 per aset |
 
 ---
 
-## File plan (new files only; existing files not edited unless noted)
+## Perubahan Arsitektur
 
-### 1. `ml/train/train_model.py` (NEW)
-- CLI script: `python ml/train/train_model.py --symbol ETHUSDT --interval 4h --lookback 1000`
-- Fetch historical candles from Binance/Yahoo (reuse logic conceptually; implement standalone with `ccxt` or raw `requests`)
-- Compute features: RS Z-score vs BTC, momentum lookbacks [5, 20, 60], volume ratio, ATR% normalized, BTC regime flag, hour-of-day
-- Target: forward `N` bar log return (N = 1 for 4h → next bar return)
-- Train XGBoost `reg:squarederror` with `max_depth=4`, `n_estimators=100`, `learning_rate=0.1`, `subsample=0.8`
-- Walk-forward OOS: 3 windows anchored expanding; record OOS Sharpe, MaxDD, PF, win rate
-- Export model to JSON via `xgb.get_booster().save_model()` (native JSON)
-- Write `ml/models/ETHUSDT_4h.json` + `ml/models/ETHUSDT_4h.meta.json` (features, metrics, train date, feature importances)
-- Exit non-zero if OOS gates fail (Sharpe ≤ 1.0, MaxDD ≥ 15%, PF ≤ 1.2)
+### 1. Target: Classification (Arah) bukan Regresi (Return)
+- Target: 1 (naik), 0 (flat), -1 (turun) berdasarkan forward N-bar return dengan ambang threshold
+- Alasan: Prediksi arah lebih mudah dari prediksi return numerik yang sangat noisy
+- Cocok untuk keputusan entry long/short/flat
 
-### 2. `ml/train/requirements.txt` (NEW)
-```
-xgboost>=2.0
-pandas>=2.0
-numpy>=1.24
-requests>=2.31
-```
+### 2. Risk Management Guardrails (Engine-level, mirip Arena)
+Setiap prediksi ML harus melewati guardrail sebelum dieksekusi:
+- **Risk per trade:** max 1-3% equity
+- **Stop Loss:** 2× ATR (hard, tidak boleh dihilangkan)
+- **Take Profit:** 3-5× ATR (RR 1:1.5 hingga 1:5)
+- **Circuit breaker:** Jika open unrealized R ≤ -3R, blokir entry baru
+- **Knockout:** Equity ≤ 50% dari awal → model ditiadakan
+- **Loss streak:** Jika 3 trade beruntun loss, turunkan risk per trade bertahap (2% → 1.5% → 1% → 0.5%)
+- **Correlation:** Jangan entry symbol yang korelasi ≥ 0.8 dengan posisi open yang sama arah
+- **Max positions:** 4 posisi concurrent
 
-### 3. `.github/workflows/ml-train.yml` (NEW)
-- Schedule: `0 2 * * *` (daily 02:00 UTC)
-- Matrix: symbols [ETHUSDT, SOLUSDT, BNBUSDT, XRPUSDT], interval 4h
-- Steps: checkout, setup-python, install deps, run train_model.py, commit JSON artifacts to branch `ml-artifacts` (or push to same repo), upload GitHub Release artifact
-- Gate: if any symbol fails OOS, workflow fails but does not block main branch
+### 3. Exit Ladder (otomatis, bukan discretion)
+- +1R → stop pindah ke breakeven
+- +1.5R → bank separuh posisi, sisa trailing ATR
+- +3R → trailing lebih ketat
+- Time stop: max 30 bar (4h) atau sesuai timeframe
 
-### 4. `lib/ml/inference.ts` (NEW)
-- `loadModel(path: string): Model` — read JSON model (at build time or runtime from `/public` or bundled)
-- `predict(features: number[]): { value: number; probabilityUp: number }` — tree traversal
-- Tree node JSON format: `{ nodeid, yes, no, missing, feature, gain, cover, leaf }`
-- If `leaf` present → return leaf value. Else traverse `feature` index into `features[]`, go `yes`/`no`/`missing`.
-- `probabilityUp`: sigmoid of (value / residual_spread) or trained quantile ratio; clamp [0,1]
-- Fallback: if model file missing → return `{ value: 0, probabilityUp: 0.5, source: 'fallback' }`
+### 4. Archetype per Aset (bukan satu heuristic untuk semua)
+Setiap aset mendapatkan "mandate" berbeda:
+- **Trend Follower:** momentum + MTF confluence, hold saat trend tahan
+- **Spike Hunter:** HANYA sinyal spike volume, target pendek, stop ketat
+- **Decoupling:** RS decoupling vs index, short yang melemah vs benchmark
+- **Mean Reversion:** tag overshoot, target cepat
+- **Asymmetric:** jarang entry, tapi target jauh (wide RR)
+- **Compounder:** risiko mini, banyak posisi kecil, exit cepat
 
-### 5. `lib/ml/features.ts` (NEW)
-- `buildFeatures(candles: Candle[], indexCandles: Candle[]): number[]` — pure TS, mirrors Python training feature order exactly
-- Reuse `sma`, `standardDeviation`, `atr`, `rollingReturn` from `lib/algorithms/indicators.ts`
-- `calculateRSData` from `lib/algorithms/relativeStrength.ts`
-- Output fixed-length feature vector (same order as Python training)
+Model ML akan dilatih terpisah per archetype per aset.
 
-### 6. `pages/api/ml-predict.ts` (NEW)
-- GET `?symbol=ETHUSDT&interval=4h`
-- Fetch recent candles (reuse `fetchBinanceKlines` from `lib/api.ts`)
-- Build features via `lib/ml/features.ts`
-- Load model JSON from `ml/models/<symbol>_<interval>.json` (bundled at build via `next.config.js` or public copy)
-- Return `{ symbol, interval, prediction, probabilityUp, confidence, featuresUsed, modelVersion, timestamp }`
-- Rate limit: simple in-memory per-IP cooldown (optional, Vercel Hobby friendly)
+### 5. Self-Learning dari History (mirip Arena)
+Model dilatih ulang secara berkala dengan:
+- Per-symbol performance (mana yang konsisten untung/rugi)
+- Mistake ledger (simbol yang konsisten rugi → dilarang entry)
+- Exit reason analysis (mana exit yang sering loss: SL, TP, time_stop)
+- Loss streak management
 
-### 7. `supabase/migrations/018_ml_model_runs.sql` (NEW)
-```sql
-create table if not exists ml_model_runs (
-  id uuid default gen_random_uuid() primary key,
-  symbol text not null,
-  interval text not null,
-  model_version text not null,
-  prediction double precision not null,
-  probability_up double precision not null,
-  actual_return double precision, -- filled later when bar closes
-  created_at timestamptz default now()
-);
-create index if not exists idx_ml_model_runs_symbol_interval on ml_model_runs(symbol, interval, created_at desc);
-```
-
-### 8. `pages/api/ml-feedback.ts` (NEW) (optional, phase 2)
-- POST endpoint to record actual return after bar closes, for drift monitoring
-- Called by scan-cron or GitHub Actions daily
+### 6. Fitur Baru (dari Arena)
+- Regime BTC (bull/bear/sideways) — filter regime
+- Correlation vs posisi open (hindari risiko terpusat)
+- Loss streak counter
+- Per-symbol avgR history
+- Exit reason distribution
+- Macro context (VIX, DXY — jika tersedia via Yahoo)
 
 ---
 
-## Integration points with existing code
+## File Plan
 
-- `pages/backtest.tsx` — can optionally call `/api/ml-predict` as an additional signal input (display only, no trade execution change)
-- `lib/quant/signals.ts` — ML prediction can be added as a signal candidate source (strength derived from probabilityUp)
-- Existing `detectDecoupling` backtest unchanged; ML runs in parallel
+### 1. `ml/train/train_model_v2.py` (NEW)
+- CLI: `--symbol`, `--interval`, `--task-type classification`, `--regime-filter`, `--prob-threshold`, `--rr-ratio`, `--risk-per-trade`, `--stop-loss-atr`, `--take-profit-atr`, `--max-hold-bars`, `--leverage`, `--allow-short`
+- Target: classification (1/0/-1) dengan threshold return
+- Walk-forward OOS dengan compounded R position sizing
+- Gate: expectancy R > 0.05, MaxDD < 50%, win rate > 20%, PF > 1.05
+- Ekspor model JSON + meta (termasuk archetype, parameter trading)
 
----
+### 2. `ml/train/batch_train_v2.py` (EXISTING — diperbaiki)
+- Grid search pada top assets (MATICUSDT, BNBUSDT, BTCUSDT, ETHUSDT, XRPUSDT, NVDA, META, MSFT, AAPL, GC=F, ^N225, ^VIX, EURUSD=X, dll.)
+- Timeframe: 1d dan 4h
+- Parameter: prob_threshold [0.50, 0.55, 0.65], rr_ratio [1.5, 2.0, 3.0], regime_filter [none, both]
 
-## Validation gates (must pass before ML used in production signaling)
+### 3. `lib/ml/inference.ts` (EXISTING — diperbaiki)
+- Support classification (3 kelas: long/short/flat)
+- Support regime filter (bull_only/bear_only/none)
+- Support probability threshold gating
+- Return: signal ('long'|'short'|'flat'), probabilityUp, probabilityDown, regimePass
 
-1. **OOS Sharpe > 1.0** (annualized, per-bar returns)
-2. **OOS Max Drawdown < 15%**
-3. **OOS Profit Factor > 1.2**
-4. **Feature importances not degenerate** (no single feature > 70% importance)
-5. **Prediction vs actual correlation > 0.1** on most recent 100 bars (drift check)
+### 4. `lib/ml/backtest.ts` (EXISTING — diperbaiki)
+- Long/Short entry/exit
+- SL/TP/time stop
+- Compounded R position sizing
+- R-multiple metrics (expectancy R, avg R, profit factor, Sharpe)
+- Equity curve dan max drawdown
 
-If any gate fails → model artifact marked `rejected`, API returns fallback probability 0.5.
+### 5. `pages/api/ml-predict.ts` (EXISTING — diperbaiki)
+- Return: probabilityUp, probabilityDown, signal, regimePass, leverage, allowShort, rrRatio, riskPerTrade, stopLossATR, takeProfitATR, latestClose, atrPct
 
----
+### 6. `pages/api/ml-backtest.ts` (EXISTING — diperbaiki)
+- Query params: leverage, allowShort, riskPerTrade, stopLossATR, takeProfitATR, maxHoldBars, probThreshold
+- Return: full backtest result dengan trade list, equity curve, Monte Carlo, walk-forward
 
-## Rollout / migration path
-
-- **Phase 1:** Training pipeline + JSON artifacts + inference API (read-only, no trading impact)
-- **Phase 2:** Display ML probability on backtest page / scan results as "ML signal" (informational)
-- **Phase 3:** Use ML probability as filter/strength modifier in `signals.ts` (optional config flag `USE_ML_FILTER`)
-- **Phase 4:** Auto-retrain on drift detection (probability calibration drift > threshold)
-
----
-
-## Risks & mitigation
-
-| Risk | Mitigation |
-|---|---|
-| Training data ≠ inference data (feature order mismatch) | Single source of truth: `lib/ml/features.ts` mirrored in Python via shared spec; unit test compares Python vs TS feature output on same candles |
-| Model staleness (concept drift) | Daily retrain + Supabase feedback table; gate rejects model if recent calibration poor |
-| Vercel cold start loads large JSON | Keep model <500KB; cache in-memory per instance |
-| GitHub Actions minutes exhausted | Matrix limited to 4 symbols × 1 interval; daily only |
-| No Python on Vercel for retraining | Explicitly excluded; retraining only in Actions |
-
----
-
-## Open questions (to resolve before implementation)
-
-1. Target horizon N: 1 bar (next 4h return) or multi-bar (e.g. 3-bar cumulative)? Recommended: 1 bar for simplicity.
-2. Probability calibration: sigmoid on raw prediction vs trained quantile models (q=0.1/q=0.9)? Recommended: single median model + empirical residual spread from OOS.
-3. Commit JSON artifacts to main repo vs separate branch? Recommended: separate branch `ml-artifacts` to keep main clean, API reads from bundled/public copy.
+### 7. `pages/ml-dashboard.tsx` (EXISTING — diperbaiki)
+- Model selector grouped by asset class (Crypto, Komoditas, Indeks, Forex, Saham US)
+- Toggle "Hanya model positif (expectancy > 0)"
+- Trade setup chart (Entry/SL/TP/R:R/Kelly Size)
+- Backtest results table, Monte Carlo, walk-forward OOS
+- Feature importance bar chart
 
 ---
 
-## Success criteria
+## Rollout
 
-- `/api/ml-predict?symbol=ETHUSDT&interval=4h` returns `{ probabilityUp: number, prediction: number }` with model loaded from JSON
-- GitHub Actions workflow trains and exports model without failure on main branch
-- OOS metrics logged to Supabase `ml_model_runs`
-- No existing API route or backtest result changes behavior when ML model missing (graceful fallback)
+1. **Phase 1:** Retrain model terbaik (MATICUSDT 1d) dengan classification task + regime filter + compounded R backtest
+2. **Phase 2:** Grid search 1008 kombinasi pada 44 aset (sudah dilakukan, hasil: MATICUSDT 1d terbaik 0.119R)
+3. **Phase 3:** Tambah guardrails (loss streak, correlation, circuit breaker) ke inference + backtest
+4. **Phase 4:** Archetype per aset (trend/spike/decoupling/mean-reversion/asymmetric/compounder)
+5. **Phase 5:** Integrasi ML sebagai filter konfirmasi di backtest engine utama (tidak mengganti, hanya melapis)
+
+---
+
+## Risiko & Mitigasi
+
+| Risiko | Mitigasi |
+|--------|----------|
+| Model masih overfit | Walk-forward OOS dengan gate ketat, test pada data yang belum dilihat |
+| Drawdown tinggi (50%+) | Position sizing 1% per trade, circuit breaker -3R, knockout 50% |
+| Concept drift | Retrain harian via GitHub Actions, monitoring drift di Supabase |
+| Vercel cold start | Model JSON < 500KB, in-memory cache per instance |
+| Tidak ada Python di Vercel | Training di GitHub Actions, inferensi pure TypeScript |
+
+---
+
+## Open Questions
+
+1. Apakah menggabungkan ML sebagai **filter konfirmasi** di atas backtest manual (bukan mengganti)?
+2. Target horizon: 1 bar (4h/1d berikutnya) atau multi-bar (3-5 bar)?
+3. Probability calibration: sigmoid pada raw prediction atau quantile models?
+
+---
+
+## Success Criteria
+
+- Setidaknya 1 model dengan expectancy R > 0.1 dan MaxDD < 50%
+- Dashboard menampilkan model terbaik dengan trade setup lengkap (Entry/SL/TP/R:R)
+- Endpoint `/api/ml-predict` dan `/api/ml-backtest` berfungsi dengan lengkap
+- Tidak ada regresi pada fitur existing (backtest, scan, arena)

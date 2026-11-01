@@ -2,7 +2,7 @@ import type { NextApiRequest, NextApiResponse } from 'next';
 import { Candle } from '../../lib/types';
 import { fetchKlinesRouted } from '../../lib/universe';
 import { buildFeatures } from '../../lib/ml/features';
-import { loadModelFromJSON, loadMetaFromJSON, predict } from '../../lib/ml/inference';
+import { loadModelFromJSON, loadMetaFromJSON, predict, createGuardrailState } from '../../lib/ml/inference';
 import { atr } from '../../lib/algorithms/indicators';
 import fs from 'fs';
 import path from 'path';
@@ -13,6 +13,7 @@ interface MLPredictResponse {
   prediction: number;
   probabilityUp: number;
   probabilityDown: number;
+  probabilityFlat: number;
   confidence: number;
   signal: 'long' | 'short' | 'flat';
   regimePass: boolean;
@@ -23,6 +24,7 @@ interface MLPredictResponse {
   riskPerTrade?: number;
   stopLossATR?: number;
   takeProfitATR?: number;
+  maxHoldBars?: number;
   modelVersion?: string;
   featuresUsed: string[];
   forwardBars?: number;
@@ -88,6 +90,7 @@ export default async function handler(
       prediction: 0,
       probabilityUp: 0.5,
       probabilityDown: 0.5,
+      probabilityFlat: 0.0,
       confidence: 0,
       signal: 'flat',
       regimePass: true,
@@ -114,6 +117,7 @@ export default async function handler(
         prediction: 0,
         probabilityUp: 0.5,
         probabilityDown: 0.5,
+        probabilityFlat: 0.0,
         confidence: 0,
         signal: 'flat',
         regimePass: true,
@@ -132,6 +136,7 @@ export default async function handler(
         prediction: 0,
         probabilityUp: 0.5,
         probabilityDown: 0.5,
+        probabilityFlat: 0.0,
         confidence: 0,
         signal: 'flat',
         regimePass: true,
@@ -157,7 +162,10 @@ export default async function handler(
 
     const btcBullFilter = latest.features.length > 7 ? latest.features[7] : 1;
 
-    const result = predict(model, meta, latest.features, btcBullFilter);
+    // Create guardrail state for consistent prediction
+    const gr = createGuardrailState(1000);
+
+    const result = predict(model, meta, latest.features, btcBullFilter, gr);
 
     const response: MLPredictResponse = {
       symbol: sym,
@@ -165,6 +173,7 @@ export default async function handler(
       prediction: result.value,
       probabilityUp: result.probabilityUp,
       probabilityDown: result.probabilityDown,
+      probabilityFlat: result.probabilityFlat,
       confidence: result.confidence,
       signal: result.signal,
       regimePass: result.regimePass,
@@ -175,6 +184,7 @@ export default async function handler(
       riskPerTrade: meta?.risk_per_trade,
       stopLossATR: meta?.stop_loss_atr,
       takeProfitATR: meta?.take_profit_atr,
+      maxHoldBars: meta?.max_hold_bars,
       modelVersion: meta?.trained_at,
       featuresUsed: FEATURE_NAMES,
       forwardBars: meta?.forward_bars,
@@ -193,6 +203,7 @@ export default async function handler(
       prediction: 0,
       probabilityUp: 0.5,
       probabilityDown: 0.5,
+      probabilityFlat: 0.0,
       confidence: 0,
       signal: 'flat',
       regimePass: true,
