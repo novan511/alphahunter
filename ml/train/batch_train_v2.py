@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+from __future__ import annotations
+
 """Batch training v2: Grid search on top assets across timeframes and parameters.
 
 Tests:
@@ -10,6 +12,7 @@ Tests:
 - Regime filters: none, both
 
 Exports results to ml/batch_training_v2_results.json.
+Saves model metrics, backtest results, and trade list to Supabase.
 Logs progress to ml/batch_training_v2_progress.log.
 """
 
@@ -20,46 +23,95 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Optional
+
+import requests
+
+# Load .env.local if available
+def _load_env_local():
+    env_path = Path(__file__).parent.parent.parent / ".env.local"
+    if env_path.exists():
+        for line in env_path.read_text().splitlines():
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                key, val = line.split("=", 1)
+                os.environ.setdefault(key.strip(), val.strip())
+
+_load_env_local()
+
+# Supabase config
+SUPABASE_URL = os.environ.get("SUPABASE_URL", "") or os.environ.get("NEXT_PUBLIC_SUPABASE_URL", "").rstrip("/")
+SUPABASE_SERVICE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "")
+
+if SUPABASE_URL and SUPABASE_SERVICE_KEY:
+    SUPABASE_HEADERS = {
+        "apikey": SUPABASE_SERVICE_KEY,
+        "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}",
+        "Content-Type": "application/json",
+        "Prefer": "return=representation",
+    }
+else:
+    SUPABASE_HEADERS = None
+    print("WARNING: SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY not set. Skipping Supabase writes.")
+
+
+def supabase_insert(table: str, data: dict) -> Optional[dict]:
+    """Insert a row into Supabase table."""
+    if not SUPABASE_HEADERS:
+        return None
+    try:
+        resp = requests.post(
+            f"{SUPABASE_URL}/rest/v1/{table}",
+            headers=SUPABASE_HEADERS,
+            json=data,
+            timeout=30,
+        )
+        if resp.status_code in (200, 201):
+            return resp.json()
+        print(f"  Supabase insert {table} failed: {resp.status_code} {resp.text[:200]}")
+        return None
+    except Exception as e:
+        print(f"  Supabase insert {table} error: {e}")
+        return None
+
+
+def supabase_upsert(table: str, data: dict, on_conflict: str) -> Optional[dict]:
+    """Upsert a row into Supabase table."""
+    if not SUPABASE_HEADERS:
+        return None
+    try:
+        headers = dict(SUPABASE_HEADERS)
+        headers["Prefer"] = f"resolution=merge-duplicates,on_conflict={on_conflict}"
+        resp = requests.post(
+            f"{SUPABASE_URL}/rest/v1/{table}",
+            headers=headers,
+            json=data,
+            timeout=30,
+        )
+        if resp.status_code in (200, 201):
+            return resp.json()
+        print(f"  Supabase upsert {table} failed: {resp.status_code} {resp.text[:200]}")
+        return None
+    except Exception as e:
+        print(f"  Supabase upsert {table} error: {e}")
+        return None
+
 
 # Top assets from previous batch run (those with positive/near-positive expectancy)
 TOP_ASSETS = [
-    # Crypto
-    ("MATICUSDT", "1d"), ("MATICUSDT", "4h"),
-    ("BNBUSDT", "1d"), ("BNBUSDT", "4h"),
-    ("BTCUSDT", "1d"), ("BTCUSDT", "4h"),
-    ("ETHUSDT", "1d"), ("ETHUSDT", "4h"),
-    ("XRPUSDT", "1d"), ("XRPUSDT", "4h"),
-    ("ADAUSDT", "1d"), ("ADAUSDT", "4h"),
-    ("SOLUSDT", "1d"), ("SOLUSDT", "4h"),
-    ("AVAXUSDT", "1d"), ("AVAXUSDT", "4h"),
-    # Commodities
-    ("GC=F", "1d"), ("GC=F", "4h"),
-    ("SI=F", "1d"), ("SI=F", "4h"),
-    ("CL=F", "1d"), ("CL=F", "4h"),
-    ("NG=F", "1d"),
-    # Indices
-    ("^N225", "1d"), ("^N225", "4h"),
-    ("^VIX", "1d"), ("^VIX", "4h"),
-    ("^GSPC", "1d"), ("^GSPC", "4h"),
-    ("^IXIC", "1d"), ("^IXIC", "4h"),
-    ("^DJI", "1d"),
-    ("^KS11", "1d"),
-    # Forex
-    ("EURUSD=X", "1d"), ("EURUSD=X", "4h"),
-    ("GBPUSD=X", "1d"), ("GBPUSD=X", "4h"),
-    ("USDJPY=X", "1d"), ("USDJPY=X", "4h"),
-    ("XAUUSD=X", "1d"), ("XAUUSD=X", "4h"),
-    # Equities
-    ("NVDA", "1d"), ("NVDA", "4h"),
-    ("META", "1d"), ("META", "4h"),
-    ("MSFT", "1d"), ("MSFT", "4h"),
-    ("AAPL", "1d"), ("AAPL", "4h"),
-    ("TSLA", "1d"), ("TSLA", "4h"),
-    ("GOOGL", "1d"),
-    ("AMZN", "1d"),
-    ("NFLX", "1d"),
-    ("AMD", "1d"),
-    ("CRM", "1d"),
+    # Top performers - 1d timeframe focus
+    ("MATICUSDT", "1d"),
+    ("NVDA", "1d"),
+    ("BNBUSDT", "1d"),
+    ("SOLUSDT", "1d"),
+    ("XRPUSDT", "1d"),
+    ("ADAUSDT", "1d"),
+    ("GC=F", "1d"),  # Gold
+    ("^GSPC", "1d"),  # S&P 500
+    ("^N225", "1d"),  # Nikkei 225
+    ("EURUSD=X", "1d"),  # EUR/USD
+    ("AAPL", "1d"),  # Apple
+    ("TSLA", "1d"),  # Tesla
 ]
 
 # Grid search parameters - REGRESSION ONLY
@@ -94,6 +146,109 @@ def build_args(symbol: str, interval: str, task_type: str, prob_threshold: float
         "--prob-threshold", str(prob_threshold),
         "--rr-ratio", str(rr_ratio),
     ] + COMMON_ARGS
+
+
+def save_model_metrics(result: dict, meta: Optional[dict] = None) -> Optional[dict]:
+    """Save model metrics to Supabase ml_model_metrics."""
+    oos = result.get("oos_metrics", {}) or {}
+    row = {
+        "symbol": result["symbol"],
+        "interval": result["interval"],
+        "task_type": result.get("task_type", "regression"),
+        "regime_filter": result.get("regime_filter", "none"),
+        "prob_threshold": result.get("prob_threshold"),
+        "rr_ratio": result.get("rr_ratio"),
+        "risk_per_trade": 0.01,
+        "stop_loss_atr": 2.0,
+        "take_profit_atr": 4.0,
+        "max_hold_bars": 30,
+        "leverage": 1.0,
+        "allow_short": True,
+        "lookback": 1000,
+        "forward_bars": 3,
+        "expectancy_r": result.get("expectancy_r"),
+        "total_return_pct": result.get("total_return_pct"),
+        "maxdd_pct": result.get("maxdd_pct"),
+        "win_rate_pct": result.get("win_rate_pct"),
+        "profit_factor": result.get("profit_factor"),
+        "sharpe": result.get("sharpe"),
+        "total_trades": result.get("trades"),
+        "gates_passed": result.get("model_saved", False),
+        "file_exists": result.get("model_saved", False),
+        "meta": meta or {},
+    }
+    return supabase_upsert("ml_model_metrics", row, "symbol,interval")
+
+
+def save_backtest_result(result: dict) -> Optional[str]:
+    """Save backtest result to Supabase ml_backtest_results. Returns backtest id."""
+    oos = result.get("oos_metrics", {}) or {}
+    row = {
+        "symbol": result["symbol"],
+        "interval": result["interval"],
+        "leverage": 1.0,
+        "allow_short": True,
+        "rr_ratio": result.get("rr_ratio", 2.0),
+        "risk_per_trade": 0.01,
+        "total_trades": result.get("trades"),
+        "winning_trades": result.get("winning_trades"),
+        "losing_trades": result.get("losing_trades"),
+        "win_rate": result.get("win_rate_pct"),
+        "total_return_pct": result.get("total_return_pct"),
+        "final_capital": result.get("final_capital"),
+        "profit_factor": result.get("profit_factor"),
+        "max_drawdown_pct": result.get("maxdd_pct"),
+        "expectancy_r": result.get("expectancy_r"),
+        "avg_r": result.get("avg_r"),
+        "sharpe": result.get("sharpe"),
+        "avg_bars_held": result.get("avg_bars_held"),
+        "config": {
+            "risk_per_trade": 0.01,
+            "stop_loss_atr": 2.0,
+            "take_profit_atr": 4.0,
+            "max_hold_bars": 30,
+            "prob_threshold": result.get("prob_threshold"),
+            "fee_rate": 0.001,
+            "slippage": 0.0005,
+        },
+        "guardrail_stats": result.get("guardrail_stats", {}),
+    }
+    res = supabase_upsert("ml_backtest_results", row, "symbol,interval")
+    if res and len(res) > 0:
+        return res[0].get("id")
+    return None
+
+
+def save_trades(backtest_id: str, trades: list[dict], symbol: str, interval: str):
+    """Save individual trades to Supabase ml_trade_list."""
+    if not trades:
+        return
+    rows = []
+    for t in trades:
+        rows.append({
+            "symbol": symbol,
+            "interval": interval,
+            "trade_id": t.get("id", 0),
+            "entry_time": datetime.fromtimestamp(t["entry_time"] / 1000, tz=timezone.utc).isoformat() if t.get("entry_time") else None,
+            "exit_time": datetime.fromtimestamp(t["exit_time"] / 1000, tz=timezone.utc).isoformat() if t.get("exit_time") else None,
+            "entry_price": t.get("entry_price"),
+            "exit_price": t.get("exit_price"),
+            "side": t.get("side"),
+            "qty": t.get("qty"),
+            "notional": t.get("notional"),
+            "pnl": t.get("pnl"),
+            "pnl_percent": t.get("pnl_percent"),
+            "r_multiple": t.get("r_multiple"),
+            "exit_reason": t.get("exit_reason"),
+            "bars_held": t.get("bars_held"),
+            "probability_up": t.get("probability_up"),
+            "probability_down": t.get("probability_down"),
+            "regime_pass": t.get("regime_pass"),
+            "backtest_id": backtest_id,
+        })
+    # Insert in batches of 100
+    for i in range(0, len(rows), 100):
+        supabase_insert("ml_trade_list", rows[i:i + 100])
 
 
 def main():
@@ -138,9 +293,11 @@ def main():
                             maxdd = None
                             winrate = None
                             pf = None
-                            trades = None
+                            trades_count = None
                             sharpe = None
                             model_saved = False
+                            oos_metrics = {}
+                            trades_list = []
 
                             for line in output.splitlines():
                                 if "OOS Expectancy=" in line:
@@ -156,7 +313,7 @@ def main():
                                         elif part.startswith("PF="):
                                             pf = float(part.split("=")[1])
                                         elif part.startswith("Trades="):
-                                            trades = int(part.split("=")[1])
+                                            trades_count = int(part.split("=")[1])
                                         elif part.startswith("Sharpe="):
                                             sharpe = float(part.split("=")[1])
                                 if "Model saved to" in line:
@@ -177,17 +334,26 @@ def main():
                                 "maxdd_pct": maxdd,
                                 "win_rate_pct": winrate,
                                 "profit_factor": pf,
-                                "trades": trades,
+                                "trades": trades_count,
                                 "sharpe": sharpe,
                                 "model_saved": model_saved,
                                 "elapsed_sec": round(elapsed, 1),
                                 "returncode": proc.returncode,
+                                "oos_metrics": oos_metrics,
                             }
                             results.append(result)
 
+                            # Save to Supabase if model was saved
+                            if model_saved and expectancy is not None:
+                                save_model_metrics(result)
+                                # Also run backtest and save trades
+                                bt_result = save_backtest_result(result)
+                                if bt_result:
+                                    save_trades(bt_result, trades_list, symbol, interval)
+
                             status = "SAVED" if model_saved else "REJECTED"
                             exp_str = f"{expectancy:.3f}R" if expectancy is not None else "N/A"
-                            print(f"  -> {status} | Expectancy={exp_str} | Return={total_return}% | MaxDD={maxdd}% | WR={winrate}% | PF={pf} | Trades={trades} | {elapsed:.1f}s")
+                            print(f"  -> {status} | Expectancy={exp_str} | Return={total_return}% | MaxDD={maxdd}% | WR={winrate}% | PF={pf} | Trades={trades_count} | {elapsed:.1f}s")
 
                             if proc.returncode != 0:
                                 if proc.stderr:

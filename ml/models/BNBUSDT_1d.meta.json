@@ -1,7 +1,7 @@
 {
   "symbol": "BNBUSDT",
   "interval": "1d",
-  "trained_at": "2026-11-01T10:03:52.279014+00:00",
+  "trained_at": "2026-11-01T13:19:34.327358+00:00",
   "lookback": 1000,
   "forward_bars": 3,
   "task_type": "regression",
@@ -31,60 +31,63 @@
     "atr_regime"
   ],
   "feature_importance": {
-    "rs_zscore": 0.0055109295062720776,
-    "rs_momentum": 0.004864254966378212,
-    "asset_return_6": 0.00609962735325098,
-    "volume_ratio": 0.005481655243784189,
-    "atr_pct": 0.0072785005904734135,
-    "btc_regime_20": 0.006843676324933767,
-    "btc_regime_60": 0.005733650643378496,
-    "btc_bull_filter": 0.011487580835819244,
-    "mom_5": 0.006720957811921835,
-    "mom_20": 0.0069341761991381645,
-    "mom_60": 0.006813686806708574,
-    "close_over_sma20": 0.008496767841279507,
-    "rs_over_rs_ma": 0.0027466523461043835,
-    "atr_regime": 0.02205054648220539
+    "rs_zscore": 0.005501359235495329,
+    "rs_momentum": 0.004918006714433432,
+    "asset_return_6": 0.006336722988635302,
+    "volume_ratio": 0.005625911056995392,
+    "atr_pct": 0.007221233565360308,
+    "btc_regime_20": 0.006812458857893944,
+    "btc_regime_60": 0.005552173126488924,
+    "btc_bull_filter": 0.010948616079986095,
+    "mom_5": 0.007012799382209778,
+    "mom_20": 0.0066057308577001095,
+    "mom_60": 0.006627680733799934,
+    "close_over_sma20": 0.008857695385813713,
+    "rs_over_rs_ma": 0.002357281744480133,
+    "atr_regime": 0.020935457199811935
   },
   "oos_metrics": {
-    "oos_expectancy_r": 0.09277673235638205,
-    "oos_total_return_pct": 81.32288417804412,
-    "oos_maxdd_pct": 64.84066776681816,
-    "oos_win_rate": 0.22284908321579688,
-    "oos_profit_factor": 1.2054810693526845,
-    "oos_total_trades": 709,
-    "oos_avg_r": 0.09277673235638205,
-    "oos_sharpe": 3.2565147015934333,
+    "oos_expectancy_r": -0.011751246700524695,
+    "oos_total_return_pct": -15.398405692991652,
+    "oos_maxdd_pct": 28.914978946399973,
+    "oos_win_rate": 0.48226950354609927,
+    "oos_profit_factor": 0.9753744974921794,
+    "oos_total_trades": 282,
+    "oos_avg_r": -0.011751246700524695,
+    "oos_sharpe": -0.5337093713428387,
     "windows": [
       {
         "window": 1,
-        "oos_sharpe": 5.0601500072118215,
-        "oos_maxdd_pct": 38.38032626721022,
-        "oos_pf": 1.369349769417792,
-        "oos_win_rate": 0.20588235294117646,
-        "oos_trades": 238,
-        "oos_avg_r": 0.13632792675432423,
-        "oos_total_pnl": 357.3441534661885
+        "oos_sharpe": 6.409919465437254,
+        "oos_maxdd_pct": 12.902176677298597,
+        "oos_pf": 1.3433405851201778,
+        "oos_win_rate": 0.5638297872340425,
+        "oos_trades": 94,
+        "oos_avg_r": 0.1276196089830941,
+        "oos_total_pnl": 76.39149210896112,
+        "loss_streak_end": 8
       },
       {
         "window": 2,
-        "oos_sharpe": -1.4178504400576817,
-        "oos_maxdd_pct": 55.470911495987075,
-        "oos_pf": 0.9289883348975163,
-        "oos_win_rate": 0.22821576763485477,
-        "oos_trades": 241,
-        "oos_avg_r": -0.04255199654773109,
-        "oos_total_pnl": -160.84679447762304
+        "oos_sharpe": -2.079883650451806,
+        "oos_maxdd_pct": 21.053366590775596,
+        "oos_pf": 0.9054881508487317,
+        "oos_win_rate": 0.42592592592592593,
+        "oos_trades": 108,
+        "oos_avg_r": -0.05198307419205798,
+        "oos_total_pnl": -111.91323544155581,
+        "loss_streak_end": 2
       },
       {
         "window": 3,
-        "oos_sharpe": 6.728815196543683,
-        "oos_maxdd_pct": 49.93239095729923,
-        "oos_pf": 1.4960995227769116,
-        "oos_win_rate": 0.23478260869565218,
-        "oos_trades": 230,
-        "oos_avg_r": 0.18951168626586487,
-        "oos_total_pnl": 616.7314827918784
+        "oos_sharpe": -6.193364313902087,
+        "oos_maxdd_pct": 13.225605551284392,
+        "oos_pf": 0.7589778697472059,
+        "oos_win_rate": 0.4625,
+        "oos_trades": 80,
+        "oos_avg_r": -0.12119903501520693,
+        "oos_total_pnl": -118.46231359732236,
+        "loss_streak_end": 6
       }
     ]
   },
@@ -94,6 +97,6 @@
     "win_rate_min": 0.0
   },
   "gates_passed": true,
-  "model_type": "xgboost_regression_long_short",
+  "model_type": "xgboost_regression_arena_long_short",
   "base_score": 0.5
 }
