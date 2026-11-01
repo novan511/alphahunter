@@ -4,8 +4,10 @@ import Layout from '../components/Layout/Layout';
 interface ModelInfo {
   symbol: string;
   interval: string;
+  asset_class: 'crypto' | 'commodity' | 'index' | 'forex' | 'equity' | 'other';
   trained_at?: string;
   forward_bars?: number;
+  task_type?: string;
   regime_filter?: string;
   prob_threshold?: number;
   leverage?: number;
@@ -120,6 +122,7 @@ export default function MlDashboard() {
     maxHoldBars: 30,
     probThreshold: 0.55,
   });
+  const [positiveOnly, setPositiveOnly] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -129,7 +132,7 @@ export default function MlDashboard() {
     async function load() {
       setLoading(true);
       try {
-        const mRes = await fetch('/api/ml-models');
+        const mRes = await fetch(`/api/ml-models?positive_only=${positiveOnly}`);
         if (mRes.ok) {
           const ms: ModelInfo[] = await mRes.json();
           setModels(ms);
@@ -146,7 +149,7 @@ export default function MlDashboard() {
     }
 
     load();
-  }, [selected.symbol, selected.interval]);
+  }, [selected.symbol, selected.interval, positiveOnly]);
 
   async function loadSelected() {
     try {
@@ -248,6 +251,23 @@ export default function MlDashboard() {
       pct: totalImp > 0 ? ((val as number) / totalImp) * 100 : 0,
     }));
 
+  // Group models by asset class for selector
+  const modelGroups = availableModels.reduce((acc, m) => {
+    const cls = m.asset_class || 'other';
+    if (!acc[cls]) acc[cls] = [];
+    acc[cls].push(m);
+    return acc;
+  }, {} as Record<string, ModelInfo[]>);
+
+  const classLabels: Record<string, string> = {
+    crypto: '₿ Crypto',
+    commodity: '📦 Komoditas',
+    index: '📈 Indeks',
+    forex: '💱 Forex',
+    equity: '🏢 Saham US',
+    other: '❓ Lainnya',
+  };
+
   // --- Trade Setup calculations ---
   const latestClose = curPred?.latestClose;
   const atrPct = curPred?.atrPct ?? 0;
@@ -298,30 +318,52 @@ export default function MlDashboard() {
 
         {/* Model selector */}
         <div style={{ marginBottom: '20px', background: 'rgba(31, 41, 55, 0.4)', border: '1px solid #374151', borderRadius: '8px', padding: '16px' }}>
-          <div style={{ fontSize: '11px', color: '#9ca3af', textTransform: 'uppercase', marginBottom: '8px' }}>Pilih Model</div>
-          <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-            {availableModels.map((m) => {
-              const isSel = m.symbol === selected.symbol && m.interval === selected.interval;
-              return (
-                <button
-                  key={`${m.symbol}_${m.interval}`}
-                  onClick={() => setSelected({ symbol: m.symbol, interval: m.interval })}
-                  style={{
-                    padding: '6px 12px',
-                    borderRadius: '6px',
-                    border: isSel ? '2px solid #3b82f6' : '1px solid #374151',
-                    background: isSel ? 'rgba(59, 130, 246, 0.2)' : 'transparent',
-                    color: '#f9fafb',
-                    fontSize: '12px',
-                    fontWeight: isSel ? '700' : '500',
-                    cursor: 'pointer',
-                  }}
-                >
-                  {m.symbol} {m.interval} {m.gates_passed ? '✅' : '⚠️'}
-                </button>
-              );
-            })}
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '10px' }}>
+            <div style={{ fontSize: '11px', color: '#9ca3af', textTransform: 'uppercase' }}>Pilih Model</div>
+            <label style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', fontSize: '11px', color: '#9ca3af' }}>
+              <input
+                type="checkbox"
+                checked={positiveOnly}
+                onChange={(e) => setPositiveOnly(e.target.checked)}
+                style={{ accentColor: '#3b82f6' }}
+              />
+              Hanya model positif (expectancy &gt; 0)
+            </label>
           </div>
+          {/* Group models by asset class */}
+          {Object.entries(modelGroups).map(([cls, models]) => (
+            <div key={cls} style={{ marginBottom: '12px' }}>
+              <div style={{ fontSize: '10px', color: '#9ca3af', textTransform: 'uppercase', marginBottom: '6px', fontWeight: '600' }}>
+                {classLabels[cls] || cls} ({models.length})
+              </div>
+              <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+                {models.map((m) => {
+                  const isSel = m.symbol === selected.symbol && m.interval === selected.interval;
+                  const exp = m.oos_metrics?.oos_expectancy_r;
+                  return (
+                    <button
+                      key={`${m.symbol}_${m.interval}`}
+                      onClick={() => setSelected({ symbol: m.symbol, interval: m.interval })}
+                      style={{
+                        padding: '6px 10px',
+                        borderRadius: '6px',
+                        border: isSel ? '2px solid #3b82f6' : '1px solid #374151',
+                        background: isSel ? 'rgba(59, 130, 246, 0.2)' : 'transparent',
+                        color: '#f9fafb',
+                        fontSize: '11px',
+                        fontWeight: isSel ? '700' : '500',
+                        cursor: 'pointer',
+                        whiteSpace: 'nowrap',
+                      }}
+                      title={`${m.symbol} ${m.interval} | Expectancy: ${exp?.toFixed(3)}R | WR: ${m.oos_metrics?.oos_win_rate?.toFixed(1)}% | PF: ${m.oos_metrics?.oos_profit_factor?.toFixed(2)}`}
+                    >
+                      {m.symbol} {m.interval}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
           {availableModels.length === 0 && (
             <p style={{ color: '#fca5a5', fontSize: '12px', marginTop: '8px' }}>
               Belum ada model yang tersedia. Jalankan training dulu.

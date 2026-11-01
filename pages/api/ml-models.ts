@@ -5,8 +5,10 @@ import path from 'path';
 interface ModelInfo {
   symbol: string;
   interval: string;
+  asset_class: 'crypto' | 'commodity' | 'index' | 'forex' | 'equity' | 'other';
   trained_at?: string;
   forward_bars?: number;
+  task_type?: string;
   regime_filter?: string;
   prob_threshold?: number;
   leverage?: number;
@@ -20,6 +22,38 @@ interface ModelInfo {
   file_exists: boolean;
 }
 
+const CRYPTO_SYMBOLS = new Set([
+  'BTCUSDT','ETHUSDT','SOLUSDT','BNBUSDT','XRPUSDT','ADAUSDT','AVAXUSDT','LINKUSDT',
+  'DOGEUSDT','MATICUSDT','DOTUSDT','LTCUSDT','BCHUSDT','ETCUSDT','FILUSDT','TRXUSDT',
+]);
+
+const COMMODITY_SYMBOLS = new Set([
+  'GC=F','SI=F','CL=F','BZ=F','NG=F','PA=F','PL=F','HG=F','ZC=F','ZW=F','ZS=F',
+  'KC=F','SB=F','CT=F','LB=F','HO=F','RB=F',
+]);
+
+const INDEX_SYMBOLS = new Set([
+  '^GSPC','^IXIC','^DJI','^RUT','^VIX','^FTSE','^GDAXI','^FCHI','^N225','^HSI',
+  '^BSESN','^KS11','^AXJO','^GSPTSE',
+]);
+
+const FOREX_SYMBOLS = new Set([
+  'EURUSD=X','GBPUSD=X','USDJPY=X','USDCHF=X','USDCAD=X','AUDUSD=X','NZDUSD=X',
+  'EURJPY=X','EURGBP=X','GBPJPY=X','XAUUSD=X','XAGUSD=X',
+]);
+
+function classifyAsset(symbol: string): ModelInfo['asset_class'] {
+  const s = symbol.toUpperCase();
+  if (CRYPTO_SYMBOLS.has(s)) return 'crypto';
+  if (COMMODITY_SYMBOLS.has(s)) return 'commodity';
+  if (INDEX_SYMBOLS.has(s)) return 'index';
+  if (FOREX_SYMBOLS.has(s)) return 'forex';
+  if (s.endsWith('=F') || s.endsWith('=X')) return 'commodity';
+  if (s.startsWith('^')) return 'index';
+  if (s.length <= 5 && /^[A-Z]{1,5}$/.test(s)) return 'equity';
+  return 'other';
+}
+
 export default async function handler(
   req: NextApiRequest,
   res: NextApiResponse<ModelInfo[] | { error: string }>
@@ -31,6 +65,7 @@ export default async function handler(
 
   const modelDir = path.join(process.cwd(), 'ml/models');
   const publicDir = path.join(process.cwd(), 'public', 'ml', 'models');
+  const positiveOnly = req.query.positive_only === 'true';
 
   // Scan ml/models/ for all .meta.json files
   let modelFiles: string[] = [];
@@ -45,7 +80,6 @@ export default async function handler(
   for (const file of modelFiles) {
     const baseName = file.replace('.meta.json', '');
     const parts = baseName.split('_');
-    // Symbol may contain underscores? No, our symbols don't. Interval is last part.
     const interval = parts[parts.length - 1];
     const symbol = parts.slice(0, -1).join('_');
 
@@ -67,11 +101,20 @@ export default async function handler(
       }
     }
 
+    const expectancy = meta?.oos_metrics?.oos_expectancy_r;
+
+    // Filter: only positive expectancy models
+    if (positiveOnly && (!expectancy || expectancy <= 0)) {
+      continue;
+    }
+
     results.push({
       symbol: symbol,
       interval: interval,
+      asset_class: classifyAsset(symbol),
       trained_at: meta?.trained_at,
       forward_bars: meta?.forward_bars,
+      task_type: meta?.task_type,
       regime_filter: meta?.regime_filter,
       prob_threshold: meta?.prob_threshold,
       leverage: meta?.leverage,
@@ -86,7 +129,7 @@ export default async function handler(
     });
   }
 
-  // Sort: trained models first (file_exists=true), then by expectancy desc, then trained_at desc
+  // Sort: trained models first, then by expectancy desc (best first), then trained_at desc
   results.sort((a, b) => {
     if (b.file_exists !== a.file_exists) return b.file_exists ? 1 : -1;
     const aExp = a.oos_metrics?.oos_expectancy_r ?? -999;
