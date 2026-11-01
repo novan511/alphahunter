@@ -9,6 +9,12 @@ interface ModelInfo {
   forward_bars?: number;
   regime_filter?: string;
   prob_threshold?: number;
+  leverage?: number;
+  allow_short?: boolean;
+  rr_ratio?: number;
+  risk_per_trade?: number;
+  stop_loss_atr?: number;
+  take_profit_atr?: number;
   gates_passed?: boolean;
   oos_metrics?: any;
   file_exists: boolean;
@@ -26,47 +32,66 @@ export default async function handler(
   const modelDir = path.join(process.cwd(), 'ml/models');
   const publicDir = path.join(process.cwd(), 'public', 'ml', 'models');
 
-  // Known models from presets / training runs
-  const candidates: Array<{ symbol: string; interval: string }> = [
-    { symbol: 'SOLUSDT', interval: '4h' },
-    { symbol: 'ETHUSDT', interval: '4h' },
-    { symbol: 'BTCUSDT', interval: '4h' },
-    { symbol: 'BNBUSDT', interval: '4h' },
-    { symbol: 'XRPUSDT', interval: '4h' },
-  ];
+  // Scan ml/models/ for all .meta.json files
+  let modelFiles: string[] = [];
+  try {
+    modelFiles = fs.readdirSync(modelDir).filter((f) => f.endsWith('.meta.json'));
+  } catch {
+    // directory may not exist
+  }
 
   const results: ModelInfo[] = [];
 
-  for (const c of candidates) {
-    const fileName = `${c.symbol}_${c.interval}`;
-    const srcExists = fs.existsSync(path.join(modelDir, `${fileName}.json`));
-    const pubExists = fs.existsSync(path.join(publicDir, `${fileName}.meta.json`));
+  for (const file of modelFiles) {
+    const baseName = file.replace('.meta.json', '');
+    const parts = baseName.split('_');
+    // Symbol may contain underscores? No, our symbols don't. Interval is last part.
+    const interval = parts[parts.length - 1];
+    const symbol = parts.slice(0, -1).join('_');
+
+    const srcExists = fs.existsSync(path.join(modelDir, `${baseName}.json`));
+    const pubExists = fs.existsSync(path.join(publicDir, `${baseName}.meta.json`));
 
     let meta: any = null;
-    if (pubExists) {
+    const metaPath = pubExists
+      ? path.join(publicDir, `${baseName}.meta.json`)
+      : srcExists
+      ? path.join(modelDir, `${baseName}.meta.json`)
+      : null;
+
+    if (metaPath) {
       try {
-        meta = JSON.parse(fs.readFileSync(path.join(publicDir, `${fileName}.meta.json`), 'utf8'));
+        meta = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
       } catch {
         meta = null;
       }
     }
 
     results.push({
-      symbol: c.symbol,
-      interval: c.interval,
+      symbol: symbol,
+      interval: interval,
       trained_at: meta?.trained_at,
       forward_bars: meta?.forward_bars,
       regime_filter: meta?.regime_filter,
       prob_threshold: meta?.prob_threshold,
+      leverage: meta?.leverage,
+      allow_short: meta?.allow_short,
+      rr_ratio: meta?.rr_ratio,
+      risk_per_trade: meta?.risk_per_trade,
+      stop_loss_atr: meta?.stop_loss_atr,
+      take_profit_atr: meta?.take_profit_atr,
       gates_passed: meta?.gates_passed,
       oos_metrics: meta?.oos_metrics,
       file_exists: srcExists && pubExists,
     });
   }
 
-  // Sort: trained models first, then by trained_at desc
+  // Sort: trained models first (file_exists=true), then by expectancy desc, then trained_at desc
   results.sort((a, b) => {
     if (b.file_exists !== a.file_exists) return b.file_exists ? 1 : -1;
+    const aExp = a.oos_metrics?.oos_expectancy_r ?? -999;
+    const bExp = b.oos_metrics?.oos_expectancy_r ?? -999;
+    if (bExp !== aExp) return bExp - aExp;
     if (!a.trained_at || !b.trained_at) return 0;
     return new Date(b.trained_at).getTime() - new Date(a.trained_at).getTime();
   });
