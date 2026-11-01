@@ -2,7 +2,8 @@
 """Train XGBoost model for RS decoupling prediction — LONG + SHORT, leverage, professional RR.
 
 Improvements:
-- Multi-bar target (forward N bars return)
+- Multi-bar target (forward N bars return) — REGRESSION task
+- Direction target (up/down/flat) — CLASSIFICATION task
 - Regime filter (BTC trend alignment)
 - LONG + SHORT signals
 - Optional leverage
@@ -502,6 +503,25 @@ def build_target(df: pd.DataFrame, forward_bars: int = 3) -> pd.Series:
     return pd.Series(target, index=df.index)
 
 
+def build_target_classification(df: pd.DataFrame, forward_bars: int = 3, threshold: float = 0.001) -> pd.Series:
+    """Target: classification direction (1=up, 0=flat, -1=down) over forward N bars.
+    threshold: minimum return to classify as up/down (else flat=0)."""
+    closes = df["close"].values
+    target = []
+    for i in range(len(closes)):
+        if i + forward_bars < len(closes) and closes[i] > 0 and closes[i + forward_bars] > 0:
+            ret = math.log(closes[i + forward_bars] / closes[i])
+            if ret > threshold:
+                target.append(1)   # up
+            elif ret < -threshold:
+                target.append(-1)  # down
+            else:
+                target.append(0)   # flat
+        else:
+            target.append(0)
+    return pd.Series(target, index=df.index)
+
+
 def apply_regime_filter(df: pd.DataFrame, regime_filter: str = "none") -> pd.DataFrame:
     """Filter rows by regime. 'none' = no filter, 'bull_only' = BTC bull regime only, 'both' = all."""
     if regime_filter in ("none", "both"):
@@ -528,6 +548,7 @@ def run_backtest_compounded_r(
     leverage: float = 1.0,
     allow_short: bool = True,
     regime_filter: str = 'both',
+    task_type: str = "regression",
     fee_rate: float = 0.001,
     slippage: float = 0.0005,
 ) -> dict:
@@ -593,7 +614,28 @@ def run_backtest_compounded_r(
         model.fit(X_is, y_is)
 
         # Predict OOS
-        y_pred = model.predict(X_oos)
+        if task_type == "classification":
+            # XGBClassifier with multi:softprob returns class labels
+            y_pred = model.predict(X_oos)
+            y_proba = model.predict_proba(X_oos)
+            # Columns are ordered by class: [-1, 0, 1]
+            # Find column indices for up (1) and down (-1)
+            classes = model.classes_
+            class_to_idx = {c: i for i, c in enumerate(classes)}
+            up_idx = class_to_idx.get(1, 1)
+            down_idx = class_to_idx.get(-1, 0)
+            prob_up = y_proba[:, up_idx] if up_idx < y_proba.shape[1] else np.full(len(X_oos), 0.5)
+            prob_down = y_proba[:, down_idx] if down_idx < y_proba.shape[1] else np.full(len(X_oos), 0.5)
+            # For classification, the "prediction" is the class label
+            raw_preds = y_pred.astype(float)
+        else:
+            y_pred = model.predict(X_oos)
+            # Probability calibration from raw log-return estimate
+            scaled = y_pred * SIGMOID_SCALE
+            probs = 1 / (1 + np.exp(-np.clip(scaled, -10, 10)))
+            prob_up = probs
+            prob_down = 1.0 - probs
+            raw_preds = y_pred
 
         # Regime filter
         btc_filter = X_oos["btc_bull_filter"].values if "btc_bull_filter" in X_oos.columns else np.ones(len(X_oos))
@@ -602,10 +644,6 @@ def run_backtest_compounded_r(
         # We need ATR values; reconstruct from close using simple approximation
         # Use atr_pct feature column (index 4) as proxy for ATR%
         atr_pct_col = X_oos["atr_pct"].values if "atr_pct" in X_oos.columns else np.full(len(X_oos), 2.0)
-
-        # Probability calibration
-        scaled = y_pred * SIGMOID_SCALE
-        probs = 1 / (1 + np.exp(-np.clip(scaled, -10, 10)))
 
         # Account tracking for this window
         window_account = account
@@ -622,8 +660,14 @@ def run_backtest_compounded_r(
             if atr_abs <= 0:
                 continue
 
-            prob_up = probs[i] if i < len(probs) else 0.5
-            prob_down = 1.0 - prob_up
+            if task_type == "classification":
+                p_up = prob_up[i] if i < len(prob_up) else 0.5
+                p_down = prob_down[i] if i < len(prob_down) else 0.5
+                pred_class = raw_preds[i] if i < len(raw_preds) else 0
+            else:
+                p_up = prob_up[i] if i < len(prob_up) else 0.5
+                p_down = prob_down[i] if i < len(prob_down) else 0.5
+                pred_class = None
 
             # Determine signal
             # Regime filter logic
@@ -640,14 +684,18 @@ def run_backtest_compounded_r(
                 regime_pass_long = True
                 regime_pass_short = True
 
-            take_long = prob_up > prob_threshold and regime_pass_long
-            take_short = allow_short and prob_down > prob_threshold and regime_pass_short
+            if task_type == "classification":
+                take_long = p_up > prob_threshold and regime_pass_long and pred_class == 1
+                take_short = allow_short and p_down > prob_threshold and regime_pass_short and pred_class == -1
+            else:
+                take_long = p_up > prob_threshold and regime_pass_long
+                take_short = allow_short and p_down > prob_threshold and regime_pass_short
 
             # Only take one direction per bar
             side = None
-            if take_long and prob_up >= prob_down:
+            if take_long and p_up >= p_down:
                 side = "long"
-            elif take_short and prob_down > prob_up:
+            elif take_short and p_down > p_up:
                 side = "short"
 
             if side is None:
@@ -829,24 +877,38 @@ def run_backtest_compounded_r(
     }
 
 
-def train_final_model(X: pd.DataFrame, y: pd.Series) -> xgb.XGBRegressor:
+def train_final_model(X: pd.DataFrame, y: pd.Series, task_type: str = "regression"):
     """Train final model on all data."""
-    model = xgb.XGBRegressor(
-        objective="reg:squarederror",
-        max_depth=4,
-        n_estimators=100,
-        learning_rate=0.1,
-        subsample=0.8,
-        colsample_bytree=0.8,
-        random_state=42,
-        n_jobs=1,
-        verbosity=0,
-    )
+    if task_type == "classification":
+        model = xgb.XGBClassifier(
+            objective="multi:softprob",
+            num_class=3,
+            max_depth=4,
+            n_estimators=100,
+            learning_rate=0.1,
+            subsample=0.8,
+            colsample_bytree=0.8,
+            random_state=42,
+            n_jobs=1,
+            verbosity=0,
+        )
+    else:
+        model = xgb.XGBRegressor(
+            objective="reg:squarederror",
+            max_depth=4,
+            n_estimators=100,
+            learning_rate=0.1,
+            subsample=0.8,
+            colsample_bytree=0.8,
+            random_state=42,
+            n_jobs=1,
+            verbosity=0,
+        )
     model.fit(X, y)
     return model
 
 
-def export_model_json(model: xgb.XGBRegressor, feature_names: list[str]) -> dict:
+def export_model_json(model, feature_names: list[str], task_type: str = "regression") -> dict:
     """Export XGBoost model to JSON-compatible dict for TS inference."""
     booster = model.get_booster()
     dump = booster.get_dump(with_stats=True)
@@ -858,7 +920,9 @@ def export_model_json(model: xgb.XGBRegressor, feature_names: list[str]) -> dict
         "num_trees": len(trees),
         "trees": trees,
         "base_score": float(booster.attr("base_score") or 0.5),
-        "objective": "reg:squarederror",
+        "objective": booster.attr("objective") or ("reg:squarederror" if task_type == "regression" else "multi:softprob"),
+        "task_type": task_type,
+        "num_class": 3 if task_type == "classification" else 1,
     }
 
 
@@ -916,6 +980,7 @@ def main():
     parser.add_argument("--interval", required=True, help="Candle interval, e.g. 4h")
     parser.add_argument("--lookback", type=int, default=1000, help="Number of candles to fetch")
     parser.add_argument("--forward-bars", type=int, default=3, help="Forward bars for target")
+    parser.add_argument("--task-type", type=str, default="regression", choices=["regression", "classification"], help="Task type: regression (return) or classification (direction)")
     parser.add_argument("--regime-filter", type=str, default="both", choices=["none", "bull_only", "bear_only", "both"], help="Regime filter")
     parser.add_argument("--prob-threshold", type=float, default=0.55, help="Probability threshold for signal")
     parser.add_argument("--leverage", type=float, default=1.0, help="Leverage multiplier (1 = spot)")
@@ -935,6 +1000,7 @@ def main():
     interval = args.interval
     lookback = args.lookback
     forward_bars = args.forward_bars
+    task_type = args.task_type
     regime_filter = args.regime_filter
     prob_threshold = args.prob_threshold
     leverage = args.leverage
@@ -983,7 +1049,10 @@ def main():
     high_prices = np.array(asset_high_prices)[df_index]
     low_prices = np.array(asset_low_prices)[df_index]
 
-    df["target"] = build_target(df, forward_bars=forward_bars)
+    if task_type == "classification":
+        df["target"] = build_target_classification(df, forward_bars=forward_bars)
+    else:
+        df["target"] = build_target(df, forward_bars=forward_bars)
 
     feature_cols = [
         "rs_zscore", "rs_momentum", "asset_return_6", "volume_ratio",
@@ -1005,7 +1074,7 @@ def main():
     X = df_clean[feature_cols]
     y = df_clean["target"]
 
-    print(f"[train] Walk-forward backtest (n={len(X)}, forward={forward_bars}, regime={regime_filter}, prob_thresh={prob_threshold})")
+    print(f"[train] Walk-forward backtest (n={len(X)}, forward={forward_bars}, regime={regime_filter}, prob_thresh={prob_threshold}, task={task_type})")
     oos = run_backtest_compounded_r(
         X, y, close_prices, high_prices, low_prices,
         initial_capital=1000.0,
@@ -1017,6 +1086,7 @@ def main():
         leverage=leverage,
         allow_short=allow_short,
         regime_filter=regime_filter,
+        task_type=task_type,
         fee_rate=0.001,
         slippage=0.0005,
     )
@@ -1040,13 +1110,13 @@ def main():
         sys.exit(1)
 
     print("[train] Training final model on all data")
-    model = train_final_model(X, y)
+    model = train_final_model(X, y, task_type=task_type)
 
     importance = model.get_booster().get_score(importance_type="gain")
     feature_importance = {f: float(importance.get(f, 0.0)) for f in feature_cols}
 
     print("[train] Exporting model to JSON")
-    model_json = export_model_json(model, feature_cols)
+    model_json = export_model_json(model, feature_cols, task_type=task_type)
 
     out_dir = Path("ml/models")
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -1063,6 +1133,7 @@ def main():
         "trained_at": datetime.now(timezone.utc).isoformat(),
         "lookback": lookback,
         "forward_bars": forward_bars,
+        "task_type": task_type,
         "regime_filter": regime_filter,
         "prob_threshold": prob_threshold,
         "leverage": leverage,
@@ -1077,7 +1148,7 @@ def main():
         "oos_metrics": oos,
         "gates": gates,
         "gates_passed": True,
-        "model_type": "xgboost_reg_squarederror_long_short",
+        "model_type": f"xgboost_{task_type}_long_short",
         "base_score": model_json["base_score"],
     }
     with open(meta_path, "w") as f:
