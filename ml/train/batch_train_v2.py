@@ -120,6 +120,14 @@ RR_RATIOS = [1.5, 2.0, 3.0]
 REGIME_FILTERS = ["none", "both"]
 TASK_TYPES = ["regression"]
 
+# XGBoost hyperparameter grid
+XGB_PARAMS = [
+    {"max_depth": 3, "n_estimators": 100, "learning_rate": 0.1, "subsample": 0.8, "colsample_bytree": 0.8},
+    {"max_depth": 4, "n_estimators": 100, "learning_rate": 0.1, "subsample": 0.8, "colsample_bytree": 0.8},
+    {"max_depth": 4, "n_estimators": 200, "learning_rate": 0.05, "subsample": 0.8, "colsample_bytree": 0.8},
+    {"max_depth": 5, "n_estimators": 100, "learning_rate": 0.1, "subsample": 0.8, "colsample_bytree": 0.8},
+]
+
 # Common args
 COMMON_ARGS = [
     "--lookback", "1000",
@@ -135,7 +143,7 @@ COMMON_ARGS = [
 
 
 def build_args(symbol: str, interval: str, task_type: str, prob_threshold: float,
-               rr_ratio: float, regime_filter: str) -> list[str]:
+               rr_ratio: float, regime_filter: str, xgb_params: dict) -> list[str]:
     return [
         "python3", "ml/train/train_model.py",
         "--symbol", symbol,
@@ -145,6 +153,11 @@ def build_args(symbol: str, interval: str, task_type: str, prob_threshold: float
         "--regime-filter", regime_filter,
         "--prob-threshold", str(prob_threshold),
         "--rr-ratio", str(rr_ratio),
+        "--max-depth", str(xgb_params["max_depth"]),
+        "--n-estimators", str(xgb_params["n_estimators"]),
+        "--learning-rate", str(xgb_params["learning_rate"]),
+        "--subsample", str(xgb_params["subsample"]),
+        "--colsample-bytree", str(xgb_params["colsample_bytree"]),
     ] + COMMON_ARGS
 
 
@@ -253,7 +266,7 @@ def save_trades(backtest_id: str, trades: list[dict], symbol: str, interval: str
 
 def main():
     results = []
-    total_combinations = len(TOP_ASSETS) * len(PROB_THRESHOLDS) * len(RR_RATIOS) * len(REGIME_FILTERS) * len(TASK_TYPES)
+    total_combinations = len(TOP_ASSETS) * len(PROB_THRESHOLDS) * len(RR_RATIOS) * len(REGIME_FILTERS) * len(TASK_TYPES) * len(XGB_PARAMS)
     count = 0
     saved_count = 0
 
@@ -263,6 +276,7 @@ def main():
     print(f"  RR ratios: {RR_RATIOS}")
     print(f"  Regime filters: {REGIME_FILTERS}")
     print(f"  Task types: {TASK_TYPES}")
+    print(f"  XGB param sets: {len(XGB_PARAMS)}")
     print(f"  Total combinations: {total_combinations}")
     print(f"{'='*70}")
 
@@ -273,8 +287,9 @@ def main():
             for prob_threshold in PROB_THRESHOLDS:
                 for rr_ratio in RR_RATIOS:
                     for regime_filter in REGIME_FILTERS:
-                        count += 1
-                        args = build_args(symbol, interval, task_type, prob_threshold, rr_ratio, regime_filter)
+                        for xgb_params in XGB_PARAMS:
+                            count += 1
+                            args = build_args(symbol, interval, task_type, prob_threshold, rr_ratio, regime_filter, xgb_params)
 
                         print(f"\n[{count}/{total_combinations}] {symbol} {interval} | {task_type} | prob={prob_threshold} | RR=1:{rr_ratio} | regime={regime_filter}")
 
@@ -329,6 +344,11 @@ def main():
                                 "prob_threshold": prob_threshold,
                                 "rr_ratio": rr_ratio,
                                 "regime_filter": regime_filter,
+                                "max_depth": xgb_params["max_depth"],
+                                "n_estimators": xgb_params["n_estimators"],
+                                "learning_rate": xgb_params["learning_rate"],
+                                "subsample": xgb_params["subsample"],
+                                "colsample_bytree": xgb_params["colsample_bytree"],
                                 "expectancy_r": expectancy,
                                 "total_return_pct": total_return,
                                 "maxdd_pct": maxdd,
@@ -339,7 +359,6 @@ def main():
                                 "model_saved": model_saved,
                                 "elapsed_sec": round(elapsed, 1),
                                 "returncode": proc.returncode,
-                                "oos_metrics": oos_metrics,
                             }
                             results.append(result)
 

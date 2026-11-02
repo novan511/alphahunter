@@ -911,19 +911,21 @@ def run_backtest_arena(
     }
 
 
-def train_final_model(X: pd.DataFrame, y: pd.Series, task_type: str = "regression"):
+def train_final_model(X: pd.DataFrame, y: pd.Series, task_type: str = "regression",
+                      max_depth: int = 4, n_estimators: int = 100, learning_rate: float = 0.1,
+                      subsample: float = 0.8, colsample_bytree: float = 0.8):
     if task_type == "classification":
         model = xgb.XGBClassifier(
             objective="multi:softprob", num_class=3,
-            max_depth=4, n_estimators=100, learning_rate=0.1,
-            subsample=0.8, colsample_bytree=0.8,
+            max_depth=max_depth, n_estimators=n_estimators, learning_rate=learning_rate,
+            subsample=subsample, colsample_bytree=colsample_bytree,
             random_state=42, n_jobs=1, verbosity=0,
         )
     else:
         model = xgb.XGBRegressor(
             objective="reg:squarederror",
-            max_depth=4, n_estimators=100, learning_rate=0.1,
-            subsample=0.8, colsample_bytree=0.8,
+            max_depth=max_depth, n_estimators=n_estimators, learning_rate=learning_rate,
+            subsample=subsample, colsample_bytree=colsample_bytree,
             random_state=42, n_jobs=1, verbosity=0,
         )
     model.fit(X, y)
@@ -1004,6 +1006,12 @@ def main():
     parser.add_argument("--gate-expectancy-r", type=float, default=0.05, help="Minimum expectancy in R per trade")
     parser.add_argument("--gate-maxdd", type=float, default=0.50, help="Maximum drawdown (fraction)")
     parser.add_argument("--gate-win-rate", type=float, default=0.20, help="Minimum win rate (fraction)")
+    # XGBoost hyperparameters
+    parser.add_argument("--max-depth", type=int, default=4, help="XGBoost max_depth")
+    parser.add_argument("--n-estimators", type=int, default=100, help="XGBoost n_estimators")
+    parser.add_argument("--learning-rate", type=float, default=0.1, help="XGBoost learning_rate")
+    parser.add_argument("--subsample", type=float, default=0.8, help="XGBoost subsample")
+    parser.add_argument("--colsample-bytree", type=float, default=0.8, help="XGBoost colsample_bytree")
     args = parser.parse_args()
 
     symbol = args.symbol.upper()
@@ -1118,7 +1126,12 @@ def main():
         sys.exit(1)
 
     print("[train] Training final model on all data")
-    model = train_final_model(X, y, task_type=task_type)
+    model = train_final_model(X, y, task_type=task_type,
+                              max_depth=args.max_depth,
+                              n_estimators=args.n_estimators,
+                              learning_rate=args.learning_rate,
+                              subsample=args.subsample,
+                              colsample_bytree=args.colsample_bytree)
 
     importance = model.get_booster().get_score(importance_type="gain")
     feature_importance = {f: float(importance.get(f, 0.0)) for f in feature_cols}

@@ -1,0 +1,1128 @@
+/Users/novandri511/Library/Python/3.9/lib/python/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+  warnings.warn(
+Starting batch training v2: 864 combinations across 12 assets
+  Assets: 12
+  Prob thresholds: [0.5, 0.55, 0.65]
+  RR ratios: [1.5, 2.0, 3.0]
+  Regime filters: ['none', 'both']
+  Task types: ['regression']
+  XGB param sets: 4
+  Total combinations: 864
+======================================================================
+
+[4/864] MATICUSDT 1d | regression | prob=0.5 | RR=1:1.5 | regime=none
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=0.090R | Return=13.44% | MaxDD=21.39% | WR=56.0% | PF=1.22 | Trades=307 | 4.4s
+
+[8/864] MATICUSDT 1d | regression | prob=0.5 | RR=1:1.5 | regime=both
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=0.090R | Return=13.44% | MaxDD=21.39% | WR=56.0% | PF=1.22 | Trades=307 | 2.6s
+
+[12/864] MATICUSDT 1d | regression | prob=0.5 | RR=1:2.0 | regime=none
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=0.090R | Return=13.44% | MaxDD=21.39% | WR=56.0% | PF=1.22 | Trades=307 | 4.1s
+
+[16/864] MATICUSDT 1d | regression | prob=0.5 | RR=1:2.0 | regime=both
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=0.090R | Return=13.44% | MaxDD=21.39% | WR=56.0% | PF=1.22 | Trades=307 | 2.7s
+
+[20/864] MATICUSDT 1d | regression | prob=0.5 | RR=1:3.0 | regime=none
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=0.090R | Return=13.44% | MaxDD=21.39% | WR=56.0% | PF=1.22 | Trades=307 | 2.7s
+
+[24/864] MATICUSDT 1d | regression | prob=0.5 | RR=1:3.0 | regime=both
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=0.090R | Return=13.44% | MaxDD=21.39% | WR=56.0% | PF=1.22 | Trades=307 | 2.8s
+
+[28/864] MATICUSDT 1d | regression | prob=0.55 | RR=1:1.5 | regime=none
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=0.076R | Return=6.1% | MaxDD=22.88% | WR=55.0% | PF=1.18 | Trades=307 | 2.6s
+
+[32/864] MATICUSDT 1d | regression | prob=0.55 | RR=1:1.5 | regime=both
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=0.076R | Return=6.1% | MaxDD=22.88% | WR=55.0% | PF=1.18 | Trades=307 | 3.1s
+
+[36/864] MATICUSDT 1d | regression | prob=0.55 | RR=1:2.0 | regime=none
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=0.076R | Return=6.1% | MaxDD=22.88% | WR=55.0% | PF=1.18 | Trades=307 | 2.8s
+
+[40/864] MATICUSDT 1d | regression | prob=0.55 | RR=1:2.0 | regime=both
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=0.076R | Return=6.1% | MaxDD=22.88% | WR=55.0% | PF=1.18 | Trades=307 | 3.2s
+
+[44/864] MATICUSDT 1d | regression | prob=0.55 | RR=1:3.0 | regime=none
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=0.076R | Return=6.1% | MaxDD=22.88% | WR=55.0% | PF=1.18 | Trades=307 | 3.0s
+
+[48/864] MATICUSDT 1d | regression | prob=0.55 | RR=1:3.0 | regime=both
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=0.076R | Return=6.1% | MaxDD=22.88% | WR=55.0% | PF=1.18 | Trades=307 | 2.8s
+
+[52/864] MATICUSDT 1d | regression | prob=0.65 | RR=1:1.5 | regime=none
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=0.109R | Return=17.18% | MaxDD=20.28% | WR=56.0% | PF=1.27 | Trades=300 | 2.8s
+
+[56/864] MATICUSDT 1d | regression | prob=0.65 | RR=1:1.5 | regime=both
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=0.109R | Return=17.18% | MaxDD=20.28% | WR=56.0% | PF=1.27 | Trades=300 | 2.7s
+
+[60/864] MATICUSDT 1d | regression | prob=0.65 | RR=1:2.0 | regime=none
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=0.109R | Return=17.18% | MaxDD=20.28% | WR=56.0% | PF=1.27 | Trades=300 | 2.8s
+
+[64/864] MATICUSDT 1d | regression | prob=0.65 | RR=1:2.0 | regime=both
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=0.109R | Return=17.18% | MaxDD=20.28% | WR=56.0% | PF=1.27 | Trades=300 | 3.2s
+
+[68/864] MATICUSDT 1d | regression | prob=0.65 | RR=1:3.0 | regime=none
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=0.109R | Return=17.18% | MaxDD=20.28% | WR=56.0% | PF=1.27 | Trades=300 | 3.1s
+
+[72/864] MATICUSDT 1d | regression | prob=0.65 | RR=1:3.0 | regime=both
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=0.109R | Return=17.18% | MaxDD=20.28% | WR=56.0% | PF=1.27 | Trades=300 | 2.7s
+
+[76/864] NVDA 1d | regression | prob=0.5 | RR=1:1.5 | regime=none
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=0.124R | Return=41.11% | MaxDD=15.46% | WR=63.7% | PF=1.33 | Trades=397 | 2.4s
+
+[80/864] NVDA 1d | regression | prob=0.5 | RR=1:1.5 | regime=both
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=0.124R | Return=41.11% | MaxDD=15.46% | WR=63.7% | PF=1.33 | Trades=397 | 2.5s
+
+[84/864] NVDA 1d | regression | prob=0.5 | RR=1:2.0 | regime=none
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=0.124R | Return=41.11% | MaxDD=15.46% | WR=63.7% | PF=1.33 | Trades=397 | 4.3s
+
+[88/864] NVDA 1d | regression | prob=0.5 | RR=1:2.0 | regime=both
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=0.124R | Return=41.11% | MaxDD=15.46% | WR=63.7% | PF=1.33 | Trades=397 | 4.9s
+
+[92/864] NVDA 1d | regression | prob=0.5 | RR=1:3.0 | regime=none
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=0.124R | Return=41.11% | MaxDD=15.46% | WR=63.7% | PF=1.33 | Trades=397 | 2.7s
+
+[96/864] NVDA 1d | regression | prob=0.5 | RR=1:3.0 | regime=both
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=0.124R | Return=41.11% | MaxDD=15.46% | WR=63.7% | PF=1.33 | Trades=397 | 2.9s
+
+[100/864] NVDA 1d | regression | prob=0.55 | RR=1:1.5 | regime=none
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=0.110R | Return=35.91% | MaxDD=18.62% | WR=63.0% | PF=1.28 | Trades=397 | 3.0s
+
+[104/864] NVDA 1d | regression | prob=0.55 | RR=1:1.5 | regime=both
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=0.110R | Return=35.91% | MaxDD=18.62% | WR=63.0% | PF=1.28 | Trades=397 | 2.6s
+
+[108/864] NVDA 1d | regression | prob=0.55 | RR=1:2.0 | regime=none
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=0.110R | Return=35.91% | MaxDD=18.62% | WR=63.0% | PF=1.28 | Trades=397 | 2.9s
+
+[112/864] NVDA 1d | regression | prob=0.55 | RR=1:2.0 | regime=both
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=0.110R | Return=35.91% | MaxDD=18.62% | WR=63.0% | PF=1.28 | Trades=397 | 3.2s
+
+[116/864] NVDA 1d | regression | prob=0.55 | RR=1:3.0 | regime=none
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=0.110R | Return=35.91% | MaxDD=18.62% | WR=63.0% | PF=1.28 | Trades=397 | 3.1s
+
+[120/864] NVDA 1d | regression | prob=0.55 | RR=1:3.0 | regime=both
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=0.110R | Return=35.91% | MaxDD=18.62% | WR=63.0% | PF=1.28 | Trades=397 | 2.7s
+
+[124/864] NVDA 1d | regression | prob=0.65 | RR=1:1.5 | regime=none
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=0.101R | Return=29.75% | MaxDD=18.62% | WR=62.5% | PF=1.26 | Trades=389 | 2.5s
+
+[128/864] NVDA 1d | regression | prob=0.65 | RR=1:1.5 | regime=both
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=0.101R | Return=29.75% | MaxDD=18.62% | WR=62.5% | PF=1.26 | Trades=389 | 2.4s
+
+[132/864] NVDA 1d | regression | prob=0.65 | RR=1:2.0 | regime=none
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=0.101R | Return=29.75% | MaxDD=18.62% | WR=62.5% | PF=1.26 | Trades=389 | 2.3s
+
+[136/864] NVDA 1d | regression | prob=0.65 | RR=1:2.0 | regime=both
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=0.101R | Return=29.75% | MaxDD=18.62% | WR=62.5% | PF=1.26 | Trades=389 | 2.3s
+
+[140/864] NVDA 1d | regression | prob=0.65 | RR=1:3.0 | regime=none
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=0.101R | Return=29.75% | MaxDD=18.62% | WR=62.5% | PF=1.26 | Trades=389 | 2.1s
+
+[144/864] NVDA 1d | regression | prob=0.65 | RR=1:3.0 | regime=both
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=0.101R | Return=29.75% | MaxDD=18.62% | WR=62.5% | PF=1.26 | Trades=389 | 2.4s
+
+[148/864] BNBUSDT 1d | regression | prob=0.5 | RR=1:1.5 | regime=none
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=0.020R | Return=0.04% | MaxDD=31.2% | WR=50.5% | PF=1.04 | Trades=287 | 2.8s
+
+[152/864] BNBUSDT 1d | regression | prob=0.5 | RR=1:1.5 | regime=both
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=0.020R | Return=0.04% | MaxDD=31.2% | WR=50.5% | PF=1.04 | Trades=287 | 2.8s
+
+[156/864] BNBUSDT 1d | regression | prob=0.5 | RR=1:2.0 | regime=none
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=0.020R | Return=0.04% | MaxDD=31.2% | WR=50.5% | PF=1.04 | Trades=287 | 2.8s
+
+[160/864] BNBUSDT 1d | regression | prob=0.5 | RR=1:2.0 | regime=both
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=0.020R | Return=0.04% | MaxDD=31.2% | WR=50.5% | PF=1.04 | Trades=287 | 2.9s
+
+[164/864] BNBUSDT 1d | regression | prob=0.5 | RR=1:3.0 | regime=none
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=0.020R | Return=0.04% | MaxDD=31.2% | WR=50.5% | PF=1.04 | Trades=287 | 3.3s
+
+[168/864] BNBUSDT 1d | regression | prob=0.5 | RR=1:3.0 | regime=both
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=0.020R | Return=0.04% | MaxDD=31.2% | WR=50.5% | PF=1.04 | Trades=287 | 3.1s
+
+[172/864] BNBUSDT 1d | regression | prob=0.55 | RR=1:1.5 | regime=none
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=0.032R | Return=3.35% | MaxDD=30.46% | WR=51.2% | PF=1.07 | Trades=285 | 4.9s
+
+[176/864] BNBUSDT 1d | regression | prob=0.55 | RR=1:1.5 | regime=both
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=0.032R | Return=3.35% | MaxDD=30.46% | WR=51.2% | PF=1.07 | Trades=285 | 3.0s
+
+[180/864] BNBUSDT 1d | regression | prob=0.55 | RR=1:2.0 | regime=none
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=0.032R | Return=3.35% | MaxDD=30.46% | WR=51.2% | PF=1.07 | Trades=285 | 9.5s
+
+[184/864] BNBUSDT 1d | regression | prob=0.55 | RR=1:2.0 | regime=both
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=0.032R | Return=3.35% | MaxDD=30.46% | WR=51.2% | PF=1.07 | Trades=285 | 9.1s
+
+[188/864] BNBUSDT 1d | regression | prob=0.55 | RR=1:3.0 | regime=none
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=0.032R | Return=3.35% | MaxDD=30.46% | WR=51.2% | PF=1.07 | Trades=285 | 3.1s
+
+[192/864] BNBUSDT 1d | regression | prob=0.55 | RR=1:3.0 | regime=both
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=0.032R | Return=3.35% | MaxDD=30.46% | WR=51.2% | PF=1.07 | Trades=285 | 2.9s
+
+[196/864] BNBUSDT 1d | regression | prob=0.65 | RR=1:1.5 | regime=none
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=0.020R | Return=0.39% | MaxDD=29.87% | WR=51.6% | PF=1.04 | Trades=281 | 3.6s
+
+[200/864] BNBUSDT 1d | regression | prob=0.65 | RR=1:1.5 | regime=both
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=0.020R | Return=0.39% | MaxDD=29.87% | WR=51.6% | PF=1.04 | Trades=281 | 3.3s
+
+[204/864] BNBUSDT 1d | regression | prob=0.65 | RR=1:2.0 | regime=none
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=0.020R | Return=0.39% | MaxDD=29.87% | WR=51.6% | PF=1.04 | Trades=281 | 2.9s
+
+[208/864] BNBUSDT 1d | regression | prob=0.65 | RR=1:2.0 | regime=both
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=0.020R | Return=0.39% | MaxDD=29.87% | WR=51.6% | PF=1.04 | Trades=281 | 4.0s
+
+[212/864] BNBUSDT 1d | regression | prob=0.65 | RR=1:3.0 | regime=none
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=0.020R | Return=0.39% | MaxDD=29.87% | WR=51.6% | PF=1.04 | Trades=281 | 3.5s
+
+[216/864] BNBUSDT 1d | regression | prob=0.65 | RR=1:3.0 | regime=both
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=0.020R | Return=0.39% | MaxDD=29.87% | WR=51.6% | PF=1.04 | Trades=281 | 2.9s
+
+[220/864] SOLUSDT 1d | regression | prob=0.5 | RR=1:1.5 | regime=none
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.043R | Return=-15.02% | MaxDD=20.71% | WR=51.3% | PF=0.91 | Trades=308 | 2.8s
+
+[224/864] SOLUSDT 1d | regression | prob=0.5 | RR=1:1.5 | regime=both
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.043R | Return=-15.02% | MaxDD=20.71% | WR=51.3% | PF=0.91 | Trades=308 | 2.6s
+
+[228/864] SOLUSDT 1d | regression | prob=0.5 | RR=1:2.0 | regime=none
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.043R | Return=-15.02% | MaxDD=20.71% | WR=51.3% | PF=0.91 | Trades=308 | 2.8s
+
+[232/864] SOLUSDT 1d | regression | prob=0.5 | RR=1:2.0 | regime=both
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.043R | Return=-15.02% | MaxDD=20.71% | WR=51.3% | PF=0.91 | Trades=308 | 2.8s
+
+[236/864] SOLUSDT 1d | regression | prob=0.5 | RR=1:3.0 | regime=none
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.043R | Return=-15.02% | MaxDD=20.71% | WR=51.3% | PF=0.91 | Trades=308 | 3.8s
+
+[240/864] SOLUSDT 1d | regression | prob=0.5 | RR=1:3.0 | regime=both
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.043R | Return=-15.02% | MaxDD=20.71% | WR=51.3% | PF=0.91 | Trades=308 | 4.0s
+
+[244/864] SOLUSDT 1d | regression | prob=0.55 | RR=1:1.5 | regime=none
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.044R | Return=-14.33% | MaxDD=20.71% | WR=51.3% | PF=0.91 | Trades=306 | 2.9s
+
+[248/864] SOLUSDT 1d | regression | prob=0.55 | RR=1:1.5 | regime=both
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.044R | Return=-14.33% | MaxDD=20.71% | WR=51.3% | PF=0.91 | Trades=306 | 2.8s
+
+[252/864] SOLUSDT 1d | regression | prob=0.55 | RR=1:2.0 | regime=none
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.044R | Return=-14.33% | MaxDD=20.71% | WR=51.3% | PF=0.91 | Trades=306 | 3.6s
+
+[256/864] SOLUSDT 1d | regression | prob=0.55 | RR=1:2.0 | regime=both
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.044R | Return=-14.33% | MaxDD=20.71% | WR=51.3% | PF=0.91 | Trades=306 | 3.1s
+
+[260/864] SOLUSDT 1d | regression | prob=0.55 | RR=1:3.0 | regime=none
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.044R | Return=-14.33% | MaxDD=20.71% | WR=51.3% | PF=0.91 | Trades=306 | 6.0s
+
+[264/864] SOLUSDT 1d | regression | prob=0.55 | RR=1:3.0 | regime=both
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.044R | Return=-14.33% | MaxDD=20.71% | WR=51.3% | PF=0.91 | Trades=306 | 15.6s
+
+[268/864] SOLUSDT 1d | regression | prob=0.65 | RR=1:1.5 | regime=none
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.050R | Return=-16.7% | MaxDD=20.71% | WR=50.8% | PF=0.89 | Trades=303 | 4.4s
+
+[272/864] SOLUSDT 1d | regression | prob=0.65 | RR=1:1.5 | regime=both
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.050R | Return=-16.7% | MaxDD=20.71% | WR=50.8% | PF=0.89 | Trades=303 | 3.9s
+
+[276/864] SOLUSDT 1d | regression | prob=0.65 | RR=1:2.0 | regime=none
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.050R | Return=-16.7% | MaxDD=20.71% | WR=50.8% | PF=0.89 | Trades=303 | 4.7s
+
+[280/864] SOLUSDT 1d | regression | prob=0.65 | RR=1:2.0 | regime=both
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.050R | Return=-16.7% | MaxDD=20.71% | WR=50.8% | PF=0.89 | Trades=303 | 13.0s
+
+[284/864] SOLUSDT 1d | regression | prob=0.65 | RR=1:3.0 | regime=none
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.050R | Return=-16.7% | MaxDD=20.71% | WR=50.8% | PF=0.89 | Trades=303 | 3.2s
+
+[288/864] SOLUSDT 1d | regression | prob=0.65 | RR=1:3.0 | regime=both
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.050R | Return=-16.7% | MaxDD=20.71% | WR=50.8% | PF=0.89 | Trades=303 | 2.7s
+
+[292/864] XRPUSDT 1d | regression | prob=0.5 | RR=1:1.5 | regime=none
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.191R | Return=-35.73% | MaxDD=40.52% | WR=42.5% | PF=0.63 | Trades=261 | 3.6s
+
+[296/864] XRPUSDT 1d | regression | prob=0.5 | RR=1:1.5 | regime=both
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.191R | Return=-35.73% | MaxDD=40.52% | WR=42.5% | PF=0.63 | Trades=261 | 3.3s
+
+[300/864] XRPUSDT 1d | regression | prob=0.5 | RR=1:2.0 | regime=none
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.191R | Return=-35.73% | MaxDD=40.52% | WR=42.5% | PF=0.63 | Trades=261 | 3.8s
+
+[304/864] XRPUSDT 1d | regression | prob=0.5 | RR=1:2.0 | regime=both
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.191R | Return=-35.73% | MaxDD=40.52% | WR=42.5% | PF=0.63 | Trades=261 | 3.5s
+
+[308/864] XRPUSDT 1d | regression | prob=0.5 | RR=1:3.0 | regime=none
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.191R | Return=-35.73% | MaxDD=40.52% | WR=42.5% | PF=0.63 | Trades=261 | 3.1s
+
+[312/864] XRPUSDT 1d | regression | prob=0.5 | RR=1:3.0 | regime=both
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.191R | Return=-35.73% | MaxDD=40.52% | WR=42.5% | PF=0.63 | Trades=261 | 3.2s
+
+[316/864] XRPUSDT 1d | regression | prob=0.55 | RR=1:1.5 | regime=none
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.195R | Return=-36.34% | MaxDD=40.64% | WR=42.1% | PF=0.63 | Trades=261 | 3.1s
+
+[320/864] XRPUSDT 1d | regression | prob=0.55 | RR=1:1.5 | regime=both
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.195R | Return=-36.34% | MaxDD=40.64% | WR=42.1% | PF=0.63 | Trades=261 | 2.9s
+
+[324/864] XRPUSDT 1d | regression | prob=0.55 | RR=1:2.0 | regime=none
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.195R | Return=-36.34% | MaxDD=40.64% | WR=42.1% | PF=0.63 | Trades=261 | 3.0s
+
+[328/864] XRPUSDT 1d | regression | prob=0.55 | RR=1:2.0 | regime=both
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.195R | Return=-36.34% | MaxDD=40.64% | WR=42.1% | PF=0.63 | Trades=261 | 3.1s
+
+[332/864] XRPUSDT 1d | regression | prob=0.55 | RR=1:3.0 | regime=none
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.195R | Return=-36.34% | MaxDD=40.64% | WR=42.1% | PF=0.63 | Trades=261 | 2.6s
+
+[336/864] XRPUSDT 1d | regression | prob=0.55 | RR=1:3.0 | regime=both
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.195R | Return=-36.34% | MaxDD=40.64% | WR=42.1% | PF=0.63 | Trades=261 | 2.6s
+
+[340/864] XRPUSDT 1d | regression | prob=0.65 | RR=1:1.5 | regime=none
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.206R | Return=-38.74% | MaxDD=42.05% | WR=41.7% | PF=0.61 | Trades=259 | 2.6s
+
+[344/864] XRPUSDT 1d | regression | prob=0.65 | RR=1:1.5 | regime=both
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.206R | Return=-38.74% | MaxDD=42.05% | WR=41.7% | PF=0.61 | Trades=259 | 2.7s
+
+[348/864] XRPUSDT 1d | regression | prob=0.65 | RR=1:2.0 | regime=none
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.206R | Return=-38.74% | MaxDD=42.05% | WR=41.7% | PF=0.61 | Trades=259 | 2.7s
+
+[352/864] XRPUSDT 1d | regression | prob=0.65 | RR=1:2.0 | regime=both
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.206R | Return=-38.74% | MaxDD=42.05% | WR=41.7% | PF=0.61 | Trades=259 | 2.8s
+
+[356/864] XRPUSDT 1d | regression | prob=0.65 | RR=1:3.0 | regime=none
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.206R | Return=-38.74% | MaxDD=42.05% | WR=41.7% | PF=0.61 | Trades=259 | 2.6s
+
+[360/864] XRPUSDT 1d | regression | prob=0.65 | RR=1:3.0 | regime=both
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.206R | Return=-38.74% | MaxDD=42.05% | WR=41.7% | PF=0.61 | Trades=259 | 2.6s
+
+[364/864] ADAUSDT 1d | regression | prob=0.5 | RR=1:1.5 | regime=none
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.036R | Return=-8.41% | MaxDD=25.73% | WR=49.3% | PF=0.93 | Trades=276 | 2.7s
+
+[368/864] ADAUSDT 1d | regression | prob=0.5 | RR=1:1.5 | regime=both
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.036R | Return=-8.41% | MaxDD=25.73% | WR=49.3% | PF=0.93 | Trades=276 | 2.7s
+
+[372/864] ADAUSDT 1d | regression | prob=0.5 | RR=1:2.0 | regime=none
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.036R | Return=-8.41% | MaxDD=25.73% | WR=49.3% | PF=0.93 | Trades=276 | 2.8s
+
+[376/864] ADAUSDT 1d | regression | prob=0.5 | RR=1:2.0 | regime=both
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.036R | Return=-8.41% | MaxDD=25.73% | WR=49.3% | PF=0.93 | Trades=276 | 2.8s
+
+[380/864] ADAUSDT 1d | regression | prob=0.5 | RR=1:3.0 | regime=none
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.036R | Return=-8.41% | MaxDD=25.73% | WR=49.3% | PF=0.93 | Trades=276 | 2.7s
+
+[384/864] ADAUSDT 1d | regression | prob=0.5 | RR=1:3.0 | regime=both
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.036R | Return=-8.41% | MaxDD=25.73% | WR=49.3% | PF=0.93 | Trades=276 | 3.0s
+
+[388/864] ADAUSDT 1d | regression | prob=0.55 | RR=1:1.5 | regime=none
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.036R | Return=-8.46% | MaxDD=25.73% | WR=49.3% | PF=0.93 | Trades=276 | 3.3s
+
+[392/864] ADAUSDT 1d | regression | prob=0.55 | RR=1:1.5 | regime=both
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.036R | Return=-8.46% | MaxDD=25.73% | WR=49.3% | PF=0.93 | Trades=276 | 2.9s
+
+[396/864] ADAUSDT 1d | regression | prob=0.55 | RR=1:2.0 | regime=none
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.036R | Return=-8.46% | MaxDD=25.73% | WR=49.3% | PF=0.93 | Trades=276 | 3.4s
+
+[400/864] ADAUSDT 1d | regression | prob=0.55 | RR=1:2.0 | regime=both
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.036R | Return=-8.46% | MaxDD=25.73% | WR=49.3% | PF=0.93 | Trades=276 | 2.6s
+
+[404/864] ADAUSDT 1d | regression | prob=0.55 | RR=1:3.0 | regime=none
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.036R | Return=-8.46% | MaxDD=25.73% | WR=49.3% | PF=0.93 | Trades=276 | 2.7s
+
+[408/864] ADAUSDT 1d | regression | prob=0.55 | RR=1:3.0 | regime=both
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.036R | Return=-8.46% | MaxDD=25.73% | WR=49.3% | PF=0.93 | Trades=276 | 3.1s
+
+[412/864] ADAUSDT 1d | regression | prob=0.65 | RR=1:1.5 | regime=none
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.001R | Return=-1.24% | MaxDD=25.73% | WR=50.7% | PF=1.0 | Trades=274 | 3.6s
+
+[416/864] ADAUSDT 1d | regression | prob=0.65 | RR=1:1.5 | regime=both
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.001R | Return=-1.24% | MaxDD=25.73% | WR=50.7% | PF=1.0 | Trades=274 | 3.3s
+
+[420/864] ADAUSDT 1d | regression | prob=0.65 | RR=1:2.0 | regime=none
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.001R | Return=-1.24% | MaxDD=25.73% | WR=50.7% | PF=1.0 | Trades=274 | 3.0s
+
+[424/864] ADAUSDT 1d | regression | prob=0.65 | RR=1:2.0 | regime=both
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.001R | Return=-1.24% | MaxDD=25.73% | WR=50.7% | PF=1.0 | Trades=274 | 2.9s
+
+[428/864] ADAUSDT 1d | regression | prob=0.65 | RR=1:3.0 | regime=none
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.001R | Return=-1.24% | MaxDD=25.73% | WR=50.7% | PF=1.0 | Trades=274 | 2.8s
+
+[432/864] ADAUSDT 1d | regression | prob=0.65 | RR=1:3.0 | regime=both
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.001R | Return=-1.24% | MaxDD=25.73% | WR=50.7% | PF=1.0 | Trades=274 | 2.8s
+
+[436/864] GC=F 1d | regression | prob=0.5 | RR=1:1.5 | regime=none
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.035R | Return=-10.22% | MaxDD=30.29% | WR=55.2% | PF=0.92 | Trades=355 | 2.2s
+
+[440/864] GC=F 1d | regression | prob=0.5 | RR=1:1.5 | regime=both
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.035R | Return=-10.22% | MaxDD=30.29% | WR=55.2% | PF=0.92 | Trades=355 | 2.2s
+
+[444/864] GC=F 1d | regression | prob=0.5 | RR=1:2.0 | regime=none
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.035R | Return=-10.22% | MaxDD=30.29% | WR=55.2% | PF=0.92 | Trades=355 | 2.2s
+
+[448/864] GC=F 1d | regression | prob=0.5 | RR=1:2.0 | regime=both
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.035R | Return=-10.22% | MaxDD=30.29% | WR=55.2% | PF=0.92 | Trades=355 | 2.1s
+
+[452/864] GC=F 1d | regression | prob=0.5 | RR=1:3.0 | regime=none
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.035R | Return=-10.22% | MaxDD=30.29% | WR=55.2% | PF=0.92 | Trades=355 | 2.2s
+
+[456/864] GC=F 1d | regression | prob=0.5 | RR=1:3.0 | regime=both
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.035R | Return=-10.22% | MaxDD=30.29% | WR=55.2% | PF=0.92 | Trades=355 | 2.2s
+
+[460/864] GC=F 1d | regression | prob=0.55 | RR=1:1.5 | regime=none
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.061R | Return=-17.34% | MaxDD=32.66% | WR=53.4% | PF=0.87 | Trades=352 | 2.2s
+
+[464/864] GC=F 1d | regression | prob=0.55 | RR=1:1.5 | regime=both
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.061R | Return=-17.34% | MaxDD=32.66% | WR=53.4% | PF=0.87 | Trades=352 | 2.3s
+
+[468/864] GC=F 1d | regression | prob=0.55 | RR=1:2.0 | regime=none
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.061R | Return=-17.34% | MaxDD=32.66% | WR=53.4% | PF=0.87 | Trades=352 | 2.3s
+
+[472/864] GC=F 1d | regression | prob=0.55 | RR=1:2.0 | regime=both
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.061R | Return=-17.34% | MaxDD=32.66% | WR=53.4% | PF=0.87 | Trades=352 | 2.5s
+
+[476/864] GC=F 1d | regression | prob=0.55 | RR=1:3.0 | regime=none
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.061R | Return=-17.34% | MaxDD=32.66% | WR=53.4% | PF=0.87 | Trades=352 | 3.0s
+
+[480/864] GC=F 1d | regression | prob=0.55 | RR=1:3.0 | regime=both
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.061R | Return=-17.34% | MaxDD=32.66% | WR=53.4% | PF=0.87 | Trades=352 | 3.3s
+
+[484/864] GC=F 1d | regression | prob=0.65 | RR=1:1.5 | regime=none
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.052R | Return=-15.82% | MaxDD=31.17% | WR=53.5% | PF=0.88 | Trades=340 | 4.0s
+
+[488/864] GC=F 1d | regression | prob=0.65 | RR=1:1.5 | regime=both
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.052R | Return=-15.82% | MaxDD=31.17% | WR=53.5% | PF=0.88 | Trades=340 | 2.4s
+
+[492/864] GC=F 1d | regression | prob=0.65 | RR=1:2.0 | regime=none
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.052R | Return=-15.82% | MaxDD=31.17% | WR=53.5% | PF=0.88 | Trades=340 | 2.4s
+
+[496/864] GC=F 1d | regression | prob=0.65 | RR=1:2.0 | regime=both
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.052R | Return=-15.82% | MaxDD=31.17% | WR=53.5% | PF=0.88 | Trades=340 | 3.9s
+
+[500/864] GC=F 1d | regression | prob=0.65 | RR=1:3.0 | regime=none
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.052R | Return=-15.82% | MaxDD=31.17% | WR=53.5% | PF=0.88 | Trades=340 | 2.3s
+
+[504/864] GC=F 1d | regression | prob=0.65 | RR=1:3.0 | regime=both
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.052R | Return=-15.82% | MaxDD=31.17% | WR=53.5% | PF=0.88 | Trades=340 | 2.5s
+
+[508/864] ^GSPC 1d | regression | prob=0.5 | RR=1:1.5 | regime=none
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.149R | Return=-44.68% | MaxDD=48.79% | WR=53.1% | PF=0.71 | Trades=392 | 2.5s
+
+[512/864] ^GSPC 1d | regression | prob=0.5 | RR=1:1.5 | regime=both
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.149R | Return=-44.68% | MaxDD=48.79% | WR=53.1% | PF=0.71 | Trades=392 | 2.5s
+
+[516/864] ^GSPC 1d | regression | prob=0.5 | RR=1:2.0 | regime=none
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.149R | Return=-44.68% | MaxDD=48.79% | WR=53.1% | PF=0.71 | Trades=392 | 3.1s
+
+[520/864] ^GSPC 1d | regression | prob=0.5 | RR=1:2.0 | regime=both
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.149R | Return=-44.68% | MaxDD=48.79% | WR=53.1% | PF=0.71 | Trades=392 | 2.5s
+
+[524/864] ^GSPC 1d | regression | prob=0.5 | RR=1:3.0 | regime=none
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.149R | Return=-44.68% | MaxDD=48.79% | WR=53.1% | PF=0.71 | Trades=392 | 2.8s
+
+[528/864] ^GSPC 1d | regression | prob=0.5 | RR=1:3.0 | regime=both
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.149R | Return=-44.68% | MaxDD=48.79% | WR=53.1% | PF=0.71 | Trades=392 | 2.3s
+
+[532/864] ^GSPC 1d | regression | prob=0.55 | RR=1:1.5 | regime=none
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.156R | Return=-44.57% | MaxDD=49.67% | WR=52.6% | PF=0.7 | Trades=380 | 2.3s
+
+[536/864] ^GSPC 1d | regression | prob=0.55 | RR=1:1.5 | regime=both
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.156R | Return=-44.57% | MaxDD=49.67% | WR=52.6% | PF=0.7 | Trades=380 | 2.3s
+
+[540/864] ^GSPC 1d | regression | prob=0.55 | RR=1:2.0 | regime=none
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.156R | Return=-44.57% | MaxDD=49.67% | WR=52.6% | PF=0.7 | Trades=380 | 2.3s
+
+[544/864] ^GSPC 1d | regression | prob=0.55 | RR=1:2.0 | regime=both
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.156R | Return=-44.57% | MaxDD=49.67% | WR=52.6% | PF=0.7 | Trades=380 | 2.3s
+
+[548/864] ^GSPC 1d | regression | prob=0.55 | RR=1:3.0 | regime=none
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.156R | Return=-44.57% | MaxDD=49.67% | WR=52.6% | PF=0.7 | Trades=380 | 2.3s
+
+[552/864] ^GSPC 1d | regression | prob=0.55 | RR=1:3.0 | regime=both
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.156R | Return=-44.57% | MaxDD=49.67% | WR=52.6% | PF=0.7 | Trades=380 | 2.3s
+
+[556/864] ^GSPC 1d | regression | prob=0.65 | RR=1:1.5 | regime=none
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.238R | Return=-51.38% | MaxDD=49.89% | WR=48.4% | PF=0.59 | Trades=285 | 2.3s
+
+[560/864] ^GSPC 1d | regression | prob=0.65 | RR=1:1.5 | regime=both
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.238R | Return=-51.38% | MaxDD=49.89% | WR=48.4% | PF=0.59 | Trades=285 | 2.5s
+
+[564/864] ^GSPC 1d | regression | prob=0.65 | RR=1:2.0 | regime=none
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.238R | Return=-51.38% | MaxDD=49.89% | WR=48.4% | PF=0.59 | Trades=285 | 2.2s
+
+[568/864] ^GSPC 1d | regression | prob=0.65 | RR=1:2.0 | regime=both
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.238R | Return=-51.38% | MaxDD=49.89% | WR=48.4% | PF=0.59 | Trades=285 | 2.2s
+
+[572/864] ^GSPC 1d | regression | prob=0.65 | RR=1:3.0 | regime=none
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.238R | Return=-51.38% | MaxDD=49.89% | WR=48.4% | PF=0.59 | Trades=285 | 2.2s
+
+[576/864] ^GSPC 1d | regression | prob=0.65 | RR=1:3.0 | regime=both
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.238R | Return=-51.38% | MaxDD=49.89% | WR=48.4% | PF=0.59 | Trades=285 | 2.3s
+
+[580/864] ^N225 1d | regression | prob=0.5 | RR=1:1.5 | regime=none
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=0.101R | Return=52.87% | MaxDD=19.28% | WR=60.8% | PF=1.25 | Trades=431 | 2.4s
+
+[584/864] ^N225 1d | regression | prob=0.5 | RR=1:1.5 | regime=both
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=0.101R | Return=52.87% | MaxDD=19.28% | WR=60.8% | PF=1.25 | Trades=431 | 2.3s
+
+[588/864] ^N225 1d | regression | prob=0.5 | RR=1:2.0 | regime=none
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=0.101R | Return=52.87% | MaxDD=19.28% | WR=60.8% | PF=1.25 | Trades=431 | 2.3s
+
+[592/864] ^N225 1d | regression | prob=0.5 | RR=1:2.0 | regime=both
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=0.101R | Return=52.87% | MaxDD=19.28% | WR=60.8% | PF=1.25 | Trades=431 | 2.2s
+
+[596/864] ^N225 1d | regression | prob=0.5 | RR=1:3.0 | regime=none
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=0.101R | Return=52.87% | MaxDD=19.28% | WR=60.8% | PF=1.25 | Trades=431 | 2.4s
+
+[600/864] ^N225 1d | regression | prob=0.5 | RR=1:3.0 | regime=both
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=0.101R | Return=52.87% | MaxDD=19.28% | WR=60.8% | PF=1.25 | Trades=431 | 2.4s
+
+[604/864] ^N225 1d | regression | prob=0.55 | RR=1:1.5 | regime=none
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=0.093R | Return=49.53% | MaxDD=19.19% | WR=60.0% | PF=1.23 | Trades=425 | 2.4s
+
+[608/864] ^N225 1d | regression | prob=0.55 | RR=1:1.5 | regime=both
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=0.093R | Return=49.53% | MaxDD=19.19% | WR=60.0% | PF=1.23 | Trades=425 | 2.2s
+
+[612/864] ^N225 1d | regression | prob=0.55 | RR=1:2.0 | regime=none
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=0.093R | Return=49.53% | MaxDD=19.19% | WR=60.0% | PF=1.23 | Trades=425 | 2.0s
+
+[616/864] ^N225 1d | regression | prob=0.55 | RR=1:2.0 | regime=both
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=0.093R | Return=49.53% | MaxDD=19.19% | WR=60.0% | PF=1.23 | Trades=425 | 2.1s
+
+[620/864] ^N225 1d | regression | prob=0.55 | RR=1:3.0 | regime=none
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=0.093R | Return=49.53% | MaxDD=19.19% | WR=60.0% | PF=1.23 | Trades=425 | 2.2s
+
+[624/864] ^N225 1d | regression | prob=0.55 | RR=1:3.0 | regime=both
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=0.093R | Return=49.53% | MaxDD=19.19% | WR=60.0% | PF=1.23 | Trades=425 | 2.1s
+
+[628/864] ^N225 1d | regression | prob=0.65 | RR=1:1.5 | regime=none
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=0.131R | Return=71.1% | MaxDD=19.42% | WR=62.3% | PF=1.34 | Trades=419 | 2.2s
+
+[632/864] ^N225 1d | regression | prob=0.65 | RR=1:1.5 | regime=both
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=0.131R | Return=71.1% | MaxDD=19.42% | WR=62.3% | PF=1.34 | Trades=419 | 2.2s
+
+[636/864] ^N225 1d | regression | prob=0.65 | RR=1:2.0 | regime=none
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=0.131R | Return=71.1% | MaxDD=19.42% | WR=62.3% | PF=1.34 | Trades=419 | 2.0s
+
+[640/864] ^N225 1d | regression | prob=0.65 | RR=1:2.0 | regime=both
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=0.131R | Return=71.1% | MaxDD=19.42% | WR=62.3% | PF=1.34 | Trades=419 | 2.1s
+
+[644/864] ^N225 1d | regression | prob=0.65 | RR=1:3.0 | regime=none
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=0.131R | Return=71.1% | MaxDD=19.42% | WR=62.3% | PF=1.34 | Trades=419 | 2.2s
+
+[648/864] ^N225 1d | regression | prob=0.65 | RR=1:3.0 | regime=both
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=0.131R | Return=71.1% | MaxDD=19.42% | WR=62.3% | PF=1.34 | Trades=419 | 2.2s
+
+[652/864] EURUSD=X 1d | regression | prob=0.5 | RR=1:1.5 | regime=none
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.199R | Return=-38.72% | MaxDD=44.46% | WR=49.8% | PF=0.64 | Trades=273 | 2.2s
+
+[656/864] EURUSD=X 1d | regression | prob=0.5 | RR=1:1.5 | regime=both
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.199R | Return=-38.72% | MaxDD=44.46% | WR=49.8% | PF=0.64 | Trades=273 | 2.3s
+
+[660/864] EURUSD=X 1d | regression | prob=0.5 | RR=1:2.0 | regime=none
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.199R | Return=-38.72% | MaxDD=44.46% | WR=49.8% | PF=0.64 | Trades=273 | 2.2s
+
+[664/864] EURUSD=X 1d | regression | prob=0.5 | RR=1:2.0 | regime=both
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.199R | Return=-38.72% | MaxDD=44.46% | WR=49.8% | PF=0.64 | Trades=273 | 2.1s
+
+[668/864] EURUSD=X 1d | regression | prob=0.5 | RR=1:3.0 | regime=none
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.199R | Return=-38.72% | MaxDD=44.46% | WR=49.8% | PF=0.64 | Trades=273 | 2.2s
+
+[672/864] EURUSD=X 1d | regression | prob=0.5 | RR=1:3.0 | regime=both
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.199R | Return=-38.72% | MaxDD=44.46% | WR=49.8% | PF=0.64 | Trades=273 | 2.2s
+
+[676/864] EURUSD=X 1d | regression | prob=0.55 | RR=1:1.5 | regime=none
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.291R | Return=-49.9% | MaxDD=55.9% | WR=44.5% | PF=0.53 | Trades=265 | 2.1s
+
+[680/864] EURUSD=X 1d | regression | prob=0.55 | RR=1:1.5 | regime=both
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.291R | Return=-49.9% | MaxDD=55.9% | WR=44.5% | PF=0.53 | Trades=265 | 2.2s
+
+[684/864] EURUSD=X 1d | regression | prob=0.55 | RR=1:2.0 | regime=none
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.291R | Return=-49.9% | MaxDD=55.9% | WR=44.5% | PF=0.53 | Trades=265 | 2.2s
+
+[688/864] EURUSD=X 1d | regression | prob=0.55 | RR=1:2.0 | regime=both
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.291R | Return=-49.9% | MaxDD=55.9% | WR=44.5% | PF=0.53 | Trades=265 | 2.1s
+
+[692/864] EURUSD=X 1d | regression | prob=0.55 | RR=1:3.0 | regime=none
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.291R | Return=-49.9% | MaxDD=55.9% | WR=44.5% | PF=0.53 | Trades=265 | 2.1s
+
+[696/864] EURUSD=X 1d | regression | prob=0.55 | RR=1:3.0 | regime=both
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.291R | Return=-49.9% | MaxDD=55.9% | WR=44.5% | PF=0.53 | Trades=265 | 2.1s
+
+[700/864] EURUSD=X 1d | regression | prob=0.65 | RR=1:1.5 | regime=none
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.266R | Return=-41.53% | MaxDD=49.38% | WR=46.7% | PF=0.55 | Trades=240 | 2.1s
+
+[704/864] EURUSD=X 1d | regression | prob=0.65 | RR=1:1.5 | regime=both
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.266R | Return=-41.53% | MaxDD=49.38% | WR=46.7% | PF=0.55 | Trades=240 | 2.2s
+
+[708/864] EURUSD=X 1d | regression | prob=0.65 | RR=1:2.0 | regime=none
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.266R | Return=-41.53% | MaxDD=49.38% | WR=46.7% | PF=0.55 | Trades=240 | 2.1s
+
+[712/864] EURUSD=X 1d | regression | prob=0.65 | RR=1:2.0 | regime=both
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.266R | Return=-41.53% | MaxDD=49.38% | WR=46.7% | PF=0.55 | Trades=240 | 2.2s
+
+[716/864] EURUSD=X 1d | regression | prob=0.65 | RR=1:3.0 | regime=none
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.266R | Return=-41.53% | MaxDD=49.38% | WR=46.7% | PF=0.55 | Trades=240 | 2.3s
+
+[720/864] EURUSD=X 1d | regression | prob=0.65 | RR=1:3.0 | regime=both
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.266R | Return=-41.53% | MaxDD=49.38% | WR=46.7% | PF=0.55 | Trades=240 | 2.7s
+
+[724/864] AAPL 1d | regression | prob=0.5 | RR=1:1.5 | regime=none
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=0.011R | Return=-3.36% | MaxDD=30.5% | WR=58.2% | PF=1.02 | Trades=364 | 2.8s
+
+[728/864] AAPL 1d | regression | prob=0.5 | RR=1:1.5 | regime=both
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=0.011R | Return=-3.36% | MaxDD=30.5% | WR=58.2% | PF=1.02 | Trades=364 | 2.3s
+
+[732/864] AAPL 1d | regression | prob=0.5 | RR=1:2.0 | regime=none
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=0.011R | Return=-3.36% | MaxDD=30.5% | WR=58.2% | PF=1.02 | Trades=364 | 2.5s
+
+[736/864] AAPL 1d | regression | prob=0.5 | RR=1:2.0 | regime=both
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=0.011R | Return=-3.36% | MaxDD=30.5% | WR=58.2% | PF=1.02 | Trades=364 | 2.3s
+
+[740/864] AAPL 1d | regression | prob=0.5 | RR=1:3.0 | regime=none
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=0.011R | Return=-3.36% | MaxDD=30.5% | WR=58.2% | PF=1.02 | Trades=364 | 2.1s
+
+[744/864] AAPL 1d | regression | prob=0.5 | RR=1:3.0 | regime=both
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=0.011R | Return=-3.36% | MaxDD=30.5% | WR=58.2% | PF=1.02 | Trades=364 | 2.2s
+
+[748/864] AAPL 1d | regression | prob=0.55 | RR=1:1.5 | regime=none
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=0.012R | Return=-3.31% | MaxDD=29.46% | WR=58.6% | PF=1.03 | Trades=362 | 2.3s
+
+[752/864] AAPL 1d | regression | prob=0.55 | RR=1:1.5 | regime=both
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=0.012R | Return=-3.31% | MaxDD=29.46% | WR=58.6% | PF=1.03 | Trades=362 | 2.2s
+
+[756/864] AAPL 1d | regression | prob=0.55 | RR=1:2.0 | regime=none
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=0.012R | Return=-3.31% | MaxDD=29.46% | WR=58.6% | PF=1.03 | Trades=362 | 2.2s
+
+[760/864] AAPL 1d | regression | prob=0.55 | RR=1:2.0 | regime=both
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=0.012R | Return=-3.31% | MaxDD=29.46% | WR=58.6% | PF=1.03 | Trades=362 | 2.1s
+
+[764/864] AAPL 1d | regression | prob=0.55 | RR=1:3.0 | regime=none
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=0.012R | Return=-3.31% | MaxDD=29.46% | WR=58.6% | PF=1.03 | Trades=362 | 2.2s
+
+[768/864] AAPL 1d | regression | prob=0.55 | RR=1:3.0 | regime=both
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=0.012R | Return=-3.31% | MaxDD=29.46% | WR=58.6% | PF=1.03 | Trades=362 | 2.2s
+
+[772/864] AAPL 1d | regression | prob=0.65 | RR=1:1.5 | regime=none
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=0.002R | Return=-3.53% | MaxDD=30.57% | WR=58.5% | PF=1.0 | Trades=357 | 2.2s
+
+[776/864] AAPL 1d | regression | prob=0.65 | RR=1:1.5 | regime=both
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=0.002R | Return=-3.53% | MaxDD=30.57% | WR=58.5% | PF=1.0 | Trades=357 | 2.1s
+
+[780/864] AAPL 1d | regression | prob=0.65 | RR=1:2.0 | regime=none
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=0.002R | Return=-3.53% | MaxDD=30.57% | WR=58.5% | PF=1.0 | Trades=357 | 2.2s
+
+[784/864] AAPL 1d | regression | prob=0.65 | RR=1:2.0 | regime=both
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=0.002R | Return=-3.53% | MaxDD=30.57% | WR=58.5% | PF=1.0 | Trades=357 | 2.2s
+
+[788/864] AAPL 1d | regression | prob=0.65 | RR=1:3.0 | regime=none
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=0.002R | Return=-3.53% | MaxDD=30.57% | WR=58.5% | PF=1.0 | Trades=357 | 2.2s
+
+[792/864] AAPL 1d | regression | prob=0.65 | RR=1:3.0 | regime=both
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=0.002R | Return=-3.53% | MaxDD=30.57% | WR=58.5% | PF=1.0 | Trades=357 | 2.2s
+
+[796/864] TSLA 1d | regression | prob=0.5 | RR=1:1.5 | regime=none
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.054R | Return=-16.56% | MaxDD=28.8% | WR=52.6% | PF=0.89 | Trades=340 | 2.4s
+
+[800/864] TSLA 1d | regression | prob=0.5 | RR=1:1.5 | regime=both
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.054R | Return=-16.56% | MaxDD=28.8% | WR=52.6% | PF=0.89 | Trades=340 | 2.6s
+
+[804/864] TSLA 1d | regression | prob=0.5 | RR=1:2.0 | regime=none
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.054R | Return=-16.56% | MaxDD=28.8% | WR=52.6% | PF=0.89 | Trades=340 | 3.1s
+
+[808/864] TSLA 1d | regression | prob=0.5 | RR=1:2.0 | regime=both
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.054R | Return=-16.56% | MaxDD=28.8% | WR=52.6% | PF=0.89 | Trades=340 | 2.7s
+
+[812/864] TSLA 1d | regression | prob=0.5 | RR=1:3.0 | regime=none
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.054R | Return=-16.56% | MaxDD=28.8% | WR=52.6% | PF=0.89 | Trades=340 | 2.7s
+
+[816/864] TSLA 1d | regression | prob=0.5 | RR=1:3.0 | regime=both
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.054R | Return=-16.56% | MaxDD=28.8% | WR=52.6% | PF=0.89 | Trades=340 | 2.5s
+
+[820/864] TSLA 1d | regression | prob=0.55 | RR=1:1.5 | regime=none
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.074R | Return=-21.97% | MaxDD=33.3% | WR=51.8% | PF=0.85 | Trades=336 | 5.3s
+
+[824/864] TSLA 1d | regression | prob=0.55 | RR=1:1.5 | regime=both
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.074R | Return=-21.97% | MaxDD=33.3% | WR=51.8% | PF=0.85 | Trades=336 | 2.6s
+
+[828/864] TSLA 1d | regression | prob=0.55 | RR=1:2.0 | regime=none
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+h
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.054R | Return=-16.56% | MaxDD=28.8% | WR=52.6% | PF=0.89 | Trades=340 | 2.1s
+
+[820/864] TSLA 1d | regression | prob=0.55 | RR=1:1.5 | regime=none
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.074R | Return=-21.97% | MaxDD=33.3% | WR=51.8% | PF=0.85 | Trades=336 | 2.1s
+
+[824/864] TSLA 1d | regression | prob=0.55 | RR=1:1.5 | regime=both
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.074R | Return=-21.97% | MaxDD=33.3% | WR=51.8% | PF=0.85 | Trades=336 | 2.1s
+
+[828/864] TSLA 1d | regression | prob=0.55 | RR=1:2.0 | regime=none
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.074R | Return=-21.97% | MaxDD=33.3% | WR=51.8% | PF=0.85 | Trades=336 | 2.1s
+
+[832/864] TSLA 1d | regression | prob=0.55 | RR=1:2.0 | regime=both
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.074R | Return=-21.97% | MaxDD=33.3% | WR=51.8% | PF=0.85 | Trades=336 | 2.1s
+
+[836/864] TSLA 1d | regression | prob=0.55 | RR=1:3.0 | regime=none
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.074R | Return=-21.97% | MaxDD=33.3% | WR=51.8% | PF=0.85 | Trades=336 | 2.1s
+
+[840/864] TSLA 1d | regression | prob=0.55 | RR=1:3.0 | regime=both
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.074R | Return=-21.97% | MaxDD=33.3% | WR=51.8% | PF=0.85 | Trades=336 | 2.1s
+
+[844/864] TSLA 1d | regression | prob=0.65 | RR=1:1.5 | regime=none
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.065R | Return=-19.5% | MaxDD=30.41% | WR=52.2% | PF=0.87 | Trades=324 | 2.1s
+
+[848/864] TSLA 1d | regression | prob=0.65 | RR=1:1.5 | regime=both
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.065R | Return=-19.5% | MaxDD=30.41% | WR=52.2% | PF=0.87 | Trades=324 | 2.1s
+
+[852/864] TSLA 1d | regression | prob=0.65 | RR=1:2.0 | regime=none
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.065R | Return=-19.5% | MaxDD=30.41% | WR=52.2% | PF=0.87 | Trades=324 | 2.1s
+
+[856/864] TSLA 1d | regression | prob=0.65 | RR=1:2.0 | regime=both
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.065R | Return=-19.5% | MaxDD=30.41% | WR=52.2% | PF=0.87 | Trades=324 | 2.2s
+
+[860/864] TSLA 1d | regression | prob=0.65 | RR=1:3.0 | regime=none
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.065R | Return=-19.5% | MaxDD=30.41% | WR=52.2% | PF=0.87 | Trades=324 | 2.7s
+
+[864/864] TSLA 1d | regression | prob=0.65 | RR=1:3.0 | regime=both
+  Supabase upsert ml_model_metrics error: Expecting value: line 1 column 1 (char 0)
+  Supabase upsert ml_backtest_results error: Expecting value: line 1 column 1 (char 0)
+  -> SAVED | Expectancy=-0.065R | Return=-19.5% | MaxDD=30.41% | WR=52.2% | PF=0.87 | Trades=324 | 2.2s
+
+======================================================================
+BATCH TRAINING V2 COMPLETE
+======================================================================
+Total combinations: 864
+Models saved: 190
+Total elapsed: 898.4s
+Results: ml/batch_training_v2_results.json
+
+TOP 10 MODELS BY EXPECTANCY:
+  ^N225 1d | regression | prob=0.65 | RR=1:1.5 | regime=none | 0.131R | WR=62.3% | PF=1.34 | MaxDD=19.4%
+  ^N225 1d | regression | prob=0.65 | RR=1:1.5 | regime=both | 0.131R | WR=62.3% | PF=1.34 | MaxDD=19.4%
+  ^N225 1d | regression | prob=0.65 | RR=1:2.0 | regime=none | 0.131R | WR=62.3% | PF=1.34 | MaxDD=19.4%
+  ^N225 1d | regression | prob=0.65 | RR=1:2.0 | regime=both | 0.131R | WR=62.3% | PF=1.34 | MaxDD=19.4%
+  ^N225 1d | regression | prob=0.65 | RR=1:3.0 | regime=none | 0.131R | WR=62.3% | PF=1.34 | MaxDD=19.4%
+  ^N225 1d | regression | prob=0.65 | RR=1:3.0 | regime=both | 0.131R | WR=62.3% | PF=1.34 | MaxDD=19.4%
+  NVDA 1d | regression | prob=0.55 | RR=1:2.0 | regime=none | 0.110R | WR=63.0% | PF=1.28 | MaxDD=18.6%
+  NVDA 1d | regression | prob=0.55 | RR=1:2.0 | regime=both | 0.110R | WR=63.0% | PF=1.28 | MaxDD=18.6%
+  NVDA 1d | regression | prob=0.55 | RR=1:3.0 | regime=none | 0.110R | WR=63.0% | PF=1.28 | MaxDD=18.6%
+  NVDA 1d | regression | prob=0.55 | RR=1:3.0 | regime=both | 0.110R | WR=63.0% | PF=1.28 | MaxDD=18.6%
