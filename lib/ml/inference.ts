@@ -177,7 +177,7 @@ export function predict(
   btcBullFilter: number = 1,
   guardrail?: GuardrailState | null,
 ): PredictionResult {
-  const probThreshold = meta?.prob_threshold ?? 0.53;
+  const probThreshold = meta?.prob_threshold ?? 0.50;
   const regimeFilter = meta?.regime_filter ?? 'none';
   const allowShort = meta?.allow_short ?? true;
   const taskType = meta?.task_type ?? 'regression';

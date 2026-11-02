@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Trade List - Althunter ML Dashboard</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0f172a; color: #e2e8f0; padding: 20px; }
+.container { max-width: 1400px; margin: 0 auto; }
+h1 { font-size: 24px; font-weight: 700; margin-bottom: 8px; color: #f8fafc; }
+.subtitle { color: #94a3b8; font-size: 14px; margin-bottom: 24px; }
+
+/* Filter bar */
+.filter-bar { margin-bottom: 20px; padding: 16px; background: #1e293b; border-radius: 8px; border: 1px solid #334155; display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+.filter-bar label { font-size: 12px; color: #94a3b8; margin-right: 8px; }
+.filter-bar select, .filter-bar input { background: #0f172a; border: 1px solid #334155; color: #e2e8f0; padding: 8px 12px; border-radius: 6px; font-size: 12px; cursor: pointer; }
+.filter-bar button { background: #3b82f6; color: #fff; border: none; border-radius: 6px; padding: 8px 16px; font-size: 12px; font-weight: 600; cursor: pointer; }
+.filter-bar button:hover { background: #2563eb; }
+
+/* Stats bar */
+.stats-bar { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 20px; }
+.stat-card { background: #1e293b; border: 1px solid #334155; border-radius: 8px; padding: 16px; }
+.stat-card .stat-label { font-size: 11px; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; }
+.stat-card .stat-value { font-size: 20px; font-weight: 700; color: #f8fafc; font-family: 'Courier New', monospace; }
+
+/* Trade table */
+.table-wrap { overflow-x: auto; margin-bottom: 24px; }
+table { width: 100%; border-collapse: collapse; font-size: 11px; }
+th { text-align: left; padding: 10px 12px; font-size: 10px; font-weight: 700; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.5px; border-bottom: 1px solid #374151; white-space: nowrap; }
+td { padding: 10px 12px; border-bottom: 1px solid #1f2937; font-size: 11px; color: #cbd5e1; white-space: nowrap; }
+tr:hover { background: rgba(31, 41, 55, 0.5); }
+
+/* Side color */
+.side-long { color: #10b981; font-weight: 600; }
+.side-short { color: #f59e0b; font-weight: 600; }
+.pnl-positive { color: #10b981; font-weight: 700; }
+.pnl-negative { color: #ef4444; font-weight: 700; }
+
+/* Exit reason colors */
+.exit-tp { color: #10b981; }
+.exit-sl { color: #ef4444; }
+.exit-time { color: #f59e0b; }
+.exit-partial { color: #3b82f6; }
+.exit-end { color: #94a3b8; }
+
+/* Empty state */
+.empty-state { text-align: center; padding: 60px 20px; color: #94a3b8; }
+
+/* Pagination */
+.pagination { display: flex; justify-content: center; gap: 8px; margin-top: 20px; }
+.pagination button { background: #1e293b; border: 1px solid #374151; color: #e2e8f0; padding: 6px 12px; border-radius: 6px; font-size: 12px; cursor: pointer; }
+.pagination button:hover { background: #334155; }
+.pagination button.active { background: #3b82f6; border-color: #3b82f6; }
+
+/* Refresh */
+.refresh-btn { background: #3b82f6; color: #fff; border: none; border-radius: 6px; padding: 8px 16px; font-size: 12px; font-weight: 600; cursor: pointer; margin-bottom: 16px; }
+.refresh-btn:hover { background: #2563eb; }
+.refresh-btn.loading { opacity: 0.6; cursor: not-allowed; }
+
+/* Symbol badge */
+.badge { font-size: 10px; padding: 4px 8px; border-radius: 4px; font-weight: 600; }
+.badge-crypto { background: rgba(16, 185, 129, 0.1); color: #10b981; }
+.badge-commodity { background: rgba(249, 115, 22, 0.1); color: #f59e0b; }
+.badge-index { background: rgba(59, 130, 246, 0.1); color: #3b82f6; }
+.badge-forex { background: rgba(236, 72, 153, 0.1); color: #ec4899; }
+.badge-equity { background: rgba(139, 92, 246, 0.1); color: #a855f7; }
+
+.r-multiple-positive { color: #10b981; font-weight: 700; font-family: 'Courier New', monospace; }
+.r-multiple-negative { color: #ef4444; font-weight: 700; font-family: 'Courier New', monospace; }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>📊 Trade List - Althunter ML Backtest</h1>
+  <p class="subtitle">Setiap trade dari backtest model ML - data dari Supabase</p>
+
+  <button class="refresh-btn" id="refreshBtn">🔄 Refresh Data</button>
+
+  <div class="filter-bar">
+    <label>Symbol:</label>
+    <select id="symbolFilter">
+      <option value="">Semua</option>
+    </select>
+    <label>Interval:</label>
+    <select id="intervalFilter">
+      <option value="">Semua</option>
+    </select>
+    <label>Side:</label>
+    <select id="sideFilter">
+      <option value="">Semua</option>
+      <option value="long">LONG</option>
+      <option value="short">SHORT</option>
+    </select>
+    <label>Exit Reason:</label>
+    <select id="exitFilter">
+      <option value="">Semua</option>
+      <option value="tp">TP</option>
+      <option value="sl">SL</option>
+      <option value="time">Time Stop</option>
+      <option value="partial">Partial</option>
+      <option value="end">End</option>
+    </select>
+    <button class="refresh-btn" id="applyFilter">Terapkan</button>
+  </div>
+
+  <div class="stats-bar" id="statsBar">
+    <!-- Stats populated by JS -->
+  </div>
+
+  <div class="table-wrap" id="tableWrap">
+    <table id="tradeTable">
+      <thead>
+        <tr>
+          <th>#</th>
+          <th>Symbol</th>
+          <th>Interval</th>
+          <th>Side</th>
+          <th>Entry Time</th>
+          <th>Exit Time</th>
+          <th>Entry → Exit</th>
+          <th>PnL</th>
+          <th>PnL %</th>
+          <th>R Multiple</th>
+          <th>Bars Held</th>
+          <th>Exit Reason</th>
+          <th>P(Up)</th>
+          <th>Regime</th>
+        </tr>
+      </thead>
+      <tbody id="tableBody"></tbody>
+    </table>
+  </div>
+
+  <div class="pagination" id="pagination"></div>
+</div>
+
+<script>
+const SUPABASE_URL = 'https://vfdtbeuxzolvgzwwfske.supabase.co';
+const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZmZHRiZXV4em9sdmd6d3dmc2tlIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTE1Mjg0MTgsImV4cCI6MjEwNzEwNDQxOH0.PWTsPFO2PhynU5o6hgO0on-l8ZsdxqJeL8D2dM_r4Hc';
+
+let allTrades = [];
+let currentPage = 1;
+const pageSize = 50;
+let filters = { symbol: '', interval: '', side: '', exit: '' };
+
+async function loadTrades() {
+  const btn = document.getElementById('refreshBtn');
+  btn.classList.add('loading');
+  btn.disabled = true;
+
+  try {
+    const resp = await fetch(`${SUPABASE_URL}/rest/v1/ml_trade_list?select=*&order=exit_time.desc&limit=1000`, {
+      headers: {
+        'apikey': SUPABASE_KEY,
+        'Authorization': `Bearer ${SUPABASE_KEY}`,
+      },
+    });
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const data = await resp.json();
+    allTrades = data || [];
+    render();
+  } catch (e) {
+    console.error(e);
+    document.getElementById('tableWrap').innerHTML = '<div class="empty-state">Gagal memuat data trades dari Supabase.</div>';
+  } finally {
+    btn.classList.remove('loading');
+    btn.disabled = false;
+  }
+}
+
+function render() {
+  const tableBody = document.getElementById('tableBody');
+  const statsBar = document.getElementById('statsBar');
+  const pagination = document.getElementById('pagination');
+
+  // Apply filters
+  let filtered = allTrades.filter(t => {
+    if (filters.symbol && t.symbol !== filters.symbol) return false;
+    if (filters.interval && t.interval !== filters.interval) return false;
+    if (filters.side && t.side !== filters.side) return false;
+    if (filters.exit && t.exit_reason !== filters.exit) return false;
+    return true;
+  });
+
+  // Sort by exit_time desc
+  filtered.sort((a, b) => new Date(b.exit_time) - new Date(a.exit_time));
+
+  // Stats
+  const totalPnl = filtered.reduce((a, t) => a + (t.pnl || 0), 0);
+  const totalTrades = filtered.length;
+  const winningTrades = filtered.filter(t => t.pnl > 0).length;
+  const winRate = totalTrades > 0 ? (winningTrades / totalTrades * 100).toFixed(1) : 0;
+  const totalR = filtered.reduce((a, t) => a + (t.r_multiple || 0), 0).toFixed(3);
+
+  statsBar.innerHTML = `
+    <div class="stat-card"><div class="stat-label">Total Trades</div><div class="stat-value">${totalTrades}</div></div>
+    <div class="stat-card"><div class="stat-label">Win Rate</div><div class="stat-value">${winRate}%</div></div>
+    <div class="stat-card"><div class="stat-label">Total PnL</div><div class="stat-value pnl-positive">${totalPnl.toFixed(2)}</div></div>
+    <div class="stat-card"><div class="stat-label">Total R</div><div class="stat-value r-multiple-positive">${totalR}R</div></div>
+  `;
+
+  // Pagination
+  const totalPages = Math.ceil(filtered.length / pageSize) || 1;
+  if (currentPage > totalPages) currentPage = totalPages;
+  const start = (currentPage - 1) * pageSize;
+  const end = start + pageSize;
+  const pageTrades = filtered.slice(start, end);
+
+  // Populate symbol filter
+  const symbolFilter = document.getElementById('symbolFilter');
+  const symbols = [...new Set(allTrades.map(t => t.symbol))].sort();
+  symbolFilter.innerHTML = '<option value="">Semua</option>' + symbols.map(s => `<option value="${s}" ${filters.symbol === s ? 'selected' : ''}>${s}</option>`).join('');
+
+  // Populate interval filter
+  const intervalFilter = document.getElementById('intervalFilter');
+  const intervals = [...new Set(allTrades.map(t => t.interval))].sort();
+  intervalFilter.innerHTML = '<option value="">Semua</option>' + intervals.map(i => `<option value="${i}" ${filters.interval === i ? 'selected' : ''}>${i}</option>`).join('');
+
+  // Render table
+  tableBody.innerHTML = '';
+  if (pageTrades.length === 0) {
+    tableBody.innerHTML = '<tr><td colspan="14" class="empty-state">Tidak ada trade data yang cocok dengan filter.</td></tr>';
+  } else {
+    pageTrades.forEach(t => {
+      const sideClass = t.side === 'long' ? 'side-long' : 'side-short';
+      const pnlClass = t.pnl > 0 ? 'pnl-positive' : 'pnl-negative';
+      const rClass = t.r_multiple > 0 ? 'r-multiple-positive' : 'r-multiple-negative';
+      const exitClass = `exit-${t.exit_reason}`;
+      const entryDate = new Date(t.entry_time).toLocaleString('id-ID', { dateStyle: 'short', timeStyle: 'short' });
+      const exitDate = new Date(t.exit_time).toLocaleString('id-ID', { dateStyle: 'short', timeStyle: 'short' });
+
+      tableBody.innerHTML += `
+        <tr>
+          <td>${t.trade_id}</td>
+          <td><span class="badge badge-${t.symbol.includes('=') ? 'commodity' : t.symbol.includes('^') ? 'index' : t.symbol.length <= 5 ? 'equity' : 'crypto'}">${t.symbol}</span></td>
+          <td>${t.interval}</td>
+          <td class="${sideClass}">${t.side === 'long' ? 'LONG' : 'SHORT'}</td>
+          <td>${entryDate}</td>
+          <td>${exitDate}</td>
+          <td>${t.entry_price?.toFixed(2)} → ${t.exit_price?.toFixed(2)}</td>
+          <td class="${pnlClass}">${t.pnl > 0 ? '+' : ''}${t.pnl.toFixed(2)}</td>
+          <td class="${pnlClass}">${t.pnl_percent > 0 ? '+' : ''}${t.pnl_percent.toFixed(2)}%</td>
+          <td class="${rClass}">${t.r_multiple > 0 ? '+' : ''}${t.r_multiple.toFixed(3)}R</td>
+          <td>${t.bars_held}</td>
+          <td class="${exitClass}">${t.exit_reason}</td>
+          <td>${(t.probability_up * 100).toFixed(1)}%</td>
+          <td>${t.regime_pass ? '✅' : '❌'}</td>
+        </tr>
+      `;
+    });
+  }
+
+  // Pagination controls
+  pagination.innerHTML = '';
+  for (let p = 1; p <= totalPages; p++) {
+    pagination.innerHTML += `<button class="${p === currentPage ? 'active' : ''}" onclick="goToPage(${p})">${p}</button>`;
+  }
+}
+
+function goToPage(p) {
+  currentPage = p;
+  render();
+}
+
+function applyFilter() {
+  filters.symbol = document.getElementById('symbolFilter').value;
+  filters.interval = document.getElementById('intervalFilter').value;
+  filters.side = document.getElementById('sideFilter').value;
+  filters.exit = document.getElementById('exitFilter').value;
+  currentPage = 1;
+  render();
+}
+
+document.getElementById('refreshBtn').addEventListener('click', loadTrades);
+document.getElementById('applyFilter').addEventListener('click', applyFilter);
+
+// Initial load
+loadTrades();
+</script>
+</body>
+</html>
