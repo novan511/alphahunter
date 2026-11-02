@@ -3,230 +3,362 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>ML Model Documentation - Althunter</title>
+<title>ML Model Dashboard - Althunter</title>
 <style>
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0f172a; color: #e2e8f0; padding: 20px; }
 .container { max-width: 1400px; margin: 0 auto; }
 h1 { font-size: 24px; font-weight: 700; margin-bottom: 8px; color: #f8fafc; }
 .subtitle { color: #94a3b8; font-size: 14px; margin-bottom: 24px; }
-.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 20px; }
-.card { background: #1e293b; border: 1px solid #334155; border-radius: 12px; padding: 20px; margin-bottom: 20px; transition: transform 0.2s; }
-.card:hover { transform: translateY(-2px); border-color: #3b82f6; }
-.card-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 12px; }
-.card-title { font-size: 18px; font-weight: 700; color: #f8fafc; }
-.card-badge { font-size: 11px; font-weight: 700; padding: 4px 8px; border-radius: 6px; text-transform: uppercase; letter-spacing: 0.5px; }
+
+/* Stats bar */
+.stats-bar { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin-bottom: 24px; }
+.stat-card { background: #1e293b; border: 1px solid #334155; border-radius: 8px; padding: 16px; }
+.stat-label { font-size: 11px; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; }
+.stat-value { font-size: 20px; font-weight: 700; color: #f8fafc; font-family: 'Courier New', monospace; }
+
+/* Filter bar */
+.filter-bar { margin-bottom: 20px; padding: 16px; background: #1e293b; border: 1px solid #334155; border-radius: 8px; display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+.filter-bar label { font-size: 12px; color: #94a3b8; margin-right: 8px; }
+.filter-bar select, .filter-bar input { background: #0f172a; border: 1px solid #334155; color: #e2e8f0; padding: 8px 12px; border-radius: 6px; font-size: 12px; cursor: pointer; }
+.filter-bar button { background: #3b82f6; color: #fff; border: none; border-radius: 6px; padding: 8px 16px; font-size: 12px; font-weight: 600; cursor: pointer; }
+.filter-bar button:hover { background: #2563eb; }
+
+/* Table */
+.table-wrap { overflow-x: auto; margin-bottom: 24px; }
+table { width: 100%; border-collapse: collapse; font-size: 11px; }
+th { text-align: left; padding: 10px 12px; font-size: 10px; font-weight: 700; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.5px; white-space: nowrap; border-bottom: 1px solid #374151; }
+td { padding: 10px 12px; border-bottom: 1px solid #1f2937; font-size: 11px; color: #cbd5e1; white-space: nowrap; }
+tr:hover { background: rgba(31, 41, 55, 0.5); }
+
+/* Side colors */
+.side-long { color: #10b981; font-weight: 600; }
+.side-short { color: #f59e0b; font-weight: 600; }
+.pnl-positive { color: #10b981; font-weight: 700; }
+.pnl-negative { color: #ef4444; font-weight: 700; }
+
+/* Exit reason colors */
+.exit-tp { color: #10b981; }
+.exit-sl { color: #ef4444; }
+.exit-time { color: #f59e0b; }
+.exit-partial { color: #3b82f6; }
+.exit-end { color: #94a3b8; }
+
+/* Empty state */
+.empty-state { text-align: center; padding: 60px 20px; color: #94a3b8; }
+
+/* Pagination */
+.pagination { display: flex; justify-content: center; gap: 8px; margin-top: 20px; }
+.pagination button { background: #1e293b; border: 1px solid #374151; color: #e2e8f0; padding: 6px 12px; border-radius: 6px; font-size: 12px; cursor: pointer; }
+.pagination button:hover { background: #334155; }
+.pagination button.active { background: #3b82f6; border-color: #3b82f6; }
+
+/* Refresh button */
+.refresh-btn { background: #3b82f6; color: #fff; border: none; border-radius: 6px; padding: 8px 16px; font-size: 12px; font-weight: 600; cursor: pointer; margin-bottom: 16px; }
+.refresh-btn:hover { background: #2563eb; }
+.refresh-btn.loading { opacity: 0.6; cursor: not-allowed; }
+
+/* Symbol badges */
+.badge { font-size: 10px; padding: 4px 8px; border-radius: 4px; font-weight: 600; }
+.badge-crypto { background: rgba(16, 185, 129, 0.1); color: #10b981; }
+.badge-commodity { background: rgba(249, 115, 22, 0.1); color: #f59e0b; }
+.badge-index { background: rgba(59, 130, 246, 0.1); color: #3b82f6; }
+.badge-forex { background: rgba(236, 72, 153, 0.1); color: #ec4899; }
+.badge-equity { background: rgba(139, 92, 246, 0.1); color: #a855f7; }
+
+/* R multiples */
+.r-positive { color: #10b981; font-weight: 700; font-family: 'Courier New', monospace; }
+.r-negative { color: #ef4444; font-weight: 700; font-family: 'Courier New', monospace; }
+
+/* Model summary cards */
+.model-card { background: #1e293b; border: 1px solid #334155; border-radius: 8px; padding: 16px; margin-bottom: 20px; }
+.model-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+.model-title { font-size: 16px; font-weight: 700; color: #f8fafc; }
+.model-badge { font-size: 10px; padding: 4px 8px; border-radius: 4px; font-weight: 600; }
 .badge-positive { background: #10b981; color: #ffffff; }
 .badge-negative { background: #ef4444; color: #ffffff; }
 .badge-neutral { background: #f59e0b; color: #ffffff; }
-.metrics { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 14px; }
-.metric { background: #0f172a; border: 1px solid #334155; border-radius: 8px; padding: 10px; }
-.metric-label { font-size: 10px; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.4px; margin-bottom: 4px; }
-.metric-value { font-size: 16px; font-weight: 700; color: #f8fafc; font-family: 'Courier New', monospace; }
-.param-section { margin-top: 14px; border-top: 1px solid #334155; padding-top: 12px; }
-.param-title { font-size: 11px; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.4px; margin-bottom: 8px; }
-.params { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
-.param-item { font-size: 11px; color: #cbd5e1; }
-.param-item b { color: #f8fafc; }
-.features { margin-top: 14px; border-top: 1px solid #334155; padding-top: 12px; }
-.features-title { font-size: 11px; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.4px; margin-bottom: 8px; }
-.feature-list { display: flex; flex-wrap: wrap; gap: 6px; }
-.feature-item { font-size: 10px; background: #334155; color: #94a3b8; padding: 4px 8px; border-radius: 4px; }
-.windows-section { margin-top: 14px; border-top: 1px solid #334155; padding-top: 12px; }
-.windows-title { font-size: 11px; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.4px; margin-bottom: 8px; }
-.window-row { display: flex; justify-content: space-between; font-size: 11px; color: #cbd5e1; padding: 4px 0; border-bottom: 1px solid #334155; }
-.window-row:last-child { border-bottom: none; }
-.legend { margin-top: 24px; padding: 16px; background: #1e293b; border-radius: 8px; border: 1px solid #334155; }
-.legend h3 { font-size: 13px; color: #f8fafc; margin-bottom: 10px; }
-.legend-item { display: flex; align-items: center; gap: 8px; font-size: 12px; color: #cbd5e1; margin-bottom: 6px; }
-.filter-bar { margin-bottom: 20px; padding: 16px; background: #1e293b; border-radius: 8px; border: 1px solid #334155; }
-.filter-bar label { font-size: 12px; color: #94a3b8; margin-right: 12px; }
-.filter-bar select { background: #0f172a; border: 1px solid #334155; color: #e2e8f0; padding: 8px 12px; border-radius: 6px; font-size: 12px; cursor: pointer; }
-.asset-count { font-size: 11px; color: #94a3b8; margin-left: 12px; }
-.empty-state { text-align: center; padding: 60px 20px; color: #94a3b8; }
 </style>
 </head>
 <body>
 <div class="container">
-  <h1>📊 ML Model Documentation - Althunter</h1>
-  <p class="subtitle">XGBoost Gradient Boosting - Long/Short | Compounded R | Professional RR | Out-of-Sample Walk-Forward</p>
+  <h1>🤖 ML Model Dashboard - Althunter</h1>
+  <p class="subtitle">XGBoost Gradient Boosting - Live from Supabase</p>
+
+  <button class="refresh-btn" id="refreshBtn">🔄 Refresh from Supabase</button>
 
   <div class="filter-bar">
-    <label>Filter: <select id="assetFilter" onchange="filterModels()">
-      <option value="all">Semua Aset</option>
-      <option value="crypto">₿ Crypto</option>
-      <option value="commodity">📦 Komoditas</option>
-      <option value="index">📈 Indeks</option>
-      <option value="forex">💱 Forex</option>
-      <option value="equity">🏢 Saham US</option>
-      <option value="positive">✅ Hanya Positif (Expectancy &gt; 0)</option>
-    </select></label>
-    <span id="countBadge" class="asset-count"></span>
+    <label>Symbol:</label>
+    <select id="symbolFilter">
+      <option value="">Semua</option>
+    </select>
+    <label>Interval:</label>
+    <select id="intervalFilter">
+      <option value="">Semua</option>
+    </select>
+    <label>Status:</label>
+    <select id="statusFilter">
+      <option value="">Semua</option>
+      <option value="gates_passed">Gates Passed</option>
+      <option value="failed">Failed</option>
+    </select>
+    <button class="refresh-btn" id="applyFilter">Apply</button>
   </div>
 
-  <div class="grid" id="modelGrid"></div>
-
-  <div class="legend">
-    <h3>📋 Legend &amp; Penjelasan Metrik</h3>
-    <div class="legend-item"><span style="color:#10b981">●</span> <b>Expectancy R:</b> Rata-rata R-multiple per trade (positif = untung bersih)</div>
-    <div class="legend-item"><span style="color:#f8fafc">●</span> <b>Total Return:</b> Return total selama periode walk-forward (modalkan $1000)</div>
-    <div class="legend-item"><span style="color:#f8fafc">●</span> <b>Max Drawdown:</b> Penurunan maksimal dari puncak equity</div>
-    <div class="legend-item"><span style="color:#f8fafc">●</span> <b>Win Rate:</b> Persentase trade yang untung</div>
-    <div class="legend-item"><span style="color:#f8fafc">●</span> <b>Profit Factor:</b> Gross profit / Gross loss ( &gt;1 = untung)</div>
-    <div class="legend-item"><span style="color:#f8fafc">●</span> <b>Sharpe:</b> Return per unit risiko ( &gt;1 = baik)</div>
-    <div class="legend-item"><span style="color:#94a3b8">●</span> <b>RR Ratio:</b> Take Profit : Stop Loss (1:3 = TP 3x SL)</div>
-    <div class="legend-item"><span style="color:#94a3b8">●</span> <b>Prob Threshold:</b> Minimal probabilitas untuk entry (0.65 = 65% confidence)</div>
-    <div class="legend-item"><span style="color:#94a3b8">●</span> <b>SL/TP ATR:</b> Stop Loss dan Take Profit dikalikan ATR (volatilitas)</div>
+  <div class="stats-bar" id="statsBar">
+    <!-- Populated by JS -->
   </div>
 
-  <div style="margin-top: 24px; padding: 16px; background: #1e293b; border-radius: 8px; border: 1px solid #334155;">
-    <h3 style="font-size: 13px; color: #f8fafc; margin-bottom: 10px;">🎯 Model Terbaik</h3>
-    <div style="font-size: 12px; color: #cbd5e1; line-height: 1.6;">
-      <div><b>MATICUSDT 1d</b> — Expectancy 0.119R | Return +121.1% | Win Rate 22.4% | Profit Factor 1.27 | MaxDD 58.2%</div>
-      <div><b>NVDA 1d</b> — Expectancy 0.032R | Return +17.4% | Win Rate 22.6% | Profit Factor 1.06 | MaxDD 72.1%</div>
-      <div style="margin-top: 10px; color: #ef4444;"><b>Peringatan:</b> Semua model memiliki drawdown tinggi. Gunakan sebagai filter konfirmasi, bukan sebagai strategi tunggal. Jangan menyalurkan modal besar tanpa validasi lebih lanjut.</div>
-    </div>
+  <div id="modelGrid">
+    <!-- Model cards populated by JS -->
   </div>
 
-  <div style="margin-top: 24px; padding: 16px; background: #1e293b; border-radius: 8px; border: 1px solid #334155;">
-    <h3 style="font-size: 13px; color: #f8fafc; margin-bottom: 10px;">🔬 Arsitektur Model</h3>
-    <div style="font-size: 12px; color: #cbd5e1; line-height: 1.8;">
-      <div><b>Algorithm:</b> XGBoost Gradient Boosted Trees (reg:squarederror)</div>
-      <div><b>Target:</b> Forward 3-bar log-return (regresi) — prediksi return 3 candle ke depan</div>
-      <div><b>Fitur (14 kolom):</b> RS Z-score, RS Momentum, Asset Return 6-bar, Volume Ratio, ATR%, BTC Regime 20/60-bar, BTC Bull Filter, Momentum 5/20/60-bar, Close/SMA20, RS over RS MA, ATR Regime</div>
-      <div><b>Data:</b> ~1000 candle per aset (1d ≈ 3 tahun, 4h ≈ 166 hari)</div>
-      <div><b>Walk-Forward:</b> 3 jendela anchored expanding, in-sample → out-of-sample</div>
-      <div><b>Position Sizing:</b> Compounded R — 1% risiko per trade, account bertumbuh setelah setiap trade</div>
-      <div><b>Exit:</b> Stop Loss (2×ATR), Take Profit (5×ATR = RR 1:2.5), Time Stop (30 bar)</div>
-      <div><b>Biaya:</b> Fee 0.1% + Slippage 0.05% per sisi</div>
-    </div>
+  <div class="table-wrap" id="tableWrap">
+    <table id="tradeTable">
+      <thead>
+        <tr>
+          <th>#</th>
+          <th>Symbol</th>
+          <th>Interval</th>
+          <th>Side</th>
+          <th>Entry Time</th>
+          <th>Exit Time</th>
+          <th>Entry → Exit</th>
+          <th>PnL</th>
+          <th>R Multiple</th>
+          <th>Bars</th>
+          <th>Exit Reason</th>
+          <th>Saldo</th>
+        </tr>
+      </thead>
+      <tbody id="tradeBody"></tbody>
+    </table>
   </div>
+
+  <div class="pagination" id="pagination"></div>
 </div>
 
 <script>
-// Model data will be injected here from fetch
-const allModels = [];
-const grid = document.getElementById('modelGrid');
-const filter = document.getElementById('assetFilter');
-const countBadge = document.getElementById('countBadge');
+const SUPABASE_URL = 'https://vfdtbeuxzolvgzwwfske.supabase.co';
+const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZmZHRiZXV4em9sdmd6d3dmc2tlIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTE1Mjg0MTgsImV4cCI6MjEwNzEwNDQxOH0.PWTsPFO2PhynU5o6hgO0on-l8ZsdxqJeL8D2dM_r4Hc';
 
-const assetClassLabels = {
-  crypto: '₿ Crypto',
-  commodity: '📦 Komoditas',
-  index: '📈 Indeks',
-  forex: '💱 Forex',
-  equity: '🏢 Saham US',
-  other: '❓ Lainnya'
-};
+let allModels = [];
+let allTrades = [];
+let currentPage = 1;
+const pageSize = 50;
+let filters = { symbol: '', interval: '', status: '' };
 
-function getBadge(exp) {
-  if (exp > 0) return '<span class="badge badge-positive">POSITIF</span>';
-  if (exp > -0.5) return '<span class="badge badge-neutral">NETRAL</span>';
-  return '<span class="badge badge-negative">NEGATIF</span>';
-}
+async function loadData() {
+  const btn = document.getElementById('refreshBtn');
+  btn.classList.add('loading');
+  btn.disabled = true;
 
-function formatVal(val, fmt = '0.00') {
-  if (val == null) return '—';
-  return fmt.includes('%') ? val.toFixed(0) + '%' : val.toFixed(2);
-}
-
-function render(models) {
-  grid.innerHTML = '';
-  if (models.length === 0) {
-    grid.innerHTML = '<div class="empty-state">Tidak ada model yang sesuai filter.</div>';
-    return;
-  }
-  countBadge.textContent = `${models.length} model`;
-
-  models.forEach(m => {
-    const oos = m.oos_metrics || {};
-    const exp = oos.oos_expectancy_r;
-    const ret = oos.oos_total_return_pct;
-    const maxdd = oos.oos_maxdd_pct;
-    const wr = oos.oos_win_rate;
-    const pf = oos.oos_profit_factor;
-    const trades = oos.oos_total_trades;
-    const sharpe = oos.oos_sharpe;
-    const assetClass = m.asset_class || 'other';
-
-    const card = document.createElement('div');
-    card.className = 'card';
-    card.dataset.asset = m.asset_class;
-    card.innerHTML = `
-      <div class="card-header">
-        <div class="card-title">${m.symbol} ${m.interval}</div>
-        ${getBadge(exp)}
-      </div>
-      <div class="metrics">
-        <div class="metric"><div class="metric-label">Expectancy R</div><div class="metric-value">${exp != null ? exp.toFixed(3) + 'R' : '—'}</div></div>
-        <div class="metric"><div class="metric-label">Total Return</div><div class="metric-value">${ret != null ? (ret > 0 ? '+' : '') + ret.toFixed(2) + '%' : '—'}</div></div>
-        <div class="metric"><div class="metric-label">Win Rate</div><div class="metric-value">${wr != null ? (wr * 100).toFixed(1) + '%' : '—'}</div></div>
-        <div class="metric"><div class="metric-label">Profit Factor</div><div class="metric-value">${pf != null ? pf.toFixed(2) : '—'}</div></div>
-        <div class="metric"><div class="metric-label">Max Drawdown</div><div class="metric-value" style="color:#ef4444">${maxdd != null ? '-' + maxdd.toFixed(2) + '%' : '—'}</div></div>
-        <div class="metric"><div class="metric-label">Sharpe</div><div class="metric-value">${sharpe != null ? sharpe.toFixed(2) : '—'}</div></div>
-        <div class="metric"><div class="metric-label">Total Trades</div><div class="metric-value">${trades != null ? trades : '—'}</div></div>
-        <div class="metric"><div class="metric-label">Prob Threshold</div><div class="metric-value">${m.prob_threshold != null ? (m.prob_threshold * 100).toFixed(0) + '%' : '—'}</div></div>
-      </div>
-      <div class="param-section">
-        <div class="param-title">⚙️ Parameter Trading</div>
-        <div class="params">
-          <div class="param-item"><b>Leverage:</b> ${m.leverage || 1}×</div>
-          <div class="param-item"><b>RR Ratio:</b> 1:${m.rr_ratio || 2}</div>
-          <div class="param-item"><b>Risk/Trade:</b> ${(m.risk_per_trade * 100).toFixed(1)}%</div>
-          <div class="param-item"><b>Stop Loss:</b> ${m.stop_loss_atr || 2} × ATR</div>
-          <div class="param-item"><b>Take Profit:</b> ${m.take_profit_atr || 5} × ATR</div>
-          <div class="param-item"><b>Max Hold:</b> ${m.max_hold_bars || 30} bar</div>
-          <div class="param-item"><b>Short:</b> ${m.allow_short ? 'Ya' : 'Tidak'}</div>
-          <div class="param-item"><b>Regime:</b> ${m.regime_filter || 'none'}</div>
-        </div>
-      </div>
-      <div class="features">
-        <div class="features-title">🔬 Fitur (top 8)</div>
-        <div class="feature-list" id="features-${m.symbol}${m.interval}"></div>
-      </div>
-    `;
-    grid.appendChild(card);
-
-    // Add feature importance
-    const featList = card.querySelector(`#features-${m.symbol}${m.interval}`);
-    if (m.feature_importance) {
-      const sorted = Object.entries(m.feature_importance)
-        .sort(([,a],[,b]) => b - a)
-        .slice(0, 6);
-      sorted.forEach(([name, val]) => {
-        const pct = ((val / Object.values(m.feature_importance).reduce((a,b) => a+b, 0)) * 100).toFixed(1);
-        const el = document.createElement('span');
-        el.className = 'feature-item';
-        el.textContent = `${name} (${pct}%)`;
-        featList.appendChild(el);
-      });
-    }
-  });
-}
-
-async function loadModels() {
   try {
-    const res = await fetch('/api/ml-models');
-    const data = await res.json();
-    allModels.push(...data);
-    render(data);
+    // Load models
+    const mRes = await fetch(`${SUPABASE_URL}/rest/v1/ml_model_metrics?select=*&order=trained_at.desc&limit=500`, {
+      headers: {
+        'apikey': SUPABASE_KEY,
+        'Authorization': `Bearer ${SUPABASE_KEY}`,
+      },
+    });
+    if (mRes.ok) {
+      allModels = await mRes.json();
+    }
+
+    // Load trades
+    const tRes = await fetch(`${SUPABASE_URL}/rest/v1/ml_trade_list?select=*&order=exit_time.desc&limit=1000`, {
+      headers: {
+        'apikey': SUPABASE_KEY,
+        'Authorization': `Bearer ${SUPABASE_KEY}`,
+      },
+    });
+    if (tRes.ok) {
+      allTrades = await tRes.json();
+    }
+
+    render();
   } catch (e) {
-    grid.innerHTML = '<div class="empty-state">Gagal memuat model data.</div>';
+    console.error(e);
+    document.getElementById('modelGrid').innerHTML = '<div class="empty-state">Gagal memuat data dari Supabase.</div>';
+  } finally {
+    btn.classList.remove('loading');
+    btn.disabled = false;
   }
 }
 
-function filterModels() {
-  const val = filter.value;
-  let filtered = allModels;
-  if (val === 'positive') {
-    filtered = allModels.filter(m => m.oos_metrics && m.oos_metrics.oos_expectancy_r > 0);
-  } else if (val !== 'all') {
-    filtered = allModels.filter(m => m.asset_class === val);
+function render() {
+  const modelGrid = document.getElementById('modelGrid');
+  const tableBody = document.getElementById('tradeBody');
+  const statsBar = document.getElementById('statsBar');
+  const pagination = document.getElementById('pagination');
+
+  // Filter models
+  let filteredModels = allModels.filter(m => {
+    if (filters.symbol && m.symbol !== filters.symbol) return false;
+    if (filters.interval && m.interval !== filters.interval) return false;
+    if (filters.status === 'gates_passed' && !m.gates_passed) return false;
+    if (filters.status === 'failed' && m.gates_passed) return false;
+    return true;
+  });
+
+  // Sort by expectancy desc
+  filteredModels.sort((a, b) => {
+    const aExp = a.oos_expectancy_r || -999;
+    const bExp = b.oos_expectancy_r || -999;
+    return bExp - aExp;
+  });
+
+  // Stats
+  const totalModels = allModels.length;
+  const savedModels = allModels.filter(m => m.gates_passed).length;
+  const bestExp = filteredModels.length > 0 ? Math.max(...filteredModels.map(m => m.oos_expectancy_r || -999)) : 0;
+  const avgPF = filteredModels.length > 0
+    ? filteredModels.map(m => m.profit_factor || 0).reduce((a, b) => a + b, 0) / filteredModels.length
+    : 0;
+
+  statsBar.innerHTML = `
+    <div class="stat-card"><div class="stat-label">Total Models</div><div class="stat-value">${totalModels}</div></div>
+    <div class="stat-card"><div class="stat-label">Saved (Gates Passed)</div><div class="stat-value">${savedModels}</div></div>
+    <div class="stat-card"><div class="stat-label">Best Expectancy</div><div class="stat-value">${bestExp > -999 ? bestExp.toFixed(3) + 'R' : '—'}</div></div>
+    <div class="stat-card"><div class="stat-label">Avg Profit Factor</div><div class="stat-value">${avgPF > 0 ? avgPF.toFixed(2) : '—'}</div></div>
+  `;
+
+  // Render model cards
+  modelGrid.innerHTML = '';
+  if (filteredModels.length === 0) {
+    modelGrid.innerHTML = '<div class="empty-state">Tidak ada model yang cocok dengan filter.</div>';
+  } else {
+    filteredModels.forEach(m => {
+      const oos = m.oos_metrics || {};
+      const exp = oos.oos_expectancy_r || 0;
+      const ret = oos.oos_total_return_pct || 0;
+      const maxdd = oos.oos_maxdd_pct || 0;
+      const wr = oos.oos_win_rate || 0;
+      const pf = oos.oos_profit_factor || 0;
+      const trades = oos.oos_total_trades || 0;
+      const sharpe = oos.oos_sharpe || 0;
+
+      const expClass = exp > 0 ? 'pnl-positive' : 'pnl-negative';
+      const badgeClass = exp > 0 ? 'badge-positive' : exp > -0.5 ? 'badge-neutral' : 'badge-negative';
+
+      modelGrid.innerHTML += `
+        <div class="model-card">
+          <div class="model-header">
+            <div class="model-title">${m.symbol} ${m.interval}</div>
+            <span class="badge ${badgeClass}">${exp > 0 ? '✓' : exp > -0.5 ? '~' : '✗'}</span>
+          </div>
+          <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 8px; margin-bottom: 12px;">
+            <div style="background: rgba(31, 41, 55, 0.5); border: 1px solid #374151; border-radius: 6px; padding: 10px;">
+              <div style="font-size: 10px; color: #94a3b8; text-transform: uppercase; margin-bottom: 4px;">Expectancy R</div>
+              <div class="${expClass}" style="font-size: 16px; font-weight: 700; font-family: 'Courier New', monospace;">${exp.toFixed(3)}R</div>
+            </div>
+            <div style="background: rgba(31, 41, 55, 0.5); border: 1px solid #374151; border-radius: 6px; padding: 10px;">
+              <div style="font-size: 10px; color: #94a3b8; text-transform: uppercase; margin-bottom: 4px;">Total Return</div>
+              <div class="${ret > 0 ? 'pnl-positive' : 'pnl-negative'}" style="font-size: 16px; font-weight: 700; font-family: 'Courier New', monospace;">${ret > 0 ? '+' : ''}${ret.toFixed(2)}%</div>
+            </div>
+            <div style="background: rgba(31, 41, 55, 0.5); border: 1px solid #374151; border-radius: 6px; padding: 10px;">
+              <div style="font-size: 10px; color: #94a3b8; text-transform: uppercase; margin-bottom: 4px;">Win Rate</div>
+              <div class="${wr > 50 ? 'pnl-positive' : 'pnl-negative'}" style="font-size: 16px; font-weight: 700; font-family: 'Courier New', monospace;">${wr.toFixed(1)}%</div>
+            </div>
+            <div style="background: rgba(31, 41, 55, 0.5); border: 1px solid #374151; border-radius: 6px; padding: 10px;">
+              <div style="font-size: 10px; color: #94a3b8; text-transform: uppercase; margin-bottom: 4px;">Profit Factor</div>
+              <div class="${pf > 1 ? 'pnl-positive' : 'pnl-negative'}" style="font-size: 16px; font-weight: 700; font-family: 'Courier New', monospace;">${pf.toFixed(2)}</div>
+            </div>
+            <div style="background: rgba(31, 41, 55, 0.5); border: 1px solid #374151; border-radius: 6px; padding: 10px;">
+              <div style="font-size: 10px; color: #94a3b8; text-transform: uppercase; margin-bottom: 4px;">Max Drawdown</div>
+              <div class="pnl-negative" style="font-size: 16px; font-weight: 700; font-family: 'Courier New', monospace;">-${maxdd.toFixed(2)}%</div>
+            </div>
+            <div style="background: rgba(31, 41, 55, 0.5); border: 1px solid #374151; border-radius: 6px; padding: 10px;">
+              <div style="font-size: 10px; color: #94a3b8; text-transform: uppercase; margin-bottom: 4px;">Trades</div>
+              <div style="font-size: 16px; font-weight: 700; font-family: 'Courier New', monospace;">${trades}</div>
+            </div>
+          </div>
+        </div>
+      `;
+    });
   }
-  render(filtered);
+
+  // Filter trade table
+  let filteredTrades = allTrades.filter(t => {
+    if (filters.symbol && t.symbol !== filters.symbol) return false;
+    if (filters.interval && t.interval !== filters.interval) return false;
+    return true;
+  });
+  filteredTrades.sort((a, b) => new Date(b.exit_time) - new Date(a.exit_time));
+
+  // Pagination
+  const totalPages = Math.ceil(filteredTrades.length / pageSize) || 1;
+  if (currentPage > totalPages) currentPage = totalPages;
+  const start = (currentPage - 1) * pageSize;
+  const end = start + pageSize;
+  const pageTrades = filteredTrades.slice(start, end);
+
+  tableBody.innerHTML = '';
+  if (pageTrades.length === 0) {
+    tableBody.innerHTML = '<tr><td colspan="12" class="empty-state">Tidak ada trade data yang cocok.</td></tr>';
+  } else {
+    pageTrades.forEach(t => {
+      const sideClass = t.side === 'long' ? 'side-long' : 'side-short';
+      const pnlClass = t.pnl > 0 ? 'pnl-positive' : 'pnl-negative';
+      const rClass = t.r_multiple > 0 ? 'r-positive' : 'r-negative';
+      const exitClass = `exit-${t.exit_reason}`;
+      const entryDate = new Date(t.entry_time).toLocaleString('id-ID', { dateStyle: 'short', timeStyle: 'short' });
+      const exitDate = new Date(t.exit_time).toLocaleString('id-ID', { dateStyle: 'short', timeStyle: 'short' });
+
+      tableBody.innerHTML += `
+        <tr>
+          <td>${t.trade_id}</td>
+          <td><span class="badge badge-${t.symbol.includes('=') ? 'commodity' : t.symbol.includes('^') ? 'index' : t.symbol.length <= 5 ? 'equity' : 'crypto'}">${t.symbol}</span></td>
+          <td>${t.interval}</td>
+          <td class="${sideClass}">${t.side === 'long' ? 'LONG' : 'SHORT'}</td>
+          <td>${entryDate}</td>
+          <td>${exitDate}</td>
+          <td>${t.entry_price?.toFixed(2)} → ${t.exit_price?.toFixed(2)}</td>
+          <td class="${pnlClass}">${t.pnl > 0 ? '+' : ''}${t.pnl.toFixed(2)}</td>
+          <td class="${rClass}">${t.r_multiple > 0 ? '+' : ''}${t.r_multiple.toFixed(3)}R</td>
+          <td>${t.bars_held}</td>
+          <td class="${exitClass}">${t.exit_reason}</td>
+          <td>${t.pnl > 0 ? '+' : ''}${(t.pnl > 0 ? '+' : '')}</td>
+        </tr>
+      `;
+    });
+  }
+
+  // Pagination controls
+  pagination.innerHTML = '';
+  for (let p = 1; p <= totalPages; p++) {
+    pagination.innerHTML += `<button class="${p === currentPage ? 'active' : ''}" onclick="goToPage(${p})">${p}</button>`;
+  }
 }
 
-loadModels();
+function goToPage(p) {
+  currentPage = p;
+  render();
+}
+
+function applyFilter() {
+  filters.symbol = document.getElementById('symbolFilter').value;
+  filters.interval = document.getElementById('intervalFilter').value;
+  filters.status = document.getElementById('statusFilter').value;
+  currentPage = 1;
+  render();
+}
+
+// Populate symbol filter
+function populateFilters() {
+  const symbolFilter = document.getElementById('symbolFilter');
+  const intervalFilter = document.getElementById('intervalFilter');
+  const symbols = [...new Set(allModels.map(m => m.symbol))].sort();
+  const intervals = [...new Set(allModels.map(m => m.interval))].sort();
+
+  symbolFilter.innerHTML = '<option value="">Semua</option>' + symbols.map(s => `<option value="${s}" ${filters.symbol === s ? 'selected' : ''}>${s}</option>`).join('');
+  intervalFilter.innerHTML = '<option value="">Semua</option>' + intervals.map(i => `<option value="${i}" ${filters.interval === i ? 'selected' : ''}>${i}</option>`).join('');
+}
+
+// Initial load
+loadData();
+document.getElementById('refreshBtn').addEventListener('click', loadData);
+document.getElementById('applyFilter').addEventListener('click', applyFilter);
 </script>
 </body>
 </html>

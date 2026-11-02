@@ -1,7 +1,7 @@
 Batch training v2 completed
 Total combinations: 864
-Saved models: 190
-Total elapsed: 898.4s
+Saved models: 216
+Total elapsed: 833.8s
 
 TOP 20 MODELS BY EXPECTANCY:
   ^N225 1d | regression | prob=0.65 | RR=1:1.5 | regime=none | 0.131R | WR=62.3% | PF=1.34 | MaxDD=19.4%
@@ -10,17 +10,17 @@ TOP 20 MODELS BY EXPECTANCY:
   ^N225 1d | regression | prob=0.65 | RR=1:2.0 | regime=both | 0.131R | WR=62.3% | PF=1.34 | MaxDD=19.4%
   ^N225 1d | regression | prob=0.65 | RR=1:3.0 | regime=none | 0.131R | WR=62.3% | PF=1.34 | MaxDD=19.4%
   ^N225 1d | regression | prob=0.65 | RR=1:3.0 | regime=both | 0.131R | WR=62.3% | PF=1.34 | MaxDD=19.4%
+  NVDA 1d | regression | prob=0.5 | RR=1:1.5 | regime=none | 0.124R | WR=63.7% | PF=1.33 | MaxDD=15.5%
+  NVDA 1d | regression | prob=0.5 | RR=1:1.5 | regime=both | 0.124R | WR=63.7% | PF=1.33 | MaxDD=15.5%
+  NVDA 1d | regression | prob=0.5 | RR=1:2.0 | regime=none | 0.124R | WR=63.7% | PF=1.33 | MaxDD=15.5%
+  NVDA 1d | regression | prob=0.5 | RR=1:2.0 | regime=both | 0.124R | WR=63.7% | PF=1.33 | MaxDD=15.5%
+  NVDA 1d | regression | prob=0.5 | RR=1:3.0 | regime=none | 0.124R | WR=63.7% | PF=1.33 | MaxDD=15.5%
+  NVDA 1d | regression | prob=0.5 | RR=1:3.0 | regime=both | 0.124R | WR=63.7% | PF=1.33 | MaxDD=15.5%
+  NVDA 1d | regression | prob=0.55 | RR=1:1.5 | regime=none | 0.110R | WR=63.0% | PF=1.28 | MaxDD=18.6%
+  NVDA 1d | regression | prob=0.55 | RR=1:1.5 | regime=both | 0.110R | WR=63.0% | PF=1.28 | MaxDD=18.6%
   NVDA 1d | regression | prob=0.55 | RR=1:2.0 | regime=none | 0.110R | WR=63.0% | PF=1.28 | MaxDD=18.6%
   NVDA 1d | regression | prob=0.55 | RR=1:2.0 | regime=both | 0.110R | WR=63.0% | PF=1.28 | MaxDD=18.6%
   NVDA 1d | regression | prob=0.55 | RR=1:3.0 | regime=none | 0.110R | WR=63.0% | PF=1.28 | MaxDD=18.6%
   NVDA 1d | regression | prob=0.55 | RR=1:3.0 | regime=both | 0.110R | WR=63.0% | PF=1.28 | MaxDD=18.6%
-  NVDA 1d | regression | prob=0.65 | RR=1:1.5 | regime=none | 0.101R | WR=62.5% | PF=1.26 | MaxDD=18.6%
-  NVDA 1d | regression | prob=0.65 | RR=1:1.5 | regime=both | 0.101R | WR=62.5% | PF=1.26 | MaxDD=18.6%
-  NVDA 1d | regression | prob=0.65 | RR=1:2.0 | regime=none | 0.101R | WR=62.5% | PF=1.26 | MaxDD=18.6%
-  NVDA 1d | regression | prob=0.65 | RR=1:2.0 | regime=both | 0.101R | WR=62.5% | PF=1.26 | MaxDD=18.6%
-  NVDA 1d | regression | prob=0.65 | RR=1:3.0 | regime=none | 0.101R | WR=62.5% | PF=1.26 | MaxDD=18.6%
-  NVDA 1d | regression | prob=0.65 | RR=1:3.0 | regime=both | 0.101R | WR=62.5% | PF=1.26 | MaxDD=18.6%
-  ^N225 1d | regression | prob=0.5 | RR=1:1.5 | regime=none | 0.101R | WR=60.8% | PF=1.25 | MaxDD=19.3%
-  ^N225 1d | regression | prob=0.5 | RR=1:1.5 | regime=both | 0.101R | WR=60.8% | PF=1.25 | MaxDD=19.3%
-  ^N225 1d | regression | prob=0.5 | RR=1:2.0 | regime=none | 0.101R | WR=60.8% | PF=1.25 | MaxDD=19.3%
-  ^N225 1d | regression | prob=0.5 | RR=1:2.0 | regime=both | 0.101R | WR=60.8% | PF=1.25 | MaxDD=19.3%
+  MATICUSDT 1d | regression | prob=0.65 | RR=1:1.5 | regime=none | 0.109R | WR=56.0% | PF=1.27 | MaxDD=20.3%
+  MATICUSDT 1d | regression | prob=0.65 | RR=1:1.5 | regime=both | 0.109R | WR=56.0% | PF=1.27 | MaxDD=20.3%

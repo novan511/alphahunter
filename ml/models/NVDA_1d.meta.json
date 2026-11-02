@@ -1,7 +1,7 @@
 {
   "symbol": "NVDA",
   "interval": "1d",
-  "trained_at": "2026-11-02T07:06:26.593302+00:00",
+  "trained_at": "2026-11-02T07:28:27.521281+00:00",
   "lookback": 1000,
   "forward_bars": 3,
   "task_type": "regression",

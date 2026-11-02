@@ -1,7 +1,7 @@
 {
   "symbol": "^N225",
   "interval": "1d",
-  "trained_at": "2026-11-02T07:15:42.378610+00:00",
+  "trained_at": "2026-11-02T07:36:29.747270+00:00",
   "lookback": 1000,
   "forward_bars": 3,
   "task_type": "regression",
