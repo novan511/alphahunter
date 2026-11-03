@@ -20,10 +20,15 @@ jobs:
       - name: Trigger arena step
         env:
           DEPLOY_URL: ${{ secrets.VERCEL_URL }}
+          ARENA_TOKEN: ${{ secrets.ARENA_CONTROL_TOKEN }}
         run: |
           set -euo pipefail
           if [ -z "${DEPLOY_URL}" ]; then
             echo "::error::VERCEL_URL wajib diisi"
+            exit 1
+          fi
+          if [ -z "${ARENA_TOKEN}" ]; then
+            echo "::error::ARENA_CONTROL_TOKEN wajib diisi di Settings > Secrets > Actions"
             exit 1
           fi
           echo "POST ${DEPLOY_URL}/api/arena (action=step)"
@@ -31,10 +36,15 @@ jobs:
             -o /tmp/arena-step.json -w '%{http_code}' \
             -X POST "${DEPLOY_URL}/api/arena" \
             -H "Content-Type: application/json" \
+            -H "Authorization: Bearer ${ARENA_TOKEN}" \
             -d '{"action":"step","force":false}')
           echo "HTTP ${RESP}"
           cat /tmp/arena-step.json
           echo
+          if [ "${RESP}" != "200" ]; then
+            echo "::error::arena step HTTP ${RESP} (401 = token salah/belum diset di GitHub Secrets)"
+            exit 1
+          fi
           python3 -c "
           import json,sys
           try:
@@ -48,7 +58,11 @@ jobs:
           results = d.get('results', [])
           ok_count = sum(1 for r in results if r.get('ok'))
           print(f\"ran={d.get('ran')} ok={ok_count}/{len(results)}\")
+          failed = [r for r in results if not r.get('ok')]
           for r in results:
               err = r.get('error', '')
               print(f\"  {r['model']}: ok={r['ok']} error={err[:80] if err else '-'}\")
-          " || true
+          # gagal total (0 agent jalan) = error; sebagian gagal cukup warning
+          if results and not ok_count:
+              sys.exit(1)
+          "
