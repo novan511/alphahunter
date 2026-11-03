@@ -216,6 +216,17 @@ export interface StepMarketSnapshot {
   benchmarkSymbol: string | null;
   benchmarkHistory: Candle[] | null;
   signals: PaperSignal[];
+  /** Data provenance/freshness for audit and operator visibility. */
+  diagnostics?: {
+    capturedAt: number;
+    primaryInterval: string;
+    requestedAssets: number;
+    availableAssets: number;
+    missingSymbols: string[];
+    newestBarAt: number | null;
+    oldestBarAt: number | null;
+    benchmarkMissingTimeframes: string[];
+  };
 }
 
 export function buildWatchlist(

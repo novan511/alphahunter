@@ -9,6 +9,11 @@ export interface ArenaPositionChartProps {
   stopLoss: number;
   takeProfit: number;
   entryTime: number;
+  riskDollar?: number;
+  qty?: number;
+  feeBpsPerSide?: number;
+  slippageBpsPerSide?: number;
+  historicalR?: number;
   reason: string;
 }
 
@@ -43,11 +48,12 @@ export default function ArenaPositionChart(p: ArenaPositionChartProps) {
     // garis level: entry (putus kuning), SL (merah), TP (hijau)
     const mkLine = (price: number, color: string, title: string, dash: number[] | undefined) =>
       candles.createPriceLine({ price, color, lineWidth: 1, lineStyle: dash ? 2 : 0, axisLabelVisible: true, title });
-    const lines = [
-      mkLine(p.entryPrice, '#fbbf24', 'ENTRY', [4, 3]),
-      mkLine(p.stopLoss, '#ef4444', 'SL', [4, 3]),
-      mkLine(p.takeProfit, '#10b981', 'TP', [4, 3]),
-    ];
+    const lines = [mkLine(p.entryPrice, '#fbbf24', 'ENTRY', [4, 3])];
+    if (p.historicalR != null) lines.push(mkLine(p.takeProfit, '#10b981', 'EXIT', [4, 3]));
+    else {
+      lines.push(mkLine(p.stopLoss, '#ef4444', 'SL', [4, 3]));
+      lines.push(mkLine(p.takeProfit, '#10b981', 'TP', [4, 3]));
+    }
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     entryMarkerRef.current = (candles as any).setMarkers?.bind(candles) ?? null;
     return () => {
@@ -67,13 +73,21 @@ export default function ArenaPositionChart(p: ArenaPositionChartProps) {
       );
       // mark live granular (5m) supaya floating PnL ikut bergerak, bukan menunggu roll 1h
       let markPx: number | null = null;
+      let markTime: number | null = null;
       try {
         const gr = await fetch(`/api/arena-candles?symbol=${encodeURIComponent(p.symbol)}&gran=1m&lastOnly=1`);
         const g: Candle[] = await gr.json();
-        if (Array.isArray(g) && g.length) markPx = g[g.length - 1].close;
+        if (Array.isArray(g) && g.length) {
+          markPx = g[g.length - 1].close;
+          markTime = g[g.length - 1].time;
+        }
       } catch { /* mark dari candle 1h */ }
       // marker di mana entry dilakukan
-      const entryBar = arr.find((c) => Math.abs(c.time * 1000 - p.entryTime) < 4 * 3600_000) || arr[arr.length - 1];
+      const entryTimeMs = p.entryTime < 1_000_000_000_000 ? p.entryTime * 1000 : p.entryTime;
+      const entryBar = arr.reduce(
+        (nearest, candle) => Math.abs(candle.time * 1000 - entryTimeMs) < Math.abs(nearest.time * 1000 - entryTimeMs) ? candle : nearest,
+        arr[0]
+      );
       entryMarkerRef.current?.([
         {
           time: entryBar.time as never,
@@ -85,7 +99,7 @@ export default function ArenaPositionChart(p: ArenaPositionChartProps) {
       ]);
       const last = arr[arr.length - 1];
       if (markPx) {
-        setLive({ px: markPx, t: last.time * 1000 });
+        setLive({ px: markPx, t: (markTime || last.time) * 1000 });
       } else {
         setLive({ px: last.close, t: last.time * 1000 });
       }
@@ -102,8 +116,16 @@ export default function ArenaPositionChart(p: ArenaPositionChartProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [p.symbol, p.interval]);
 
-  const rUp = live && live.px >= p.entryPrice;
-  const pnlR = live ? ((live.px - p.entryPrice) * (p.side === 'long' ? 1 : -1)) / Math.max(1e-9, Math.abs(p.entryPrice - p.stopLoss)) : 0;
+  const direction = p.side === 'long' ? 1 : -1;
+  const rUp = p.historicalR != null ? p.historicalR >= 0 : Boolean(live && direction * (live.px - p.entryPrice) >= 0);
+  const exitPrice = live ? live.px * (1 - direction * (p.slippageBpsPerSide || 0) / 10_000) : p.entryPrice;
+  const grossPnl = (exitPrice - p.entryPrice) * direction * (p.qty || 0);
+  const estimatedFees = (p.feeBpsPerSide || 0) / 10_000 * (p.qty || 0) * (p.entryPrice + exitPrice);
+  const pnlR = p.historicalR != null
+    ? p.historicalR
+    : live && p.riskDollar && p.qty
+      ? (grossPnl - estimatedFees) / p.riskDollar
+      : 0;
 
   return (
     <div style={{ border: '1px solid #1f2937', borderRadius: 10, padding: 10, minWidth: 0 }}>
@@ -112,12 +134,15 @@ export default function ArenaPositionChart(p: ArenaPositionChartProps) {
           {p.side === 'long' ? '▲' : '▼'} {p.symbol.replace(/^[a-z]+:/i, '')} <span style={{ color: p.side === 'long' ? '#10b981' : '#ef4444' }}>{p.side}</span>
         </b>
         <span style={{ fontSize: 11, color: live ? (rUp ? '#10b981' : '#ef4444') : '#6b7280' }}>
-          {live ? `last ${live.px.toPrecision(6)} · ${live.t ? new Date(live.t).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }) : ''} · ${pnlR >= 0 ? '+' : ''}${pnlR.toFixed(2)}R (floating)` : 'memuat…'}
+          {live ? `last ${live.px.toPrecision(6)} · ${live.t ? new Date(live.t).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }) : ''} · ${pnlR >= 0 ? '+' : ''}${pnlR.toFixed(2)}R (${p.historicalR != null ? 'historical trade result' : 'net floating estimate'})` : 'memuat…'}
         </span>
       </div>
       <div ref={boxRef} style={{ marginTop: 6 }} />
       <div style={{ fontSize: 10, color: '#6b7280', marginTop: 4, lineHeight: 1.4 }}>
-        🟨 entry {p.entryPrice.toPrecision(6)} · 🟥 SL {p.stopLoss.toPrecision(6)} · 🟩 TP {p.takeProfit > 0 ? p.takeProfit.toPrecision(6) : '—'} · bar {p.interval} · realtime 45 dtk · <span style={{ color: '#9ca3af' }}>{p.reason.slice(0, 90)}</span>
+        {p.historicalR != null
+          ? <>historical entry {p.entryPrice.toPrecision(6)} · exit {p.takeProfit.toPrecision(6)}</>
+          : <>🟨 entry {p.entryPrice.toPrecision(6)} · 🟥 SL {p.stopLoss.toPrecision(6)} · 🟩 TP {p.takeProfit > 0 ? p.takeProfit.toPrecision(6) : '—'}</>}
+        {' · '}bar {p.interval} · candle mark refresh 45s (not broker quote) · <span style={{ color: '#9ca3af' }}>{p.reason.slice(0, 90)}</span>
       </div>
     </div>
   );

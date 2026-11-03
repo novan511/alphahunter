@@ -6,8 +6,17 @@ import ArenaPositionChart from '../../components/Arena/PositionChart';
 
 interface ArenaTrade {
   symbol: string; side: string; entryTime: number; exitTime: number;
-  entryPrice: number; exitPrice: number; pnl: number; r: number;
+  entryPrice: number; exitPrice: number; pnl: number; r: number; fees?: number;
+  feeBpsPerSide?: number; slippageBpsPerSide?: number; legacyPartialCount?: number;
+  legacySegmentsMerged?: boolean;
+  exitSegments?: Array<{ time: number; price: number; qty: number; pnl: number; fees: number; reason: string }>;
   reason: string; exitReason: string;
+}
+interface DecisionAudit {
+  requestedAt: number; completedAt: number; latencyMs: number; modelLatencyMs: number;
+  interval: string; barAt: number | null; snapshotCapturedAt: number | null;
+  signalCount: number; candidateSymbols: string[]; actionSummary: string;
+  provider: string; validDecision: boolean; fallback: boolean; error?: string;
 }
 interface ArenaState {
   model: string;
@@ -17,19 +26,27 @@ interface ArenaState {
   equity: number;
   params: Record<string, number | boolean | string>;
   cash: number;
-  positions: Array<{ symbol: string; side: string; entryTime?: number; entryPrice: number; markPrice?: number; stopLoss: number; takeProfit: number; barsHeld: number; riskDollar: number; qty?: number; reason: string }>;
+  positions: Array<{ symbol: string; side: string; entryTime?: number; entryPrice: number; markPrice?: number; stopLoss: number; takeProfit: number; barsHeld: number; riskDollar: number; qty?: number; feeBpsPerSide?: number; slippageBpsPerSide?: number; reason: string }>;
   trades: ArenaTrade[];
   thoughts: Array<{ time: number; thought: string; thoughtPlain?: string; plan?: string; planPlain?: string; actions: string }>;
   equityHistory: Array<{ time: number; equity: number }>;
   iterCount: number;
   log: string[];
   stats: { totalTrades: number; wins: number; winRate: number; totalR: number; avgR: number; bestR: number; worstR: number; ProfitFactor: number };
+  maxDrawdownPct?: number;
+  tradeHistoryCapped?: boolean;
+  lastDecision?: DecisionAudit;
+  decisionHistory?: DecisionAudit[];
+  lastSnapshot?: {
+    capturedAt: number; primaryInterval: string; requestedAssets: number; availableAssets: number;
+    missingSymbols: string[]; newestBarAt: number | null; oldestBarAt: number | null; benchmarkMissingTimeframes: string[];
+  };
 }
 
 const card: React.CSSProperties = { background: '#111827', border: '1px solid #374151', borderRadius: 12, padding: 16 };
 const rColor = (r: number) => (r > 0 ? '#10b981' : r < 0 ? '#ef4444' : '#9ca3af');
 const fmt = (v: number, d = 2) => (v >= 1 ? v.toLocaleString('en-US', { maximumFractionDigits: d }) : v.toPrecision(4));
-const when = (t: number) => new Date(t).toLocaleString('id-ID', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
+const when = (t: number) => new Date(t < 1_000_000_000_000 ? t * 1000 : t).toLocaleString('id-ID', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
 
 /** Satu baris posisi terbuka dengan mark-price live (poll candle terakhir tiap 30 dtk)
  *  → PnL $ dan R naik-turun realtime seperti di CEX. */
@@ -63,7 +80,10 @@ function LivePositionRow({ p, interval }: { p: NonNullable<ArenaState['positions
 
   const dir = p.side === 'long' ? 1 : -1;
   const qty = p.qty || 0;
-  const pnl = ((mark ?? p.entryPrice) - p.entryPrice) * dir * qty;
+  const exitPrice = (mark ?? p.entryPrice) * (1 - dir * (p.slippageBpsPerSide || 0) / 10_000);
+  const grossPnl = (exitPrice - p.entryPrice) * dir * qty;
+  const estimatedFees = (p.feeBpsPerSide || 0) / 10_000 * qty * (p.entryPrice + exitPrice);
+  const pnl = grossPnl - estimatedFees;
   const riskU = p.riskDollar || Math.abs(p.entryPrice - p.stopLoss) * qty || 1;
   const pnlR = pnl / (riskU || 1);
   const liveP = mark ?? p.entryPrice;
@@ -76,7 +96,7 @@ function LivePositionRow({ p, interval }: { p: NonNullable<ArenaState['positions
         <b style={{ color: rColor(pnl), fontSize: 15, fontVariantNumeric: 'tabular-nums' }}>
           {pnl >= 0 ? '+' : ''}${pnl.toFixed(2)}
         </b>
-        <span style={{ color: rColor(pnlR), fontSize: 11 }}>{pnlR >= 0 ? '+' : ''}{pnlR.toFixed(2)}R floating</span>
+        <span style={{ color: rColor(pnlR), fontSize: 11 }}>{pnlR >= 0 ? '+' : ''}{pnlR.toFixed(2)}R floating · est. costs included</span>
       </span>
       <span style={{ color: '#6b7280', fontSize: 11 }}>SL {fmt(p.stopLoss)} · TP {p.takeProfit > 0 ? fmt(p.takeProfit) : '—'} · {p.barsHeld} bar · qty {fmt(qty, 4)}</span>
       <span style={{ color: '#4b5563', fontSize: 10, flex: 1, minWidth: 140 }}>{p.reason}</span>
@@ -107,17 +127,18 @@ export default function ModelPage() {
     setWhipping(true);
     setWhipMsg('');
     try {
+      const controlToken = typeof window !== 'undefined' ? sessionStorage.getItem('arena-control-token') : null;
       const res = await fetch('/api/arena', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'step', model: slug, force: true }),
+        headers: { 'Content-Type': 'application/json', ...(controlToken ? { Authorization: `Bearer ${controlToken}` } : {}) },
+        body: JSON.stringify({ action: 'step', model: slug, force: false }),
       });
       const json = await res.json();
       if (!json.ok) {
         setWhipMsg(`Gagal: ${json.error || json.note || 'unknown'}`);
       } else {
         const r = (json.results || [])[0];
-        setWhipMsg(r?.error ? `⚠ ${r.error}` : `✅ ${s?.model} sudah berpikir (${r?.fallback ? 'fallback' : 'LLM'})`);
+        setWhipMsg(r?.error ? `⚠ ${r.error}` : r?.skipped ? 'Belum ada candle baru; keputusan tidak diulang dari data yang sama.' : `✅ ${s?.model} dievaluasi (${r?.fallback ? 'fallback provider' : 'provider utama'})`);
         const r2 = await fetch(`/api/arena?action=detail&model=${encodeURIComponent(slug)}`);
         const j2 = await r2.json();
         if (j2.ok && j2.state) setS(j2.state);
@@ -158,20 +179,20 @@ export default function ModelPage() {
                 <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 6, marginTop: 8 }}>
                   <button
                     onClick={whip}
-                    disabled={whipping}
+                    disabled={whipping || !s.running}
                     style={{
                       padding: '8px 16px',
                       borderRadius: 8,
                       border: '1px solid #f59e0b',
-                      background: whipping ? 'rgba(245,158,11,.1)' : 'rgba(245,158,11,.2)',
-                      color: '#fbbf24',
+                      background: whipping || !s.running ? 'rgba(245,158,11,.1)' : 'rgba(245,158,11,.2)',
+                      color: s.running ? '#fbbf24' : '#6b7280',
                       fontSize: 12,
                       fontWeight: 700,
-                      cursor: whipping ? 'wait' : 'pointer',
+                      cursor: whipping ? 'wait' : s.running ? 'pointer' : 'not-allowed',
                     }}
-                    title="Paksa AI ini berpikir tentang kondisi pasar sekarang (1 step)"
+                    title={s.running ? 'Periksa market; model hanya mengambil keputusan pada candle baru' : 'Resume model terlebih dahulu dari Arena'}
                   >
-                    {whipping ? '⚡ Memecut…' : '⚡ Memecut (paksa pikir)'}
+                    {whipping ? 'Memeriksa…' : s.running ? 'Periksa setup' : 'Model berhenti'}
                   </button>
                   {whipMsg && <span style={{ fontSize: 11, color: whipMsg.startsWith('✅') ? '#86efac' : '#fca5a5' }}>{whipMsg}</span>}
                 </div>
@@ -181,9 +202,10 @@ export default function ModelPage() {
             {/* Stat utama */}
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(130px,1fr))', gap: 10 }}>
               {[
-                { l: 'Total R', v: `${st && st.totalR >= 0 ? '+' : ''}${(st?.totalR ?? 0).toFixed(2)}R`, c: rColor(st?.totalR ?? 0) },
-                { l: 'Avg R / trade', v: `${st && st.avgR >= 0 ? '+' : ''}${(st?.avgR ?? 0).toFixed(2)}R`, c: rColor(st?.avgR ?? 0) },
-                { l: 'Trades', v: String(st?.totalTrades ?? 0), c: '#e5e7eb' },
+                { l: s.tradeHistoryCapped ? 'Recorded R · last 200' : 'Recorded R', v: `${st && st.totalR >= 0 ? '+' : ''}${(st?.totalR ?? 0).toFixed(2)}R`, c: rColor(st?.totalR ?? 0) },
+                { l: 'Expectancy · sample', v: `${st && st.avgR >= 0 ? '+' : ''}${(st?.avgR ?? 0).toFixed(2)}R · n=${st?.totalTrades ?? 0}`, c: rColor(st?.avgR ?? 0) },
+                { l: 'Observed drawdown*', v: `${(s.maxDrawdownPct ?? 0).toFixed(2)}%`, c: rColor(-(s.maxDrawdownPct ?? 0)) },
+                { l: 'Recorded exits', v: `${st?.totalTrades ?? 0}${s.tradeHistoryCapped ? ' · sample capped' : ''}`, c: '#e5e7eb' },
                 { l: 'Win rate', v: `${(st?.winRate ?? 0).toFixed(0)}%`, c: '#e5e7eb' },
                 { l: 'Best R', v: `${(st?.bestR ?? 0).toFixed(2)}R`, c: rColor(st?.bestR ?? 0) },
                 { l: 'Worst R', v: `${(st?.worstR ?? 0).toFixed(2)}R`, c: rColor(st?.worstR ?? 0) },
@@ -197,16 +219,16 @@ export default function ModelPage() {
 
             {/* Chart realtime: satu chart per asset yang dipantau (posisi terbuka; kalau flat, dari trade terakhir) */}
             <div style={card}>
-              <h2 style={{ fontSize: 14, color: '#f9fafb', margin: '0 0 8px' }}>📊 Chart live yang dipantau · entry / SL / TP realtime</h2>
+              <h2 style={{ fontSize: 14, color: '#f9fafb', margin: '0 0 8px' }}>Price context · simulated position levels or historical entry / exit</h2>
               {(() => {
                 const open = s.positions || [];
                 const fallback = open.length === 0
                   ? Array.from(new Set((s.trades || []).slice(0, 2).map((t) => `${t.symbol}|${t.side}`))).map((key) => {
                       const t = (s.trades || (s.trades = [])).find((x) => `${x.symbol}|${x.side}` === key)!;
-                      return { symbol: t.symbol, side: t.side, entryPrice: t.entryPrice, stopLoss: t.entryPrice * (t.side === 'long' ? 0.985 : 1.015), takeProfit: t.exitPrice, entryTime: t.entryTime, reason: `trade terakhir (exit: ${t.exitReason})` };
+                      return { symbol: t.symbol, side: t.side, entryPrice: t.entryPrice, stopLoss: t.entryPrice * (t.side === 'long' ? 0.985 : 1.015), takeProfit: t.exitPrice, entryTime: t.entryTime, historicalR: t.r, reason: `historical trade (exit: ${t.exitReason})` };
                     })
                   : [];
-                const charts = open.map((pos) => ({ symbol: pos.symbol, interval: String(s.params?.interval || '1h'), side: pos.side, entryPrice: pos.entryPrice, stopLoss: pos.stopLoss, takeProfit: pos.takeProfit, entryTime: (pos as { entryTime?: number }).entryTime ?? pos.entryPrice, reason: pos.reason }));
+                const charts = open.map((pos) => ({ symbol: pos.symbol, interval: String(s.params?.interval || '1h'), side: pos.side, entryPrice: pos.entryPrice, stopLoss: pos.stopLoss, takeProfit: pos.takeProfit, entryTime: (pos as { entryTime?: number }).entryTime ?? pos.entryPrice, riskDollar: pos.riskDollar, qty: pos.qty, feeBpsPerSide: pos.feeBpsPerSide, slippageBpsPerSide: pos.slippageBpsPerSide, reason: pos.reason }));
                 const fallbackCharts = fallback.map((f) => ({ symbol: f.symbol, interval: String(s.params?.interval || '1h'), side: f.side, entryPrice: f.entryPrice, stopLoss: f.stopLoss, takeProfit: f.takeProfit, entryTime: f.entryTime, reason: f.reason }));
                 const all = [...charts, ...fallbackCharts];
                 if (all.length === 0) return <p style={{ color: '#6b7280', fontSize: 12, margin: 0 }}>Belum ada asset dipantau — belum buka posisi / trade.</p>;
@@ -220,7 +242,7 @@ export default function ModelPage() {
 
             {/* Posisi terbuka — PnL live naik-turun (mark price tiap 30 dtk) */}
             <div style={card}>
-              <h2 style={{ fontSize: 14, color: '#f9fafb', margin: '0 0 8px' }}>📡 Posisi terbuka ({(s.positions || []).length}) · <span style={{ color: '#10b981', fontSize: 11 }}>PnL live ±30 dtk</span></h2>
+              <h2 style={{ fontSize: 14, color: '#f9fafb', margin: '0 0 8px' }}>Open simulated positions ({(s.positions || []).length}) · <span style={{ color: '#9ca3af', fontSize: 11 }}>mark from latest 1m candle</span></h2>
               {(s.positions || []).length === 0 ? (
                 <p style={{ color: '#6b7280', fontSize: 12, margin: 0 }}>Flat.</p>
               ) : (
@@ -231,6 +253,9 @@ export default function ModelPage() {
             {/* Riwayat trade — advanced-lite: tabel + distribusi R */}
             <div style={card}>
               <h2 style={{ fontSize: 14, color: '#f9fafb', margin: '0 0 8px' }}>📜 Riwayat trade</h2>
+              <p style={{ color: '#6b7280', fontSize: 11, margin: '-4px 0 8px' }}>
+                Menampilkan {Math.min(30, s.trades.length)} dari {s.trades.length} trade tersimpan; histori dipotong setelah 200 trade. *Drawdown legacy hanya dapat direkonstruksi dari kurva ekuitas tersimpan.
+              </p>
               {(s.trades || []).length === 0 ? (
                 <p style={{ color: '#6b7280', fontSize: 12, margin: 0 }}>Belum ada trade.</p>
               ) : (
@@ -268,6 +293,7 @@ export default function ModelPage() {
                           <th style={{ padding: 6 }}>Sisi</th>
                           <th style={{ padding: 6 }}>Entry → Exit</th>
                           <th style={{ padding: 6 }}>PnL</th>
+                          <th style={{ padding: 6 }}>Fees</th>
                           <th style={{ padding: 6 }}>R</th>
                           <th style={{ padding: 6 }}>Alasan exit</th>
                         </tr>
@@ -280,8 +306,23 @@ export default function ModelPage() {
                             <td style={{ padding: 6, color: t.side === 'long' ? '#10b981' : '#ef4444' }}>{t.side}</td>
                             <td style={{ padding: 6, color: '#9ca3af' }}>{fmt(t.entryPrice)} → {fmt(t.exitPrice)}</td>
                             <td style={{ padding: 6, color: rColor(t.pnl) }}>${t.pnl.toFixed(2)}</td>
+                            <td style={{ padding: 6, color: '#9ca3af' }}>
+                              {t.fees == null ? 'legacy / n.a.' : <>{`$${t.fees.toFixed(2)}`}<div style={{ fontSize: 10, color: '#6b7280' }}>{t.feeBpsPerSide} fee / {t.slippageBpsPerSide} slip bps/side</div></>}
+                            </td>
                             <td style={{ padding: 6, color: rColor(t.r), fontWeight: 700 }}>{t.r >= 0 ? '+' : ''}{t.r.toFixed(2)}R</td>
-                            <td style={{ padding: 6, color: '#6b7280' }}>{t.exitReason}</td>
+                            <td style={{ padding: 6, color: '#6b7280' }}>
+                              {t.exitReason}{t.legacyPartialCount ? ` · includes ${t.legacyPartialCount} merged legacy partial` : ''}
+                              {(t.exitSegments || []).length > 1 && (
+                                <details style={{ marginTop: 3 }}>
+                                  <summary style={{ cursor: 'pointer' }}>{t.exitSegments!.length} simulated fills</summary>
+                                  {t.exitSegments!.map((segment, segmentIndex) => (
+                                    <div key={segmentIndex} style={{ whiteSpace: 'nowrap', fontSize: 10, marginTop: 2 }}>
+                                      {when(segment.time * 1000)} · {segment.reason} · qty {fmt(segment.qty, 4)} @ {fmt(segment.price)} · PnL ${segment.pnl.toFixed(2)} · fees ${segment.fees.toFixed(2)}
+                                    </div>
+                                  ))}
+                                </details>
+                              )}
+                            </td>
                           </tr>
                         ))}
                       </tbody>
@@ -293,7 +334,38 @@ export default function ModelPage() {
 
             {/* Papan pikiran model ini */}
             <div style={card}>
-              <h2 style={{ fontSize: 14, color: '#f9fafb', margin: '0 0 8px' }}>🧠 Papan pikiran · iter {s.iterCount}</h2>
+              <h2 style={{ fontSize: 14, color: '#f9fafb', margin: '0 0 4px' }}>Model-provided rationale · iter {s.iterCount}</h2>
+              <p style={{ color: '#6b7280', fontSize: 11, margin: '0 0 8px' }}>Teks model bukan chain-of-thought atau bukti validitas keputusan. Periksa data, timestamp, dan aturan eksekusi secara terpisah.</p>
+              {s.lastDecision && (
+                <div style={{ padding: 10, marginBottom: 8, border: '1px solid #273244', borderRadius: 8, color: '#9ca3af', fontSize: 11 }}>
+                  <b style={{ color: '#e5e7eb' }}>Request audit</b>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, marginTop: 6 }}>
+                    <span>{s.lastDecision.validDecision ? 'JSON parsed' : 'response not parsed'}</span>
+                    <span>{s.lastDecision.provider}{s.lastDecision.fallback ? ' · fallback' : ''}</span>
+                    <span>model {s.lastDecision.modelLatencyMs} ms · total {s.lastDecision.latencyMs} ms</span>
+                    <span>TF {s.lastDecision.interval}</span>
+                    <span>{s.lastDecision.signalCount} signals</span>
+                    <span>bar {s.lastDecision.barAt ? when(s.lastDecision.barAt * 1000) : '—'}</span>
+                  </div>
+                  <div style={{ marginTop: 5, color: '#d1d5db' }}>Applied intent: {s.lastDecision.actionSummary}</div>
+                  {s.lastDecision.error && <div style={{ color: '#fca5a5', marginTop: 4 }}>Error: {s.lastDecision.error}</div>}
+                  {s.lastSnapshot && <div style={{ marginTop: 4 }}>Snapshot: {s.lastSnapshot.availableAssets}/{s.lastSnapshot.requestedAssets} assets · {s.lastSnapshot.missingSymbols.length} missing · captured {when(s.lastSnapshot.capturedAt)}</div>}
+                  {(s.decisionHistory || []).length > 1 && (
+                    <details style={{ marginTop: 8 }}>
+                      <summary style={{ cursor: 'pointer' }}>Recent request history ({s.decisionHistory!.length})</summary>
+                      <div style={{ maxHeight: 260, overflowY: 'auto', marginTop: 6 }}>
+                        {s.decisionHistory!.slice(0, 10).map((audit, index) => (
+                          <div key={`${audit.requestedAt}-${index}`} style={{ padding: '7px 0', borderTop: '1px solid #1f2937' }}>
+                            <div>{when(audit.requestedAt)} · {audit.interval} · {audit.provider}{audit.fallback ? ' fallback' : ''} · model {audit.modelLatencyMs} ms / total {audit.latencyMs} ms · {audit.validDecision ? 'JSON parsed' : 'not parsed'}</div>
+                            <div style={{ color: '#d1d5db', marginTop: 2 }}>Candidates: {audit.candidateSymbols.join(', ') || 'none'} · {audit.actionSummary}</div>
+                            {audit.error && <div style={{ color: '#fca5a5', marginTop: 2 }}>{audit.error}</div>}
+                          </div>
+                        ))}
+                      </div>
+                    </details>
+                  )}
+                </div>
+              )}
               {(s.thoughts || []).length === 0 ? (
                 <p style={{ color: '#6b7280', fontSize: 12, margin: 0 }}>Belum ada refleksi — jalankan step.</p>
               ) : (

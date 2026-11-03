@@ -1,4 +1,5 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
+import { randomUUID, timingSafeEqual } from 'crypto';
 import { parseAssetList } from '../../lib/marketData';
 import { getPresetById } from '../../lib/marketData/presets';
 import { buildMultiTfSnapshot } from '../../lib/quant/paperMultiTf';
@@ -8,25 +9,53 @@ import {
   listArenaModels,
   arenaStep,
   arenaEquity,
+  arenaRankingScore,
+  recalculateArenaStats,
   ArenaModelInfo,
   pickArchetype,
   ARENA_OR_PREFIX,
   styleFingerprint,
   ensureStyleUnique,
   manageOpen,
+  arenaExecutionProfile,
   ensureGatewayKeepalive,
+  arenaExecutionAssumptions,
   gatewayHealth,
   pingGateway,
 } from '../../lib/quant/arena';
 import { getSupabase, isSupabaseConfigured } from '../../lib/supabase';
+import { getSupabaseAdmin, isSupabaseAdminConfigured } from '../../lib/supabaseAdmin';
 
 export const config = { maxDuration: 60 };
 
 const memory = new Map<string, ArenaState>();
+const pendingNormalization = new WeakSet<ArenaState>();
+const controlToken = (process.env.ARENA_CONTROL_TOKEN || '').trim();
+
+function controlRequirements(): string[] {
+  const requirements: string[] = [];
+  if (process.env.NODE_ENV === 'production' && !controlToken) requirements.push('ARENA_CONTROL_TOKEN is not configured');
+  if (process.env.NODE_ENV === 'production' && !isSupabaseConfigured()) requirements.push('Supabase persistence is not configured');
+  if (isSupabaseConfigured() && !isSupabaseAdminConfigured()) requirements.push('SUPABASE_SERVICE_ROLE_KEY is missing or invalid');
+  return requirements;
+}
+
+function controlsReady() {
+  return controlRequirements().length === 0;
+}
+
+function isAuthorized(req: NextApiRequest) {
+  if (process.env.NODE_ENV !== 'production') return true;
+  const supplied = String(req.headers.authorization || '').replace(/^Bearer\s+/i, '').trim();
+  if (!controlToken || !supplied) return false;
+  const expected = Buffer.from(controlToken);
+  const received = Buffer.from(supplied);
+  return expected.length === received.length && timingSafeEqual(expected, received);
+}
 
 const SYSTEM_PROMPT = `You are an autonomous trading agent in the Althunter AI Arena, competing against other LLM models. You start with $1000 of virtual capital, paper-trading across crypto, US equities/ETFs, forex (EUR/JPY/GBP), and commodities — gold, silver, copper, aluminium, platinum, palladium, natgas, crude/brent oil — using the Althunter engines: multi-timeframe confluence signals (15m/1w), spike detection, relative-strength decoupling, ATR-based risk sizing.
 
-YOUR ONLY GOAL: maximize R expectancy — the average R multiple per trade. A win rate of 30% with avg win R=4 and avg loss R=1 beats a win rate of 70% with avg win R=1.2. Think in R units: every trade risks exactly 1R. Best total R wins the leaderboard.
+Evaluate decisions by net R expectancy (R after modeled simulation costs), not win rate alone. Every completed position counts as one trade, including any partial exits. The leaderboard uses expectancy with a small-sample shrinkage heuristic; this is a comparison aid, not a statistical confidence guarantee.
 
 NON-NEGOTIABLE GUARDRAILS (the engine enforces these; violations are rejected):
 1. A stop-loss is attached to every position at entry — no unbundled risk, ever.
@@ -39,26 +68,35 @@ NON-NEGOTIABLE GUARDRAILS (the engine enforces these; violations are rejected):
 Ruled by the guardrails above, everything else is YOUR call. Keep iterating to raise avg R — but you must stay in the archetype/style assigned to your agent (stated at the top of every session): entry timing, thresholds, targets, risk size and hold time are yours to tune; copying another competitor's whole playbook is impossible anyway (style-guard reverts it). Rationalize every iteration in one line: what you changed, why you believe it raises avg R.`;
 
 async function loadState(modelId: string): Promise<ArenaState | null> {
-  if (memory.has(modelId)) return memory.get(modelId)!;
-  if (!isSupabaseConfigured()) return null;
+  const local = memory.get(modelId) || null;
+  if (!isSupabaseConfigured()) return local;
   const supa = getSupabase();
-  if (!supa) return null;
-  const { data } = await supa.from('ai_arena_agents').select('state').eq('id', modelId).maybeSingle();
+  if (!supa) return local;
+  const { data, error } = await supa.from('ai_arena_agents').select('state').eq('id', modelId).maybeSingle();
+  if (error) return local;
   if (data?.state) {
-    const st = data.state as ArenaState;
+    const st = normalizeState(data.state as ArenaState);
+    if (local && (local.updatedAt || 0) > (st.updatedAt || 0)) return normalizeState(local);
     memory.set(modelId, st);
-    return normalizeState(st);
+    return st;
   }
-  return null;
+  return local;
 }
 
 async function saveState(s: ArenaState): Promise<void> {
-  memory.set(s.model, s);
-  if (!isSupabaseConfigured()) return;
-  const supa = getSupabase();
-  if (!supa) return;
+  s.updatedAt = Date.now();
+  if (!isSupabaseConfigured()) {
+    memory.set(s.model, s);
+    pendingNormalization.delete(s);
+    return;
+  }
+  if (!isSupabaseAdminConfigured()) throw new Error('Arena persistence is configured but SUPABASE_SERVICE_ROLE_KEY is missing or invalid');
+  const supa = getSupabaseAdmin();
+  if (!supa) throw new Error('Arena admin database client unavailable');
   const { error } = await supa.from('ai_arena_agents').upsert({ id: s.model, state: s, updated_at: new Date().toISOString() });
-  if (error) console.warn('arena save failed', error.message);
+  if (error) throw new Error(`Arena state save failed: ${error.message}`);
+  memory.set(s.model, s);
+  pendingNormalization.delete(s);
 }
 
 /** ringkasan pikiran & trade history agent LAIN — diberikan ke tiap agent biar belajar satu sama
@@ -69,7 +107,7 @@ function othersBriefOf(s: ArenaState, all: ArenaState[]): string {
   const lines = others.map((o) => {
     const avgR = o.stats.totalTrades ? o.stats.totalR / o.stats.totalTrades : 0;
     const th = (o.thoughts || [])[0];
-    const think = th ? `pikirannya: "${(th.thoughtPlain || th.thought || '').slice(0, 180)}"` : 'belum ada pikiran terekam';
+    const think = th ? `rationale model: "${(th.thoughtPlain || th.thought || '').slice(0, 180)}"` : 'belum ada rationale tercatat';
     const hist = o.trades
       .slice(0, 6)
       .map((t) => `${t.symbol} ${t.side} ${t.r >= 0 ? '+' : ''}${t.r.toFixed(2)}R (${t.exitReason})`)
@@ -82,6 +120,45 @@ function othersBriefOf(s: ArenaState, all: ArenaState[]): string {
 let stepInFlight = false; // single-flight step guard
 let modelsCache: { t: number; list: ArenaModelInfo[]; freeCount: number } = { t: 0, list: [], freeCount: 0 };
 
+async function acquireDistributedStepLock(): Promise<{ release: () => Promise<void> } | null> {
+  if (!isSupabaseConfigured()) return { release: async () => undefined };
+  if (!isSupabaseAdminConfigured()) throw new Error('Arena step lock requires SUPABASE_SERVICE_ROLE_KEY');
+  const admin = getSupabaseAdmin();
+  if (!admin) throw new Error('Arena step lock database client unavailable');
+  const owner = randomUUID();
+  const { data, error } = await admin.rpc('claim_ai_arena_step_lock', { p_owner_token: owner, p_lease_seconds: 90 });
+  if (error) throw new Error(`Arena distributed lock unavailable; apply migration 020: ${error.message}`);
+  if (data !== true) return null;
+  return {
+    release: async () => {
+      const { error: releaseError } = await admin.rpc('release_ai_arena_step_lock', { p_owner_token: owner });
+      if (releaseError) console.error('[arena] failed to release distributed step lock', releaseError.message);
+    },
+  };
+}
+
+async function acquireArenaMutationLock(): Promise<{ release: () => Promise<void> } | null> {
+  if (stepInFlight) return null;
+  stepInFlight = true;
+  try {
+    const distributed = await acquireDistributedStepLock();
+    if (!distributed) {
+      stepInFlight = false;
+      return null;
+    }
+    return {
+      release: async () => {
+        try { await distributed.release(); }
+        catch (error) { console.error('[arena] lock release failed', error); }
+        finally { stepInFlight = false; }
+      },
+    };
+  } catch (error) {
+    stepInFlight = false;
+    throw error;
+  }
+}
+
 export function leaderboard(states: ArenaState[]) {
   return states
     .map((s) => {
@@ -93,6 +170,12 @@ export function leaderboard(states: ArenaState[]) {
         equity: Math.round(eq * 100) / 100,
         archetype: s.archetype,
         pnlPct: Math.round(((eq - 1000) / 10) * 100) / 100, // % dari $1000
+        expectancyScore: s.stats.totalTrades ? arenaRankingScore(s.stats) : null,
+        maxDrawdownPct: Math.round((s.maxDrawdownPct || 0) * 100) / 100,
+        tradeSample: s.trades.length,
+        tradeHistoryCapped: Boolean(s.tradeHistoryCapped),
+        lastDecision: s.lastDecision || null,
+        lastSnapshot: s.lastSnapshot || null,
         openCount: s.positions.length,
         iterCount: s.iterCount,
         iterNote: s.iterNote,
@@ -102,7 +185,7 @@ export function leaderboard(states: ArenaState[]) {
         stats: s.stats,
       };
     })
-    .sort((a, b) => b.stats.totalR - a.stats.totalR || b.equity - a.equity);
+    .sort((a, b) => (b.expectancyScore ?? Number.NEGATIVE_INFINITY) - (a.expectancyScore ?? Number.NEGATIVE_INFINITY) || b.stats.totalR - a.stats.totalR || b.equity - a.equity);
 }
 
 /** gabung memori proses (terbaru) dengan baris Supabase — table belum jalan pun arena tetap hidup */
@@ -113,26 +196,101 @@ async function allStates(): Promise<ArenaState[]> {
     const { data } = await supa!.from('ai_arena_agents').select('state');
     for (const r of data ?? []) {
       const st = r.state as ArenaState;
-      if (st?.model && !memory.has(st.model)) merged.set(st.model, st);
+      if (st?.model) merged.set(st.model, normalizeState(st));
     }
   }
-  for (const [k, v] of Array.from(memory.entries())) merged.set(k, v);
+  for (const [k, v] of Array.from(memory.entries())) {
+    const persisted = merged.get(k);
+    if (!persisted || (v.updatedAt || 0) > (persisted.updatedAt || 0)) merged.set(k, v);
+  }
   return Array.from(merged.values()).map(normalizeState);
 }
 
-/** kompatibilitas state lama (pra-arketipe / pra-thoughts) */
+function sameArenaPosition(a: Pick<ArenaState['trades'][number], 'symbol' | 'side' | 'entryTime' | 'entryPrice'>, b: Pick<ArenaState['positions'][number], 'symbol' | 'side' | 'entryTime' | 'entryPrice'>) {
+  const priceTolerance = Math.max(0.0002, Math.abs(a.entryPrice) * 1e-6);
+  return a.symbol === b.symbol
+    && a.side === b.side
+    && a.entryTime === b.entryTime
+    && Math.abs(a.entryPrice - b.entryPrice) <= priceTolerance;
+}
+
+/** Fold pre-fix partial_target rows back into their parent position/trade. */
+function migrateLegacyPartialExits(st: ArenaState) {
+  const consumed = new Set<ArenaState['trades'][number]>();
+  const oldPartials = st.trades.filter((trade) => trade.exitReason === 'partial_target');
+
+  for (const partial of oldPartials) {
+    const completedTrade = st.trades.find((trade) =>
+      trade !== partial
+      && trade.exitReason !== 'partial_target'
+      && sameArenaPosition(partial, trade)
+    );
+    if (completedTrade) {
+      completedTrade.pnl = Math.round((completedTrade.pnl + partial.pnl) * 100) / 100;
+      completedTrade.r = Math.round((completedTrade.r + partial.r) * 100) / 100;
+      completedTrade.legacySegmentsMerged = true;
+      completedTrade.legacyPartialCount = (completedTrade.legacyPartialCount || 0) + 1;
+      // Historical partial-fill fees were not stored, so keep fees unknown.
+      delete completedTrade.fees;
+      consumed.add(partial);
+      continue;
+    }
+
+    const openPosition = st.positions.find((position) =>
+      position.tookPartial
+      && !position.legacyPartialMigrated
+      && sameArenaPosition(partial, position)
+    );
+    if (openPosition) {
+      openPosition.realizedPnl = Math.round(((openPosition.realizedPnl || 0) + partial.pnl) * 100) / 100;
+      openPosition.realizedFeesKnown = false;
+      openPosition.legacyPartialMigrated = true;
+      openPosition.legacyPartialCount = (openPosition.legacyPartialCount || 0) + 1;
+      consumed.add(partial);
+    }
+  }
+
+  if (consumed.size) st.trades = st.trades.filter((trade) => !consumed.has(trade));
+  return consumed.size > 0;
+}
+
+/** compat for older persisted arena states */
 function normalizeState(st: ArenaState): ArenaState {
+  if (!Array.isArray(st.positions)) st.positions = [];
+  if (!Array.isArray(st.trades)) st.trades = [];
+  if (!Array.isArray(st.equityHistory)) st.equityHistory = [];
+  if (!Array.isArray(st.log)) st.log = [];
+  if (!st.params) st.params = createArenaState(st.model).params;
   if (!st.archetype) {
     st.archetype = 'Momentum General';
     st.mandate = 'generalist momentum (warisan pra-arketipe)';
     st.classes = ['momentum'];
   }
   if (!st.thoughts) st.thoughts = [];
+  if (!st.decisionHistory) st.decisionHistory = [];
+  if (st.trades?.length >= 200) st.tradeHistoryCapped = true;
+  if (migrateLegacyPartialExits(st)) pendingNormalization.add(st);
+  const curve = st.equityHistory || [];
+  let runningPeak = 0;
+  let observedDrawdown = 0;
+  for (const point of curve) {
+    runningPeak = Math.max(runningPeak, point.equity);
+    if (runningPeak > 0) observedDrawdown = Math.max(observedDrawdown, ((runningPeak - point.equity) / runningPeak) * 100);
+  }
+  st.maxDrawdownPct = Math.max(st.maxDrawdownPct || 0, observedDrawdown);
   if (!st.lastBarTimes) st.lastBarTimes = {};
+  if (typeof st.lastBarKey !== 'string') st.lastBarKey = '';
+  const intervalPrefix = `${st.params.interval}:`;
+  if (st.lastBarKey && !st.lastBarKey.startsWith(intervalPrefix)) {
+    const oldBarTimes = st.lastBarKey.split('|').map((item) => Number(item.slice(item.lastIndexOf(':') + 1))).filter(Number.isFinite);
+    if (oldBarTimes.length) st.lastBarKey = `${intervalPrefix}${Math.max(...oldBarTimes)}`;
+  }
   for (const p of st.positions || []) {
     // posisi lama belum punya riskUnit (dipakai liveR saat stop sudah di-trail)
     if (!p.riskUnit) p.riskUnit = p.riskDollar && p.qty ? p.riskDollar / p.qty : p.entryATR * st.params.stopLossATR;
   }
+  if (!st.stats) st.stats = { totalTrades: 0, wins: 0, winRate: 0, totalR: 0, avgR: 0, bestR: 0, worstR: 0, ProfitFactor: 0 };
+  recalculateArenaStats(st);
   return st;
 }
 
@@ -140,9 +298,13 @@ function normalizeState(st: ArenaState): ArenaState {
 function livePositions(s: ArenaState) {
   return s.positions.map((p) => {
     const mark = s.lastPrices[p.symbol] ?? p.entryPrice;
+    const profile = arenaExecutionProfile(p.symbol);
     const riskDollar = p.riskDollar || p.riskUnit * p.qty || 1;
-    const liveR =
-      Math.round((((p.side === 'long' ? mark - p.entryPrice : p.entryPrice - mark) * p.qty) / riskDollar) * 100) / 100;
+    const slip = profile.slippageBpsPerSide / 10_000;
+    const estimatedExit = mark * (1 + (p.side === 'long' ? -slip : slip));
+    const gross = (p.side === 'long' ? estimatedExit - p.entryPrice : p.entryPrice - estimatedExit) * p.qty;
+    const estimatedFee = profile.feeBpsPerSide / 10_000 * p.qty * (p.entryPrice + estimatedExit);
+    const liveR = Math.round(((gross - estimatedFee) / riskDollar) * 100) / 100;
     return {
       model: s.model,
       symbol: p.symbol,
@@ -154,6 +316,8 @@ function livePositions(s: ArenaState) {
       liveR,
       qty: Math.round(p.qty * 1e6) / 1e6,
       riskDollar: Math.round(riskDollar * 100) / 100,
+      feeBpsPerSide: profile.feeBpsPerSide,
+      slippageBpsPerSide: profile.slippageBpsPerSide,
       tookPartial: Boolean(p.tookPartial),
       barsHeld: p.barsHeld,
       reason: p.reason,
@@ -167,6 +331,21 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     return res.status(405).json({ error: 'Method not allowed' });
   }
   const action = req.method === 'GET' ? String(req.query.action || 'leaderboard') : String(req.body?.action || 'leaderboard');
+
+  if (req.method === 'POST') {
+    if (!controlsReady()) return res.status(503).json({ ok: false, error: `Arena controls are disabled: ${controlRequirements().join('; ')}.` });
+    if (!isAuthorized(req)) return res.status(401).json({ ok: false, error: 'Unauthorized arena control request.' });
+  }
+
+  let mutationLock: { release: () => Promise<void> } | null = null;
+  if (req.method === 'POST' && ['start', 'step', 'stop', 'resume', 'reset'].includes(action)) {
+    try {
+      mutationLock = await acquireArenaMutationLock();
+    } catch (e) {
+      return res.status(503).json({ ok: false, error: e instanceof Error ? e.message : 'Arena mutation lock unavailable' });
+    }
+    if (!mutationLock) return res.status(409).json({ ok: false, busy: true, note: 'Another arena mutation is already running across the deployment.' });
+  }
 
   try {
     ensureGatewayKeepalive();
@@ -216,6 +395,11 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         // diagnostik: kalau '0' → runtime menonaktifkan verifikasi sertifikat TLS (bukan dari kode kita)
         tls: process.env.NODE_TLS_REJECT_UNAUTHORIZED ?? null,
         deepseekFallback: Boolean(process.env.DEEPSEEK_API_KEY_2),
+        controlsReady: controlsReady(),
+        controlTokenRequired: process.env.NODE_ENV === 'production',
+        controlMessage: controlRequirements().join('; '),
+        persistenceMode: isSupabaseConfigured() ? (isSupabaseAdminConfigured() ? 'database' : 'read-only: service role unavailable') : 'process memory (ephemeral)',
+        executionAssumptions: arenaExecutionAssumptions(),
       });
     }
 
@@ -223,7 +407,16 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       const model = String(req.method === 'GET' ? req.query.model : req.body?.model || '');
       const s = await loadState(model);
       if (!s) return res.status(404).json({ ok: false, error: 'not started' });
-      return res.status(200).json({ ok: true, state: { ...s, equity: arenaEquity(s) }, positions: livePositions(s) });
+      const detailPositions = s.positions.map((position) => {
+        const profile = arenaExecutionProfile(position.symbol);
+        return {
+          ...position,
+          markPrice: s.lastPrices[position.symbol] ?? position.entryPrice,
+          feeBpsPerSide: profile.feeBpsPerSide,
+          slippageBpsPerSide: profile.slippageBpsPerSide,
+        };
+      });
+      return res.status(200).json({ ok: true, state: { ...s, positions: detailPositions, equity: arenaEquity(s) }, positions: livePositions(s) });
     }
 
     if (action === 'start') {
@@ -269,17 +462,20 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     }
 
     if (action === 'step') {
-      // single-flight: step auto-loop browser + manual force yang overlap akan menimpa state satu sama lain
-      if (stepInFlight) return res.status(200).json({ ok: false, busy: true, note: 'step masih berjalan — request di-skip' });
-      stepInFlight = true;
-      try {
       const only = String(req.body?.model || '');
       const all = await allStates();
+      for (const s of all) {
+        if (pendingNormalization.has(s)) await saveState(s);
+      }
       // Interval dari SEMUA agent (running + stopped) agar snapshot tersedia
       // untuk manageOpen posisi stopped agent.
       const allWithPos = all.filter((s) => s.positions && s.positions.length > 0);
       const targetPool = only ? all.filter((s) => s.model === only) : all.filter((s) => s.running);
       const targets = targetPool;
+
+      if (targets.length === 0 && allWithPos.length === 0) {
+        return res.status(200).json({ ok: true, ran: 0, lb: [], note: 'no running agents or open positions' });
+      }
 
       // snapshot diambil per interval unik — semua model di interval sama tidak akan double-fetch
       // universe arena: crypto + US stock + oil + komoditas
@@ -301,11 +497,15 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       // supaya posisi tetap ditutup saat TP/SL tercapai meskipun agent tidak running.
       for (const s of all) {
         if (!s.positions || s.positions.length === 0) continue;
-        const snap = snaps[s.params.interval] || snaps[intervals[0]];
+        const snap = snaps[s.params.interval];
         if (!snap) continue;
-        const before = s.positions.length;
-        manageOpen(s, snap);
-        if (s.positions.length !== before) {
+        const changed = manageOpen(s, snap);
+        if (changed) {
+          recalculateArenaStats(s);
+          const eq = arenaEquity(s);
+          s.peakEquity = Math.max(s.peakEquity || 0, eq);
+          s.maxDrawdownPct = Math.max(s.maxDrawdownPct || 0, s.peakEquity > 0 ? ((s.peakEquity - eq) / s.peakEquity) * 100 : 0);
+          // Persist bar counts and partial exits even when position count is unchanged.
           await saveState(s);
         }
       }
@@ -314,27 +514,27 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         return res.status(200).json({ ok: true, ran: 0, lb: [], note: 'no running agents' });
       }
 
-      const results: Array<{ model: string; ok: boolean; fallback?: boolean; error?: string; styleGuard?: string }> = [];
+      const results: Array<{ model: string; ok: boolean; fallback?: boolean; skipped?: boolean; error?: string; styleGuard?: string }> = [];
       const paramsBefore = new Map<string, string>();
       // sekali per request: sehat-tidaknya AntSeed dipakai semua agent saat menimbang 404
       let antseedHealthy: boolean | null = null;
       const gwHealthy = async () => (antseedHealthy ??= await pingGateway());
       for (const s of targets) paramsBefore.set(s.model, JSON.stringify(s.params));
-      const totalRof = (x: typeof all[number]) => x.trades.reduce((acc, t) => acc + t.r, 0);
-      const ranked = [...all].sort((a, b) => totalRof(b) - totalRof(a));
+      const score = (x: typeof all[number]) => arenaRankingScore(x.stats);
+      const ranked = [...all].sort((a, b) => score(b) - score(a));
       for (const s of targets) {
         const rank = ranked.findIndex((x) => x.model === s.model) + 1;
         const lead = ranked[0];
-        s.rankNote = `#${rank}/${all.length} by totalR ${lead && lead.model !== s.model ? `· pemimpin: ${lead.model}` : '· kamu pemimpin'}`;
+        s.rankNote = `#${rank}/${all.length} confidence-adjusted expectancy · n=${s.stats.totalTrades} ${lead && lead.model !== s.model ? `· leader: ${lead.model}` : '· kamu leader'}`;
       }
 
       // Jalankan step tiap model PARALEL — Vercel 60s timeout, sequential berisiko melebihi
       // saat banyak model memakai DeepSeek fallback (timeout) atau retry prose.
       await Promise.allSettled(
         targets.map(async (s) => {
-          const snap = snaps[s.params.interval] || snaps[intervals[0]];
-          if (!snap) {
-            results.push({ model: s.model, ok: false, error: 'no snapshot' });
+          const snap = snaps[s.params.interval];
+          if (!snap || !Object.keys(snap.latest).length) {
+            results.push({ model: s.model, ok: false, error: `no market data for ${s.params.interval}` });
             return;
           }
           ensureStyleUnique(s, all);
@@ -370,11 +570,12 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             if (dup) {
               const prev = paramsBefore.get(s.model);
               if (prev) s.params = JSON.parse(prev);
-              results.push({ model: s.model, ok: true, fallback: out.fallback, styleGuard: 'reverted: tune buat identik dengan peserta lain' });
+              await saveState(s);
+              results.push({ model: s.model, ok: true, fallback: out.fallback, skipped: out.skipped, styleGuard: 'reverted: tune buat identik dengan peserta lain' });
               return;
             }
             await saveState(s);
-            results.push({ model: s.model, ok: true, fallback: out.fallback, error: out.error });
+            results.push({ model: s.model, ok: true, fallback: out.fallback, skipped: out.skipped, error: out.error });
           } catch (e) {
             results.push({ model: s.model, ok: false, error: e instanceof Error ? e.message : String(e) });
           }
@@ -390,9 +591,6 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         lb: leaderboard(states.filter(Boolean)),
         positions: states.filter(Boolean).flatMap(livePositions),
       });
-      } finally {
-        stepInFlight = false;
-      }
     }
 
     if (action === 'stop') {
@@ -426,8 +624,12 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       // db reset satu model; reset 'all' tidak menghapus db (biar aman) —
       // pakai model eksplisit kalau mau hapus baris di Supabase
       if (isSupabaseConfigured() && id) {
-        const supa = getSupabase();
-        if (supa) await supa.from('ai_arena_agents').delete().eq('id', id);
+        if (!isSupabaseAdminConfigured()) throw new Error('Arena reset requires SUPABASE_SERVICE_ROLE_KEY');
+        const supa = getSupabaseAdmin();
+        if (supa) {
+          const { error } = await supa.from('ai_arena_agents').delete().eq('id', id);
+          if (error) throw new Error(`Arena reset failed: ${error.message}`);
+        }
       }
       return res.status(200).json({ ok: true, cleared: id || 'all-memory' });
     }
@@ -435,6 +637,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     return res.status(400).json({ ok: false, error: `Unknown action: ${action}` });
   } catch (err) {
     return res.status(500).json({ ok: false, error: err instanceof Error ? err.message : 'Arena failed' });
+  } finally {
+    if (mutationLock) await mutationLock.release();
   }
 }
 

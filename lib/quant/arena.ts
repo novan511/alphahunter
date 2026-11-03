@@ -9,6 +9,7 @@ import { atr } from '../algorithms/indicators';
 import { pairCorrelation } from '../algorithms/correlationMatrix';
 import { StepMarketSnapshot } from './paperEngine';
 import { secondaryAnalysis, macroBrief } from './arenaInsight';
+import { parseAssetId } from '../marketData';
 
 export const ARENA_STARTING_CAPITAL = 1000;
 
@@ -23,7 +24,6 @@ const RISK_R_MAX = 0.06; // total open risk maks 6% equity (=2-6R per sesi)
 const CIRCUIT_R = -3;    // open unrealized R total ≤ -3R → stop entry sampan pulih
 const CORR_BLOCK = 0.8;  // |corr| ≥ 0.8 dengan posisi open searah → order ditolak (risiko tidak terdiversifikasi)
 const KNOCKOUT_EQ = ARENA_STARTING_CAPITAL / 2; // equity ≤ $500 → KO, ditiadakan dari arena
-const FEE_BPS = 5;       // 5 bps per sisi (taker) — tanpa biaya, churn terlihat gratis
 const PARTIAL_R = 1.5;   // +1.5R: kunci separuh posisi
 const TRAIL_R = 1;       // +1R: stop pindah ke breakeven, lalu trailing ATR
 const RUNNER_MIN_R = 1.5; // close manual di zona +0.2R..+1.5R ditolak — biarkan runner jalan
@@ -52,6 +52,21 @@ export interface ArenaPosition {
   riskDollar: number; // dollar yang dipertaruhkan saat entry (1R) — beku, tidak ikut tune
   riskUnit: number; // jarak 1R per unit (ATR × stopATR saat entry) — beku, dipakai liveR saat stop sudah di-trail
   tookPartial?: boolean; // separuh posisi sudah dikunci di +1.5R
+  realizedPnl?: number;
+  realizedFees?: number;
+  realizedFeesKnown?: boolean;
+  legacyPartialMigrated?: boolean;
+  legacyPartialCount?: number;
+  exitSegments?: ArenaExitSegment[];
+  reason: string;
+}
+
+export interface ArenaExitSegment {
+  time: number;
+  price: number;
+  qty: number;
+  pnl: number;
+  fees: number;
   reason: string;
 }
 
@@ -64,6 +79,12 @@ export interface ArenaTrade {
   exitPrice: number;
   pnl: number;
   r: number; // pnl / riskDollar — satu angka yang dinilai
+  fees?: number;
+  feeBpsPerSide?: number;
+  slippageBpsPerSide?: number;
+  exitSegments?: ArenaExitSegment[];
+  legacySegmentsMerged?: boolean;
+  legacyPartialCount?: number;
   reason: string;
   exitReason: string;
 }
@@ -78,6 +99,7 @@ export interface ArenaState {
   peakEquity: number;
   positions: ArenaPosition[];
   trades: ArenaTrade[]; // newest first, cap 200
+  tradeHistoryCapped?: boolean;
   log: string[];
   iterNote: string; // refleksi iterasi terakhir model
   lastTuneIter?: number; // iterasi terakhir saat agent benar-benar men-tune param (untuk duty iterasi)
@@ -87,6 +109,11 @@ export interface ArenaState {
   classes: string[]; // kelas sinyal yang diperbolehkan (spike|decoupling|momentum)
   /** Feed "isi pikiran" realtime: thought + versi bahasa awam + rencana (plan) tiap step terbaru di depan */
   thoughts: Array<{ time: number; thought: string; thoughtPlain: string; plan: string; planPlain: string; actions: string }>;
+  /** Structured record of the last model decision; rationale text is model-authored, not chain-of-thought. */
+  decisionHistory?: ArenaDecisionAudit[];
+  lastDecision?: ArenaDecisionAudit;
+  lastSnapshot?: NonNullable<StepMarketSnapshot['diagnostics']>;
+  maxDrawdownPct?: number;
   iterCount: number;
   rankNote?: string; // diisi engine per step, transien (bukan perpindahan state)
   terminated?: boolean; // gateway menolak permanen (402/404) — agent tak dihidupkan ulang otomatis
@@ -97,6 +124,49 @@ export interface ArenaState {
   lastPrices: Record<string, number>;
   equityHistory: Array<{ time: number; equity: number }>;
   stats: { totalTrades: number; wins: number; winRate: number; totalR: number; avgR: number; bestR: number; worstR: number; ProfitFactor: number };
+}
+
+export interface ArenaDecisionAudit {
+  requestedAt: number;
+  completedAt: number;
+  latencyMs: number;
+  modelLatencyMs: number;
+  interval: string;
+  barAt: number | null;
+  snapshotCapturedAt: number | null;
+  signalCount: number;
+  candidateSymbols: string[];
+  actionSummary: string;
+  provider: 'gateway' | 'openrouter' | 'deepseek' | 'unknown';
+  validDecision: boolean;
+  fallback: boolean;
+  error?: string;
+}
+
+export interface ArenaExecutionProfile {
+  feeBpsPerSide: number;
+  slippageBpsPerSide: number;
+  basis: string;
+}
+
+const EXECUTION_PROFILES: Record<string, ArenaExecutionProfile> = {
+  crypto: { feeBpsPerSide: 5, slippageBpsPerSide: 2, basis: 'generic taker-cost assumption' },
+  equity: { feeBpsPerSide: 1, slippageBpsPerSide: 3, basis: 'generic liquid-equity assumption' },
+  index: { feeBpsPerSide: 1, slippageBpsPerSide: 2, basis: 'generic index-proxy assumption' },
+  commodity: { feeBpsPerSide: 3, slippageBpsPerSide: 3, basis: 'generic futures-proxy assumption' },
+  fx: { feeBpsPerSide: 0.5, slippageBpsPerSide: 1, basis: 'generic liquid-FX assumption' },
+};
+
+export function arenaExecutionProfile(symbol: string): ArenaExecutionProfile {
+  const klass = parseAssetId(symbol).klass;
+  return EXECUTION_PROFILES[klass] || EXECUTION_PROFILES.equity;
+}
+
+export function arenaExecutionAssumptions() {
+  return {
+    profiles: EXECUTION_PROFILES,
+    note: 'Illustrative simulation costs only; not venue-specific. Financing, borrow, funding, market impact, partial fills and queue position are not modeled.',
+  };
 }
 
 export const DEFAULT_ARENA_PARAMS: ArenaParams = {
@@ -269,6 +339,8 @@ export function createArenaState(model: string, arch?: Archetype): ArenaState {
     iterNote: '',
     thoughts: [],
     iterCount: 0,
+    decisionHistory: [],
+    maxDrawdownPct: 0,
     lastBarKey: '',
     lastPrices: {},
     equityHistory: [{ time: Date.now(), equity: ARENA_STARTING_CAPITAL }],
@@ -276,7 +348,7 @@ export function createArenaState(model: string, arch?: Archetype): ArenaState {
   };
 }
 
-function recalcStats(s: ArenaState) {
+export function recalculateArenaStats(s: ArenaState) {
   const wins = s.trades.filter((t) => t.pnl > 0);
   const grossWin = wins.reduce((a, t) => a + t.pnl, 0);
   const grossLoss = Math.abs(s.trades.filter((t) => t.pnl <= 0).reduce((a, t) => a + t.pnl, 0));
@@ -297,39 +369,86 @@ export function arenaEquity(s: ArenaState): number {
   let eq = s.cash;
   for (const p of s.positions) {
     const px = s.lastPrices[p.symbol] ?? p.entryPrice;
-    eq += p.side === 'long' ? p.qty * (px - p.entryPrice) : p.qty * (p.entryPrice - px);
+    const profile = arenaExecutionProfile(p.symbol);
+    const exitPx = px * (1 + (p.side === 'long' ? -1 : 1) * profile.slippageBpsPerSide / 10_000);
+    const gross = p.side === 'long' ? p.qty * (exitPx - p.entryPrice) : p.qty * (p.entryPrice - exitPx);
+    const estimatedFees = profile.feeBpsPerSide / 10_000 * p.qty * (p.entryPrice + exitPx);
+    eq += gross - estimatedFees;
   }
   return eq;
+}
+
+export function arenaRankingScore(stats: ArenaState['stats']): number {
+  // Shrink noisy low-sample expectancy toward zero instead of rewarding a 1-trade outlier.
+  const n = Math.max(0, stats.totalTrades || 0);
+  if (!n) return Number.NEGATIVE_INFINITY;
+  return stats.avgR * (n / (n + 20));
 }
 
 function pushLog(s: ArenaState, msg: string) {
   s.log = [`[${new Date().toISOString().slice(11, 19)}] ${msg}`, ...s.log].slice(0, 60);
 }
 
-function closeArena(s: ArenaState, pos: ArenaPosition, exitTime: number, exitPx: number, reason: string, qty = pos.qty) {
+function closeArena(
+  s: ArenaState,
+  pos: ArenaPosition,
+  exitTime: number,
+  exitPx: number,
+  reason: string,
+  qty = pos.qty,
+  finalizePosition = true
+) {
+  const profile = arenaExecutionProfile(pos.symbol);
+  const slip = profile.slippageBpsPerSide / 10_000;
+  const fillPrice = exitPx * (1 + (pos.side === 'long' ? -slip : slip));
   const gross =
     pos.side === 'long'
-      ? qty * (exitPx - pos.entryPrice)
-      : qty * (pos.entryPrice - exitPx);
-  // biaya nyata 2 sisi — R yang tidak dipotong fee bikin churn kelihatan gratis
-  const fee = (FEE_BPS / 10_000) * qty * (pos.entryPrice + exitPx);
+      ? qty * (fillPrice - pos.entryPrice)
+      : qty * (pos.entryPrice - fillPrice);
+  const fee = (profile.feeBpsPerSide / 10_000) * qty * (pos.entryPrice + fillPrice);
   const pnl = gross - fee;
+  const segment: ArenaExitSegment = {
+    time: exitTime,
+    price: Math.round(fillPrice * 10000) / 10000,
+    qty: Math.round(qty * 1e6) / 1e6,
+    pnl: Math.round(pnl * 100) / 100,
+    fees: Math.round(fee * 100) / 100,
+    reason,
+  };
   const riskDollar = pos.riskDollar || pos.qty * pos.entryATR * s.params.stopLossATR || 1;
   s.cash += pnl;
+  if (!finalizePosition) {
+    pos.realizedPnl = (pos.realizedPnl || 0) + pnl;
+    pos.realizedFees = (pos.realizedFees || 0) + fee;
+    pos.realizedFeesKnown = pos.realizedFeesKnown !== false;
+    pos.exitSegments = [...(pos.exitSegments || []), segment];
+    pushLog(s, `PARTIAL ${pos.side.toUpperCase()} ${pos.symbol} @ ${fillPrice.toFixed(4)} segmentPnL=$${pnl.toFixed(2)} (${reason})`);
+    return;
+  }
+  const totalPnl = (pos.realizedPnl || 0) + pnl;
+  const totalFees = pos.realizedFeesKnown === false ? undefined : (pos.realizedFees || 0) + fee;
+  const exitSegments = [...(pos.exitSegments || []), segment];
   s.trades.unshift({
     symbol: pos.symbol,
     side: pos.side,
     entryTime: pos.entryTime,
     exitTime,
     entryPrice: Math.round(pos.entryPrice * 10000) / 10000,
-    exitPrice: Math.round(exitPx * 10000) / 10000,
-    pnl: Math.round(pnl * 100) / 100,
-    r: Math.round((pnl / riskDollar) * 100) / 100,
+    exitPrice: Math.round(fillPrice * 10000) / 10000,
+    pnl: Math.round(totalPnl * 100) / 100,
+    r: Math.round((totalPnl / riskDollar) * 100) / 100,
+    ...(totalFees === undefined ? {} : { fees: Math.round(totalFees * 100) / 100 }),
+    feeBpsPerSide: profile.feeBpsPerSide,
+    slippageBpsPerSide: profile.slippageBpsPerSide,
+    exitSegments,
+    ...(pos.legacyPartialMigrated ? { legacySegmentsMerged: true } : {}),
+    ...(pos.legacyPartialCount ? { legacyPartialCount: pos.legacyPartialCount } : {}),
     reason: pos.reason,
     exitReason: reason,
   });
+  if (s.trades.length > 200) s.tradeHistoryCapped = true;
   s.trades = s.trades.slice(0, 200);
-  pushLog(s, `CLOSE ${pos.side.toUpperCase()} ${pos.symbol} @ ${exitPx.toFixed(4)} pnl=$${pnl.toFixed(2)} R=${(pnl / riskDollar).toFixed(2)} (${reason})`);
+  pushLog(s, `CLOSE ${pos.side.toUpperCase()} ${pos.symbol} @ ${fillPrice.toFixed(4)} tradePnL=$${totalPnl.toFixed(2)} R=${(totalPnl / riskDollar).toFixed(2)} (${reason}; ${exitSegments.length} fills)`);
 }
 
 /* ---------------- LLM gateway (OpenAI-compatible, AntSeed/instabox) ---------------- */
@@ -459,7 +578,9 @@ export function ensureGatewayKeepalive(): void {
   (gwTimer as unknown as { unref?: () => void }).unref?.();
 }
 
-async function callArenaModel(model: string, system: string, user: string, timeoutMs?: number): Promise<string> {
+interface ArenaModelResponse { text: string; provider: ArenaDecisionAudit['provider'] }
+
+async function callArenaModel(model: string, system: string, user: string, timeoutMs?: number): Promise<ArenaModelResponse> {
   // 8 dtk terlalu sempat untuk prompt arena (output bisa ratusan token) → tiap step berakhir "aborted";
   // timeoutMs = sisa budget step dari pemanggil (Vercel limit 60s)
   const fetchWithTimeout = async (url: string, init: RequestInit, ms: number = Math.min(35_000, timeoutMs ?? 35_000)): Promise<Response> => {
@@ -494,7 +615,7 @@ async function callArenaModel(model: string, system: string, user: string, timeo
       if (!deepRes.ok) throw new Error(`DeepSeek error: ${deepRes.status}`);
       const deepJson = await deepRes.json();
       const deepText = deepJson.choices?.[0]?.message?.content?.trim();
-      if (deepText) return deepText;
+      if (deepText) return { text: deepText, provider: 'deepseek' };
       throw new Error('DeepSeek kosong');
     } catch (e) {
       throw new Error(`Model deepseek-2 error: ${e instanceof Error ? e.message : String(e)}`);
@@ -536,7 +657,7 @@ async function callArenaModel(model: string, system: string, user: string, timeo
     }
     const text = json.choices?.[0]?.message?.content?.trim();
     if (!text) throw new Error(`Model ${model} returned empty`);
-    return text;
+    return { text, provider: 'openrouter' };
   }
 
   const gw = arenaGateway();
@@ -576,7 +697,7 @@ async function callArenaModel(model: string, system: string, user: string, timeo
         if (deepRes.ok) {
           const deepJson = await deepRes.json();
           const deepText = deepJson.choices?.[0]?.message?.content?.trim();
-          if (deepText) return deepText;
+          if (deepText) return { text: deepText, provider: 'deepseek' };
         }
       } catch {
         /* gagal fallback — lempar error asli di bawah */
@@ -592,7 +713,7 @@ async function callArenaModel(model: string, system: string, user: string, timeo
   const json = await res.json();
   const text = json.choices?.[0]?.message?.content?.trim();
   if (!text) throw new Error(`Model ${model} returned empty`);
-  return text;
+  return { text, provider: 'gateway' };
 }
 
 function extractJson(text: string): Record<string, unknown> | null {
@@ -636,6 +757,8 @@ interface ModelDecision {
   close?: Array<{ symbol?: string; reason?: string }>;
   tune?: Partial<ArenaParams>;
   note?: string;
+  rationale?: string;
+  rationalePlain?: string;
   thought?: string;
   thoughtPlain?: string;
   plan?: string;
@@ -771,8 +894,8 @@ HARD RULES (enforced by the engine, violating = order rejected):
 
 You are otherwise FREE: mix methods (momentum, mean reversion, spike, decoupling, trend), change targets, thresholds, timeframe — just keep explaining your iteration in "note" with R in mind.
 
-Respond ONLY with JSON:
-{"thought":"what you see in the market right now and how you feel about your R curve","thoughtPlain":"TOEKU WAJIB: terjemahkan thought ke SATU kalimat bahasa Indonesia sehari-hari yang dimengerti orang awam — tanpa istilah teknis, tanpa istilah Inggris","open":[{"symbol":"...","side":"long","riskFra":0.02,"targetRR":3,"reason":"..."}],"close":[{"symbol":"...","reason":"..."}],"tune":{"takeProfitATR":3,"minSignalStrength":5},"plan":"your intent for the coming bars even if no order now","planPlain":"WAJIB: rencana tu dalam bahasa awam Indonesia, satu kalimat","note":"one-line reflection on what you are changing and why (focus on R)"}`;
+Respond ONLY with JSON. Provide a brief, evidence-linked rationale (not private chain-of-thought); cite only supplied market facts. Legacy keys thought/thoughtPlain are accepted, but prefer rationale/rationalePlain:
+{"rationale":"brief explanation tied to supplied evidence","rationalePlain":"Satu kalimat bahasa Indonesia yang mudah dipahami","open":[{"symbol":"...","side":"long","riskFra":0.02,"targetRR":3,"reason":"..."}],"close":[{"symbol":"...","reason":"..."}],"tune":{"takeProfitATR":3,"minSignalStrength":5},"plan":"intent for coming bars, even if no order","planPlain":"Rencana satu kalimat dalam bahasa Indonesia","note":"one-line reflection on what you are changing and why (focus on R)"}`;
 }
 
 function applyDecision(s: ArenaState, d: ModelDecision, snap: StepMarketSnapshot): { paramChanged: boolean; notes: string[]; tuned: string[] } {
@@ -780,7 +903,7 @@ function applyDecision(s: ArenaState, d: ModelDecision, snap: StepMarketSnapshot
   const tuned: string[] = [];
   let paramChanged = false;
 
-  const eq = arenaEquity(s);
+  let eq = arenaEquity(s);
 
   for (const c of d.close || []) {
     const sym = c?.symbol;
@@ -799,9 +922,11 @@ function applyDecision(s: ArenaState, d: ModelDecision, snap: StepMarketSnapshot
     }
     closeArena(s, pos, last?.time ?? Date.now(), px, `model_close${c.reason ? ': ' + c.reason : ''}`);
     s.positions.splice(i, 1);
+    eq = arenaEquity(s);
   }
 
   for (const o of d.open || []) {
+    eq = arenaEquity(s);
     if (!o?.symbol) continue;
     if (s.positions.length >= s.params.maxConcurrentPositions) { notes.push('open skipped: max positions'); break; }
     if (s.positions.some((p) => p.symbol === o.symbol)) continue;
@@ -834,7 +959,11 @@ function applyDecision(s: ArenaState, d: ModelDecision, snap: StepMarketSnapshot
     // GUARDRAIL 1: circuit breaker — open R total ≤ -3R → dilarang entry baru
     const openR = s.positions.reduce((a, p) => {
       const mark = s.lastPrices[p.symbol] ?? p.entryPrice;
-      return a + (p.side === 'long' ? mark - p.entryPrice : p.entryPrice - mark) / (p.riskDollar || 1);
+      const profile = arenaExecutionProfile(p.symbol);
+      const exitPx = mark * (1 + (p.side === 'long' ? -1 : 1) * profile.slippageBpsPerSide / 10_000);
+      const gross = (p.side === 'long' ? exitPx - p.entryPrice : p.entryPrice - exitPx) * p.qty;
+      const estimatedExitFees = profile.feeBpsPerSide / 10_000 * p.qty * (p.entryPrice + exitPx);
+      return a + (gross - estimatedExitFees) / (p.riskDollar || 1);
     }, 0);
     if (openR <= CIRCUIT_R) {
       pushLog(s, `GUARDRAIL: open R ${openR.toFixed(2)}R ≤ ${CIRCUIT_R}R — entries dihentikan sampai pulih`);
@@ -890,7 +1019,9 @@ function applyDecision(s: ArenaState, d: ModelDecision, snap: StepMarketSnapshot
       pushLog(s, `GUARDRAIL: open-risk ${(riskBudgetUsed * 100).toFixed(1)}% + ${(effRisk * 100).toFixed(1)}% > ${RISK_R_MAX * 100}% — skip`);
       break;
     }
-    const entryPrice = last.close;
+    const profile = arenaExecutionProfile(o.symbol);
+    const entrySlip = profile.slippageBpsPerSide / 10_000;
+    const entryPrice = last.close * (1 + (side === 'long' ? entrySlip : -entrySlip));
     const stopLoss = side === 'long' ? entryPrice - riskPerUnit : entryPrice + riskPerUnit;
     const takeProfit =
       side === 'long' ? entryPrice + riskPerUnit * (targetRR || 0) : entryPrice - riskPerUnit * (targetRR || 0);
@@ -911,7 +1042,7 @@ function applyDecision(s: ArenaState, d: ModelDecision, snap: StepMarketSnapshot
     // bar entry sudah terpakai — barsHeld baru naik saat candle berikutnya datang
     if (!s.lastBarTimes) s.lastBarTimes = {};
     s.lastBarTimes[o.symbol] = last.time;
-    pushLog(s, `OPEN ${side.toUpperCase()} ${o.symbol} @ ${entryPrice.toFixed(4)} risk=${(effRisk * 100).toFixed(1)}% R=1R target=${targetRR.toFixed(2)}R — ${(o.reason || sig?.reason || '').slice(0, 90)}`);
+    pushLog(s, `OPEN ${side.toUpperCase()} ${o.symbol} @ ${entryPrice.toFixed(4)} risk=${(effRisk * 100).toFixed(1)}% R=1R target=${targetRR.toFixed(2)}R · costs ${profile.feeBpsPerSide}bps fee/${profile.slippageBpsPerSide}bps slip per side — ${(o.reason || sig?.reason || '').slice(0, 90)}`);
   }
 
   const t = d.tune || {};
@@ -956,9 +1087,10 @@ function applyDecision(s: ArenaState, d: ModelDecision, snap: StepMarketSnapshot
 
 /* ---------------- Step ---------------- */
 
-export interface ArenaStepResult { closedTrades: ArenaTrade[]; fallback: boolean; error?: string }
+export interface ArenaStepResult { closedTrades: ArenaTrade[]; fallback: boolean; skipped?: boolean; error?: string }
 
 export function manageOpen(s: ArenaState, snap: StepMarketSnapshot) {
+  const stateBefore = JSON.stringify([s.positions, s.lastBarTimes]);
   if (!s.lastBarTimes) s.lastBarTimes = {};
   for (let i = s.positions.length - 1; i >= 0; i--) {
     const pos = s.positions[i];
@@ -967,11 +1099,15 @@ export function manageOpen(s: ArenaState, snap: StepMarketSnapshot) {
     // barsHeld = jumlah CANDLE baru, bukan jumlah tick 90 detik. Dulu maxHoldBars 72
     // di chart 4h habis dalam ~1,8 jam sehingga time_stop memotong winner dini.
     const seen = s.lastBarTimes[pos.symbol];
-    if (seen === undefined) s.lastBarTimes[pos.symbol] = last.time;
-    else if (last.time > seen) {
+    // Never act twice on the same OHLC bar. This also avoids interpreting the
+    // entry bar's earlier high/low as an exit that occurred after entry.
+    if (seen === undefined) {
       s.lastBarTimes[pos.symbol] = last.time;
-      pos.barsHeld += 1;
+      continue;
     }
+    if (last.time <= seen) continue;
+    s.lastBarTimes[pos.symbol] = last.time;
+    pos.barsHeld += 1;
 
     const riskUnit = pos.riskUnit || pos.riskDollar / Math.max(1e-9, pos.qty) || pos.entryATR * s.params.stopLossATR;
     const dir = pos.side === 'long' ? 1 : -1;
@@ -1012,13 +1148,14 @@ export function manageOpen(s: ArenaState, snap: StepMarketSnapshot) {
     }
     if (liveR >= PARTIAL_R && !pos.tookPartial && pos.qty > 0) {
       const half = pos.qty / 2;
-      closeArena(s, pos, last.time, last.close, 'partial_target', half);
+      closeArena(s, pos, last.time, last.close, 'partial_target', half, false);
       pos.qty -= half;
       pos.tookPartial = true;
       // stop sisa posisi ke breakeven — sisa R tidak boleh berubah jadi loss
       pos.stopLoss = pos.side === 'long' ? Math.max(pos.stopLoss, pos.entryPrice) : Math.min(pos.stopLoss, pos.entryPrice);
     }
   }
+  return stateBefore !== JSON.stringify([s.positions, s.lastBarTimes]);
 }
 
 export async function arenaStep(
@@ -1028,13 +1165,17 @@ export async function arenaStep(
   force = false,
   othersBrief = ''
 ): Promise<ArenaStepResult> {
-  if (!s.running) return { closedTrades: [], fallback: false };
+  if (!s.running) return { closedTrades: [], fallback: false, skipped: true, error: 'agent is stopped' };
   const prices: Record<string, number> = {};
   for (const [k, c] of Object.entries(snap.latest)) prices[k] = c.close;
   s.lastPrices = prices;
 
-  const barKey = Object.entries(snap.latest).map(([k, c]) => `${k}:${c.time}`).sort().join('|');
-  const isNewBar = barKey !== s.lastBarKey || force;
+  const newestBarAt = Object.values(snap.latest).reduce((max, candle) => Math.max(max, candle.time), 0);
+  const barKey = `${s.params.interval}:${newestBarAt}`;
+  // Manual calls may refresh/mark positions, but never let a repeated candle
+  // create extra model decisions or paper fills from the same information set.
+  const isNewBar = barKey !== s.lastBarKey;
+  void force;
   s.lastBarKey = barKey;
 
   const closedTrades: ArenaTrade[] = [];
@@ -1045,36 +1186,67 @@ export async function arenaStep(
 
   let fallback = false;
   let error: string | undefined;
+  if (snap.diagnostics) s.lastSnapshot = snap.diagnostics;
   if (isNewBar) {
     const stepStart = Date.now();
     const STEP_BUDGET = 42_000; // snapshot+persist di handler makan ~8-15dtk di luar ini → total aman < 60s Vercel
     const leftMs = () => STEP_BUDGET - (Date.now() - stepStart);
-    const user = buildPrompt(s, snap, othersBrief, await macroBrief());
+    const candidateSignals = snap.signals
+      .filter((signal) => signal.strength >= s.params.minSignalStrength && s.classes.includes(classifySignal(signal.reason)))
+      .sort((a, b) => b.strength - a.strength)
+      .slice(0, 6);
+    const audit: ArenaDecisionAudit = {
+      requestedAt: stepStart,
+      completedAt: 0,
+      latencyMs: 0,
+      modelLatencyMs: 0,
+      interval: s.params.interval,
+      barAt: snap.diagnostics?.newestBarAt ?? null,
+      snapshotCapturedAt: snap.diagnostics?.capturedAt ?? null,
+      signalCount: snap.signals.length,
+      candidateSymbols: candidateSignals.map((signal) => signal.symbol),
+      actionSummary: 'No decision recorded',
+      provider: 'unknown',
+      validDecision: false,
+      fallback: false,
+    };
     let decision: ModelDecision | null = null;
+    let rawText = '';
+    let response: ArenaModelResponse | null = null;
+    let modelLatencyMs = 0;
     try {
-      const text = await callArenaModel(s.model, systemPrompt, user, Math.max(5_000, leftMs()));
-      decision = extractJson(text);
+      const user = buildPrompt(s, snap, othersBrief, await macroBrief());
+      const firstCallAt = Date.now();
+      response = await callArenaModel(s.model, systemPrompt, user, Math.max(5_000, leftMs()));
+      modelLatencyMs += Date.now() - firstCallAt;
+      rawText = response.text;
+      audit.provider = response.provider;
+      decision = extractJson(rawText);
       // RETRY korektif: beberapa model (mis. mistral) kadang balas prose — tanya ulang dengan perintah format keras, lalu parse per-keluarga output
       if (!decision && leftMs() >= 12_000) {
-        // bukan error — ada retry korektif di bawah; jangan bikin merah di log Vercel
-        console.warn(`[arena-debug ${s.model}] output pertama gagal parse (${text.length} chars): ${text.slice(0, 300)}`);
-        const text2 = await callArenaModel(
+        console.warn(`[arena-debug ${s.model}] output pertama gagal parse (${rawText.length} chars); mencoba satu retry format`);
+        const retryCallAt = Date.now();
+        response = await callArenaModel(
           s.model,
           `${systemPrompt}\n\nCRITICAL: your previous reply was prose, which is INVALID. Reply with ONLY the raw JSON object — no explanation, no markdown, start with { and end with }.`,
           user,
           Math.max(5_000, leftMs())
         );
-        decision = extractJson(text2);
+        modelLatencyMs += Date.now() - retryCallAt;
+        rawText = response.text;
+        audit.provider = response.provider;
+        decision = extractJson(rawText);
       } else if (!decision) {
-        console.warn(`[arena-debug ${s.model}] output pertama gagal parse (${text.length} chars), sisa budget ${leftMs()}ms < 12s → retry dilewati`);
+        console.warn(`[arena-debug ${s.model}] output pertama gagal parse (${rawText.length} chars), retry dilewati karena budget tersisa ${leftMs()}ms`);
       }
       if (!decision) {
         fallback = true;
         error = 'unparseable model output';
-        pushLog(s, `FALLBACK parse: output mentah dimulai: ${text.slice(0, 160).replace(/\s+/g, ' ')}`);
+        audit.actionSummary = 'Invalid model response; no order applied';
+        pushLog(s, 'DECISION REJECTED: model response was not valid JSON; no order applied');
       } else {
         const applied = applyDecision(s, decision, snap);
-        const thought = String(decision.thought || decision.note || '').slice(0, 400);
+        const thought = String(decision.rationale || decision.thought || decision.note || '').slice(0, 400);
         s.iterNote = String(decision.note || '').slice(0, 200);
         s.iterCount += 1;
 
@@ -1096,6 +1268,7 @@ export async function arenaStep(
         if (rejects.length > 0) acts.push(`⚠️ engine: ${rejects.join(' • ')}`);
         for (const n of applied.notes) pushLog(s, n);
         const actions = acts.join(' · ') || 'no order taken (hold)';
+        audit.actionSummary = actions;
 
         const plan = String(decision.plan || '').slice(0, 400);
         // fallback jika model malas mengisi bahasa awam: tutel dari ringkasan aksi
@@ -1103,7 +1276,7 @@ export async function arenaStep(
           if (acts.length === 0) return 'Aku masih menunggu kesempatan yang bagus, kali ini tidak pasang pesanan baru.';
           return `Kali ini aku: ${acts.join(' • ')}`.replace(/open (long|short|auto)/g, (m, s) => (s === 'short' ? 'pasang taruhan harga turun' : 'pasang taruhan harga naik'));
         })();
-        const thoughtPlain = String(decision.thoughtPlain || '').slice(0, 300)
+        const thoughtPlain = String(decision.rationalePlain || decision.thoughtPlain || '').slice(0, 300)
           || fallbackPlain;
         const planPlain = String(decision.planPlain || '').slice(0, 300);
         if (!s.thoughts) s.thoughts = [];
@@ -1114,11 +1287,24 @@ export async function arenaStep(
     } catch (e) {
       fallback = true;
       error = e instanceof Error ? e.message : String(e);
+      audit.actionSummary = 'Model request failed; no new order applied';
+    } finally {
+      audit.completedAt = Date.now();
+      audit.latencyMs = audit.completedAt - audit.requestedAt;
+      audit.modelLatencyMs = modelLatencyMs;
+      audit.validDecision = Boolean(decision);
+      audit.fallback = fallback || audit.provider === 'deepseek';
+      fallback = audit.fallback;
+      if (error) audit.error = error;
+      s.lastDecision = audit;
+      s.decisionHistory = [audit, ...(s.decisionHistory || [])].slice(0, 50);
     }
   }
   closedTrades.push(...s.trades.slice(0, Math.max(0, s.trades.length - before)));
-  recalcStats(s);
+  recalculateArenaStats(s);
   const eqNow = arenaEquity(s);
+  if (eqNow > s.peakEquity) s.peakEquity = eqNow;
+  s.maxDrawdownPct = Math.max(s.maxDrawdownPct || 0, s.peakEquity > 0 ? ((s.peakEquity - eqNow) / s.peakEquity) * 100 : 0);
   // GUARDRAIL 3: equity ≤ $500 → knockout, agent dinyatakan gugur
   if (s.running && eqNow <= KNOCKOUT_EQ) {
     s.running = false;
@@ -1130,5 +1316,5 @@ export async function arenaStep(
     s.equityHistory = [...s.equityHistory, { time: Date.now(), equity: Math.round(eq * 100) / 100 }].slice(-240);
   }
   s.updatedAt = Date.now();
-  return { closedTrades, fallback, error };
+  return { closedTrades, fallback, skipped: !isNewBar, error };
 }
