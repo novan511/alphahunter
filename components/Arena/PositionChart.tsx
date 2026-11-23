@@ -54,8 +54,7 @@ export default function ArenaPositionChart(p: ArenaPositionChartProps) {
       lines.push(mkLine(p.stopLoss, '#ef4444', 'SL', [4, 3]));
       lines.push(mkLine(p.takeProfit, '#10b981', 'TP', [4, 3]));
     }
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    entryMarkerRef.current = (candles as any).setMarkers?.bind(candles) ?? null;
+    entryMarkerRef.current = candles.setMarkers.bind(candles);
     return () => {
       chart.remove();
       chartRef.current = null;

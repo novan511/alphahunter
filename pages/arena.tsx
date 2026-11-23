@@ -431,7 +431,7 @@ export default function ArenaPage() {
             <span style={{ fontSize: 11, color: '#6b7280', alignSelf: 'center' }}>Urut: expectancy + shrinkage heuristik untuk sampel kecil · riwayat maksimal 200 trade</span>
           </div>
           {lb.length === 0 && (
-            <p style={{ color: '#6b7280', fontSize: 12, margin: 0 }}>Belum ada peserta — tekan "🚀 Mulai Arena" di panel atas.</p>
+            <p style={{ color: '#6b7280', fontSize: 12, margin: 0 }}>Belum ada peserta — tekan &ldquo;🚀 Mulai Arena&rdquo; di panel atas.</p>
           )}
           <div style={{ overflowX: 'auto' }}>
           {lb.map((row, i) => (

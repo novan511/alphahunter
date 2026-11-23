@@ -140,7 +140,8 @@ const ALLOWED_SEVERITY: readonly NarratorSeverity[] = ['none', 'low', 'medium', 
 const ALLOWED_ACTION: readonly NarratorAction[] = ['scan_now', 'wait', 'summarize'];
 
 /** Phrases that turn a digest into a trade instruction or a promise. */
-const FORBIDDEN: Array<{ re: RegExp; label: string }> = [
+/** Shared with the offline evaluator so the rubric cannot drift from production. */
+export const FORBIDDEN: Array<{ re: RegExp; label: string }> = [
   { re: /\bbeli\s+(sekarang|langsung|saat ini|di level|di harga)\b/i, label: 'perintah beli' },
   { re: /\bjual\s+(sekarang|langsung|saat ini)\b/i, label: 'perintah jual' },
   {

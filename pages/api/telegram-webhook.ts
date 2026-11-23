@@ -1,6 +1,13 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
 import { getLastScan, type LastScanResponse } from './scans';
-import { sendTelegramMessage, telegramEnv } from '../../lib/serverTelegram';
+import {
+  answerCallbackQuery,
+  sendChatAction,
+  sendTelegramMessage,
+  telegramEnv,
+} from '../../lib/serverTelegram';
+import { appendMemory, formatMemory, loadMemory } from '../../lib/telegramMemory';
+import { logEvent, maskChatId } from '../../lib/observability';
 import { buildSectorHeat } from '../../lib/algorithms/narrativeHeat';
 import { buildTradeableList } from '../../lib/algorithms/tradeable';
 import { computeMatrix, classifyStrength } from '../../lib/algorithms/correlationMatrix';
@@ -16,7 +23,21 @@ import { signalLabel } from '../../lib/tgMessage';
 import { analyzeStructure } from '../../lib/algorithms/marketStructure';
 import { MAX_STRUCTURE_TARGETS } from '../../lib/signalLedger';
 import { TELEGRAM_SYSTEM_PROMPT } from '../../lib/telegramPersona';
+import { buildAskPrompt } from '../../lib/telegramAskPrompt';
 import type { Candle } from '../../lib/types';
+import { runAgent, type RunAgentOptions } from '../../lib/agent/loop';
+import { callLLMWithTools } from '../../lib/agent/llm';
+import {
+  getDefaultAuditSink,
+  getDefaultConfirmationStore,
+  InMemoryConfirmationStore,
+} from '../../lib/agent/audit';
+import { AGENT_POLICY, MARKET_TOOLS } from '../../lib/agent/tools';
+import type {
+  AgentResult,
+  PendingConfirmation,
+  PendingRequestLike,
+} from '../../lib/agent/types';
 
 // The morning-report GET runs a live data fetch + an LLM round trip; the
 // default 10s budget is not enough on a cold function.
@@ -26,12 +47,19 @@ export const config = { maxDuration: 60 };
  * Incoming Telegram webhook — makes the bot conversational.
  *
  * Setup (once, after deploy):
- *   https://api.telegram.org/bot<TOKEN>/setWebhook?url=https://<domain>/api/telegram-webhook
+ *   npx tsx scripts/telegram-setup.ts https://<domain>
+ *   → registers the webhook, its secret_token, and the command menu.
  * Check:
- *   https://api.telegram.org/bot<TOKEN>/getWebhookInfo
+ *   curl https://<domain>/api/health
  *
- * Security: only the configured TELEGRAM_CHAT_ID is answered. Anyone else
- * gets silence — replying "unauthorized" would confirm the bot to strangers.
+ * Security, in layers:
+ *   1. X-Telegram-Bot-Api-Secret-Token (if TELEGRAM_WEBHOOK_SECRET is set).
+ *   2. update_id dedup — Telegram may deliver the same update twice.
+ *   3. Only the configured TELEGRAM_CHAT_ID is answered. Anyone else gets
+ *      silence — replying "unauthorized" would confirm the bot to strangers.
+ *
+ * Natural-language turns keep bounded per-chat memory in Supabase (migration
+ * 021) and show a "typing…" action while the LLM thinks.
  *
  * Commands:
  *   Reads from the last persisted scan in Supabase:
@@ -51,9 +79,16 @@ interface TgMessage {
   text?: string;
 }
 
+interface TgCallbackQuery {
+  id: string;
+  data?: string;
+  message?: { chat?: TgMessage['chat'] };
+}
+
 interface TgUpdate {
   update_id: number;
   message?: TgMessage;
+  callback_query?: TgCallbackQuery;
 }
 
 const HELP = [
@@ -65,6 +100,8 @@ const HELP = [
   '/pair A B [tf] — chart ratio A/B dalam kata-kata, mis. /pair SOL BTC',
   '/hold [tf] [window] — tahan / kurangi / buang, mis. /hold 4h 30',
   '/scan — pindai pasar baru + analisis ulang',
+  '/agent <pertanyaan> — tanya agent (pakai tool); aksi tulis butuh /confirm <token>',
+  '/confirm <token> — konfirmasi aksi tulis yang menunggu (berlaku 5 menit)',
   '/help — pesan ini',
   'Kamu juga bisa mengobrol bahasa natural (tanpa slash) untuk diskusi dengan AI trader.',
 ].join('\n');
@@ -72,7 +109,40 @@ const HELP = [
 /** Default basket for /matrix — bare symbols, same set as the web panel. */
 const MATRIX_BASKET = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'XRPUSDT', 'SUIUSDT', 'HYPEUSDT'];
 
-/** System prompt untuk Telegram bot: paksa bahasa Indonesia natural, jangan JSON. */
+/** Potong pertanyaan sebelum masuk prompt — satu chat tidak boleh bakar token tanpa batas. */
+export const MAX_ASK_CHARS = 500;
+
+/** Tombol pintasan di /help dan /start. Callback di-router lewat `cmd:<nama>`. */
+const QUICK_KEYBOARD = {
+  inline_keyboard: [
+    [
+      { text: '📊 Status', callback_data: 'cmd:status' },
+      { text: '🏆 Top', callback_data: 'cmd:top' },
+    ],
+    [
+      { text: '🔗 Matrix', callback_data: 'cmd:matrix' },
+      { text: '🔄 Rotasi', callback_data: 'cmd:hold' },
+    ],
+    [{ text: '📖 Bantuan', callback_data: 'cmd:help' }],
+  ],
+};
+
+const CALLBACK_COMMANDS = new Set(['status', 'top', 'watch', 'matrix', 'pair', 'hold', 'scan', 'help']);
+
+/** Telegram bisa mengirim update yang sama dua kali. Simpan update_id yang sudah diproses. */
+const MAX_PROCESSED_UPDATES = 1000;
+const processedUpdates = new Set<number>();
+
+function alreadyProcessed(updateId: number): boolean {
+  if (processedUpdates.has(updateId)) return true;
+  processedUpdates.add(updateId);
+  if (processedUpdates.size > MAX_PROCESSED_UPDATES) {
+    const oldest = processedUpdates.values().next().value;
+    if (oldest !== undefined) processedUpdates.delete(oldest);
+  }
+  return false;
+}
+
 /** Simple in-memory rate limiter for AI chat to prevent DeepSeek spam.
  *  Key = chatId, value = last request timestamp. Cooldown: 30 seconds.
  *
@@ -99,7 +169,7 @@ function aiRateLimited(chatId: string): { limited: boolean; retryAfter?: number 
   return { limited: false };
 }
 
-function short(sym: string): string {
+export function short(sym: string): string {
   const bare = sym.includes(':') ? sym.slice(sym.indexOf(':') + 1) : sym;
   return bare.replace(/USDT$|USDC$/, '');
 }
@@ -108,12 +178,12 @@ function fmtSigned(x: number, digits = 2): string {
   return `${x >= 0 ? '+' : ''}${x.toFixed(digits)}`;
 }
 
-function parseTf(raw: string | undefined, fallback: string): string {
+export function parseTf(raw: string | undefined, fallback: string): string {
   const v = (raw || '').toLowerCase();
   return v === '1h' || v === '4h' || v === '1d' ? v : fallback;
 }
 
-function parseWindow(raw: string | undefined, fallback: number): number {
+export function parseWindow(raw: string | undefined, fallback: number): number {
   const n = parseInt(raw || '', 10);
   return Number.isFinite(n) ? Math.min(Math.max(n, 10), 200) : fallback;
 }
@@ -660,8 +730,15 @@ async function handleAsk(chatId: string, question: string): Promise<string> {
     return `Tunggu sebentar dulu ya (${limit.retryAfter} detik lagi) sebelum tanya lagi — biar API-nya tidak overlimit.`;
   }
 
+  const safeQuestion = question.slice(0, MAX_ASK_CHARS).trim();
+  // UX: indikator "typing". Sengaja di-await: di serverless, promise yang
+  // dibiarkan mengambang bisa dibekukan saat handler selesai. Helper ini sudah
+  // menelan error sendiri, jadi await tidak menambah risiko gagal.
+  await sendChatAction('typing', chatId);
+  const memoryText = formatMemory(await loadMemory(chatId));
+
   let scanNotice = '';
-  const isScanRequest = /scan|pindai|rescan|cari koin|lihat pasar/i.test(question);
+  const isScanRequest = /scan|pindai|rescan|cari koin|lihat pasar/i.test(safeQuestion);
   if (isScanRequest) {
     scanNotice = await handleScan();
   }
@@ -677,52 +754,223 @@ async function handleAsk(chatId: string, question: string): Promise<string> {
     return 'Belum ada scan tersimpan. Jalankan scan dari web dulu.';
   }
 
-  const prompt = `Kamu adalah HEDGE FUND MANAGER dan ELITE CRYPTO TRADER terbaik di dunia — profitable selama bertahun-tahun melalui banyak siklus bull dan bear, sangat sensitif terhadap perubahan pasar. Kamu ngobrol dengan klien lewat Telegram dalam Bahasa Indonesia yang natural, authoritative, dan ramah — jangan robotis, jangan asisten generik, jangan terlalu formal.
-
-FRAMEWORK ANALISIS YANG HARUS DIGUNAKAN:
-1. MAKRO: DXY, VIX, US10Y, likuiditas global, risk-on/risk-off, macro regime.
-2. STRUKTUR PASAR: BOS, CHoCH, liquidity sweep, order block, fair value gap.
-3. INDIKATOR TEKNIS: RSI, EMA alignment (20/50/200), volume profile, momentum.
-4. POLA HARGA — kosakata, bukan tugas mencari: double top/bottom, head and shoulders, wedge, triangle, flag, divergence. Sebut hanya yang ADA di bagian "STRUKTUR & POLA" di bawah. Cup & handle tidak dihitung engine — jangan menyebutnya.
-5. ICT / SMC: market structure shift, breaker block, mitigation block, OTE, premium/discount zone, killzone.
-6. SENTIMEN & ORDER FLOW: funding rate, spot CVD (taker delta), open interest, long/short ratio. Bagian "FUNDING & CVD SPOT" di bawah adalah data live — pakai untuk membaca siapa yang agresif (buyer atau seller) dan apakah crowd sedang long/short.
-
-TUGAS:
-1. Berikan analisis dan pendapat keuangan (financial opinion) terbaik berdasarkan kondisi pasar sekarang dari data scan terakhir.
-2. Kamu BOLEH memberikan saran arah pasar (bullish/bearish/sideways), zona interess, setup long/short/hold/wait, dan risiko — dengan alasan yang kuat dari data.
-3. JANGAN janjikan profit, jangan bilang "pasti", "jaminan", "100% aman", atau target harga/SL/TP spesifik.
-4. Selalu akhiri dengan disclaimer: "Bukan saran finansial. Konfirmasi dan risiko tanggung sendiri."
-
-ATURAN KERAS: DATA SCAN ADALAH JANGKAR. Pendapat HARUS didasarkan pada data scan terakhir. Jangan halusinasi indikator yang tidak ada. Jika data tidak cukup, katakan "data tidak cukup" dan arahkan ke web. Sebut level/pola HANYA dari bagian "STRUKTUR & POLA"; kalau di situ tertulis tidak ada, katakan tidak ada. Pola "BELUM terkonfirmasi" wajib disebut belum terkonfirmasi.
-
-URUTAN REASONING (WAJIB, jangan dilompati):
-1. MAKRO & REGIME — kondisi pasar dan artinya untuk agresivitas.
-2. BREADTH & ROTASI — long vs short, sektor yang memimpin.
-3. RELATIVE STRENGTH — dari engine: siapa kuat/lemah vs index.
-4. STRUKTUR & ORDER FLOW — posisi harga vs level dan pola dari "STRUKTUR & POLA" (sebut konflik timeframe bila ada), lalu funding/CVD: siapa yang agresif.
-5. RISIKO & INVALIDASI — pakai bagian "ALASAN & RISIKO PER KOIN" apa adanya, jangan dikarang.
-6. SKENARIO — base / bull / bear, apa yang mengonfirmasi tiap skenario.
-7. AKSI — MASUK SEKARANG / TUNGGU TRIGGER / SUDAH TELAT untuk koin teratas.
-
-- WAJIB sebut status timing tiap koin dari engine (trigger bar ini = segar; >=4 bar = sudah telat). Klien sering ragu lalu telat masuk — jangan biarkan itu terjadi.
-- WAJIB pilih SATU alasan terkuat dan SATU hal yang paling bisa membatalkan tesis.
-- Kalau masih segar, dorong bertindak tegas; kalau sudah telat, katakan tunggu pullback. Jangan menyamarkan.
-
-Gaya bahasa: Indonesia trader, singkat padat, pakai emoji strategis (📈📉💰🛡️⚠️🔥), maksimal 5 paragraf pendek. Gunakan istilah trader profesional.
-
-DATA SCAN TERAKHIR (JANGKAR):
-${await scanContext(scan)}
-
-Pertanyaan / Perintah: ${question}`;
+  // Prompt dipisah ke modul bersama supaya evaluator offline memakai teks
+  // yang sama persis; perubahan prompt kini otomatis ter-cover oleh `npm run eval`.
+  const prompt = buildAskPrompt({
+    memory: memoryText,
+    context: await scanContext(scan),
+    question: safeQuestion,
+  });
 
   try {
     const reply = await callLLM(prompt, { system: TELEGRAM_SYSTEM_PROMPT });
+    await appendMemory(chatId, safeQuestion, reply);
     const head = scanNotice ? `${scanNotice}\n\n` : '';
     return (head + reply).slice(0, 3500);
   } catch (err) {
     const msg = err instanceof Error ? err.message : 'unknown error';
     return (scanNotice ? scanNotice + '\n\n' : '') +
       `AI trader sedang sibuk atau error (${msg}). Coba lagi sebentar, atau gunakan /top, /status, /hold.`;
+  }
+}
+
+// ===== Agent runtime (adapter Telegram) =====
+// Audit + konfirmasi memakai store durable bila Supabase admin tersedia;
+// fallback in-memory dipakai untuk development / test. Store dipilih saat
+// request (lihat runAgentForChat / handleConfirm), bukan saat import modul.
+
+/** Pertanyaan asli + identitas chat + argumen persis yang disetujui. */
+export interface PendingRequest extends PendingRequestLike {}
+
+/**
+ * Helper sinkron yang diekspor untuk pengujian murni. Backing-nya adalah store
+ * in-memory; jalur produksi memakai `getDefaultConfirmationStore()` (durable
+ * bila Supabase admin terkonfigurasi). Helper ini sengaja dipertahankan agar
+ * kontrak tests/agent-webhook.test.ts tidak berubah.
+ */
+const LEGACY_CONFIRMATIONS = new InMemoryConfirmationStore();
+
+/**
+ * Cek TTL murni (tanpa efek samping) — diekspor supaya bisa diuji sendiri.
+ * `expiresAt` berasal dari executor (5 menit sejak tool ditolak).
+ */
+export function isPendingValid(entry: PendingRequest, now: number = Date.now()): boolean {
+  return entry.pending.expiresAt > now;
+}
+
+/** Simpan entri baru. */
+export function storePending(token: string, entry: PendingRequest): void {
+  LEGACY_CONFIRMATIONS.putSync({ ...entry, pending: { ...entry.pending, token } });
+}
+
+/**
+ * Ambil entri TANPA menghapus. Entri kedaluwarsa dibuang dan dianggap tidak ada.
+ */
+export function peekPending(token: string, now: number = Date.now()): PendingRequest | undefined {
+  return LEGACY_CONFIRMATIONS.getSync(token, now) as PendingRequest | undefined;
+}
+
+/**
+ * Ambil lalu hapus (single-use). Entri kedaluwarsa dibuang dan tidak bisa dipakai.
+ */
+export function consumePending(token: string, now: number = Date.now()): PendingRequest | undefined {
+  return LEGACY_CONFIRMATIONS.consumeSync(token, now) as PendingRequest | undefined;
+}
+
+/**
+ * Ambil argumen mentah dari baris audit needs_confirmation. Executor tidak
+ * menyimpan raw string di PendingConfirmation, jadi ini satu-satunya sumber
+ * yang pasti sama dengan argumen yang disetujui pengguna.
+ */
+function rawArgumentsForConfirmation(result: AgentResult, toolName: string): string {
+  const record = [...result.audit]
+    .reverse()
+    .find((r) => r.status === 'needs_confirmation' && r.toolName === toolName);
+  return JSON.stringify(record?.args ?? {});
+}
+
+/**
+ * Jalankan agent dengan konteks scan + memory yang sama seperti handleAsk.
+ * Konteks selalu direkonstruksi dari scan terbaru — tidak meng-cache objek scan
+ * lama. Return `string` berarti pesan error user-facing (sama seperti handleAsk).
+ */
+async function runAgentForChat(
+  chatId: string,
+  question: string,
+  confirmedKeys?: Set<string>,
+  replayCall?: RunAgentOptions['replayCall']
+): Promise<AgentResult | string> {
+  let scan: LastScanResponse;
+  try {
+    scan = await getLastScan('BTCUSDT');
+  } catch {
+    return 'Gagal membaca scan terakhir — Supabase tidak terjangkau.';
+  }
+  if (!scan.configured) return 'Supabase belum dikonfigurasi di server.';
+  if (!scan.found || !scan.rankings?.length) {
+    return 'Belum ada scan tersimpan. Jalankan scan dari web dulu.';
+  }
+
+  return runAgent({
+    question,
+    context: await scanContext(scan),
+    memory: formatMemory(await loadMemory(chatId)),
+    tools: MARKET_TOOLS,
+    policy: AGENT_POLICY,
+    deps: {
+      llm: (messages, tools, system) => callLLMWithTools(messages, tools, { system }),
+      audit: getDefaultAuditSink(),
+    },
+    chatId,
+    ...(confirmedKeys ? { confirmedKeys } : {}),
+    ...(replayCall ? { replayCall } : {}),
+  });
+}
+
+/** Catat hasil agent ke observability. */
+function logAgentReply(result: AgentResult, chatId: string): void {
+  logEvent('agent_reply', {
+    chatId: maskChatId(chatId),
+    outcome: result.outcome,
+    steps: result.steps,
+    toolCalls: result.toolCalls,
+  });
+}
+
+function logAgentError(err: unknown, chatId: string): void {
+  logEvent(
+    'agent_error',
+    {
+      chatId: maskChatId(chatId),
+      message: (err instanceof Error ? err.message : String(err)).slice(0, 200),
+    },
+    'error'
+  );
+}
+
+/** Perintah /agent: diskusi lewat agentic runtime yang bisa memanggil tool. */
+async function handleAgent(chatId: string, rawQuestion: string): Promise<string> {
+  const question = rawQuestion.slice(0, MAX_ASK_CHARS).trim();
+  if (!question) {
+    return 'Format: /agent <pertanyaan>\nContoh: /agent Analisis BTC dari scan terakhir';
+  }
+
+  // Rate limit: sama seperti handleAsk, mencegah spam LLM.
+  const limit = aiRateLimited(chatId);
+  if (limit.limited) {
+    return `Tunggu sebentar dulu ya (${limit.retryAfter} detik lagi) sebelum tanya lagi — biar API-nya tidak overlimit.`;
+  }
+
+  // UX: indikator "typing" (helper sudah menelan error sendiri).
+  await sendChatAction('typing', chatId);
+
+  try {
+    const result = await runAgentForChat(chatId, question);
+    if (typeof result === 'string') return result;
+
+    logAgentReply(result, chatId);
+
+    if (result.outcome === 'needs_confirmation' && result.pendingConfirmation) {
+      const pending = result.pendingConfirmation;
+      const stored: PendingRequest = {
+        pending,
+        question,
+        chatId,
+        toolName: pending.toolName,
+        arguments: rawArgumentsForConfirmation(result, pending.toolName),
+      };
+      // Jalur produksi: durable store. Helper sinkron ikut diisi supaya
+      // kontrak helper murni tetap konsisten.
+      await getDefaultConfirmationStore().put(stored);
+      storePending(pending.token, stored);
+    }
+
+    const reply = result.answer.slice(0, 3500);
+    await appendMemory(chatId, question, reply);
+    return reply;
+  } catch (err) {
+    logAgentError(err, chatId);
+    return 'Agent sedang sibuk atau error. Coba lagi sebentar, atau gunakan /top, /status, /hold.';
+  }
+}
+
+/** Perintah /confirm <token>: jalankan ulang aksi tulis yang ditunggu konfirmasi. */
+async function handleConfirm(chatId: string, token: string): Promise<string> {
+  if (!token) {
+    return 'Format: /confirm <token>\nToken ada di pesan permintaan konfirmasi.';
+  }
+
+  // Sekali pakai: ambil lalu hapus dari store (durable bila tersedia). TTL juga
+  // dicek oleh store; fallback ke helper lama kalau store gagal menemukan.
+  const confirmationStore = getDefaultConfirmationStore();
+  const entry =
+    (await confirmationStore.consume(token)) ?? consumePending(token);
+  if (!entry || entry.chatId !== chatId) {
+    return 'Token konfirmasi tidak ditemukan atau sudah kedaluwarsa. Jalankan /agent lagi untuk mendapat token baru.';
+  }
+
+  // Tandai idempotency key sebagai dikonfirmasi. Executor lalu menjalankan tool
+  // tulis (bukan needs_confirmation / dry-run) DENGAN argumen persis yang sudah
+  // disetujui — replay, bukan re-run lewat LLM.
+  const confirmed = new Set<string>([entry.pending.token]);
+  const replay: NonNullable<RunAgentOptions['replayCall']> = {
+    toolName: entry.toolName ?? entry.pending.toolName,
+    arguments: entry.arguments ?? JSON.stringify(entry.pending.args ?? {}),
+    confirmedKeys: confirmed,
+  };
+
+  try {
+    const result = await runAgentForChat(chatId, entry.question, confirmed, replay);
+    if (typeof result === 'string') return result;
+
+    logAgentReply(result, chatId);
+
+    const reply = result.answer.slice(0, 3500);
+    await appendMemory(chatId, entry.question, reply);
+    return reply;
+  } catch (err) {
+    logAgentError(err, chatId);
+    return 'Konfirmasi gagal diproses. Coba jalankan /agent lagi.';
   }
 }
 
@@ -758,22 +1006,70 @@ export default async function handler(
   // Always 200 quickly — Telegram retries anything else, which would
   // double-answer. All real failures are logged, not returned.
   try {
+    // Lapisan 1: lindungi endpoint. Telegram mengirim header ini kalau
+    // setWebhook didaftarkan dengan secret_token.
+    const expectedSecret = process.env.TELEGRAM_WEBHOOK_SECRET?.trim();
+    if (expectedSecret) {
+      const got = req.headers['x-telegram-bot-api-secret-token'];
+      if (typeof got !== 'string' || got !== expectedSecret) {
+        logEvent('telegram_secret_rejected', {}, 'warn');
+        return res.status(200).json({ ok: true, ignored: true });
+      }
+    }
+
     const { configured, chatId } = telegramEnv();
     if (!configured) {
       return res.status(200).json({ ok: false, reason: 'telegram not configured' });
     }
 
-    const update = req.body as TgUpdate;
+    let update = req.body as TgUpdate;
+    const updateId = typeof update?.update_id === 'number' ? update.update_id : undefined;
+
+    // Lapisan 2: Telegram bisa mengirim update yang sama dua kali.
+    if (updateId !== undefined && alreadyProcessed(updateId)) {
+      return res.status(200).json({ ok: true, ignored: true, duplicate: true });
+    }
+
+    // Tombol inline keyboard → ubah jadi slash command supaya lewat router
+    // yang sama dengan pesan biasa (satu source of truth).
+    let callbackId = '';
+    if (update?.callback_query) {
+      const cb = update.callback_query;
+      callbackId = cb.id || '';
+      const cbChat = cb.message?.chat?.id != null ? String(cb.message.chat.id) : '';
+      const cbCommand =
+        typeof cb.data === 'string' && cb.data.startsWith('cmd:')
+          ? cb.data.slice(4).toLowerCase()
+          : '';
+      if (!cbChat || !CALLBACK_COMMANDS.has(cbCommand)) {
+        if (callbackId) await answerCallbackQuery(callbackId);
+        return res.status(200).json({ ok: true, ignored: true });
+      }
+      // Hentikan spinner; helper menelan error sendiri.
+      await answerCallbackQuery(callbackId);
+      update = {
+        update_id: update.update_id,
+        message: { message_id: 0, chat: cb.message?.chat, text: `/${cbCommand}` },
+      } as TgUpdate;
+    }
+
     const msg = update?.message;
     const fromChat = msg?.chat?.id != null ? String(msg.chat.id) : '';
     const text = (msg?.text || '').trim();
 
-    // Not our owner, or not a text message → silence.
+    // Lapisan 3: hanya owner yang dilayani, dan hanya pesan teks.
     if (!fromChat || fromChat !== String(chatId) || !text) {
       return res.status(200).json({ ok: true, ignored: true });
     }
 
+    const startedAt = Date.now();
     const cmd = text.split(/\s+/)[0].toLowerCase().replace(/@.*$/, '');
+
+    logEvent('telegram_update', {
+      updateId,
+      chat: maskChatId(fromChat),
+      command: cmd.startsWith('/') ? cmd : 'chat',
+    });
 
     const args = text.split(/\s+/).slice(1);
 
@@ -785,15 +1081,32 @@ export default async function handler(
     else if (cmd === '/pair') reply = await handlePair(args);
     else if (cmd === '/hold' || cmd === '/buang') reply = await handleHold(args);
     else if (cmd === '/scan') reply = await handleScan() + '\n\nKetik pertanyaan untuk analisis scan terbaru.';
+    else if (cmd === '/agent') reply = await handleAgent(fromChat, args.join(' '));
+    else if (cmd === '/confirm') reply = await handleConfirm(fromChat, args[0] ?? '');
     else if (cmd === '/start' || cmd === '/help') reply = HELP;
     else if (cmd.startsWith('/'))
       reply = 'Perintah tidak dikenali. Ketik /help untuk daftar perintah.';
     else reply = await handleAsk(fromChat, text);
 
-    await sendTelegramMessage(reply, fromChat);
+    const withKeyboard = cmd === '/start' || cmd === '/help';
+    await sendTelegramMessage(
+      reply,
+      fromChat,
+      withKeyboard ? { reply_markup: QUICK_KEYBOARD } : undefined
+    );
+    logEvent('telegram_reply', {
+      updateId,
+      command: cmd.startsWith('/') ? cmd : 'chat',
+      durationMs: Date.now() - startedAt,
+      chars: reply.length,
+    });
     return res.status(200).json({ ok: true });
   } catch (err) {
-    console.error('telegram-webhook:', err instanceof Error ? err.message : err);
+    logEvent(
+      'telegram_error',
+      { message: (err instanceof Error ? err.message : String(err)).slice(0, 200) },
+      'error'
+    );
     return res.status(200).json({ ok: false });
   }
 }

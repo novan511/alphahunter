@@ -490,7 +490,7 @@ export default function McLabPanel() {
             </div>
           </div>
           <p style={{ fontSize: '11px', color: '#6b7280', lineHeight: 1.6, margin: '12px 0 0' }}>
-            "Lolos" berarti minimal 2 dari 3 jendela out-of-sample positif dengan profit factor ≥ 1,
+            &ldquo;Lolos&rdquo; berarti minimal 2 dari 3 jendela out-of-sample positif dengan profit factor ≥ 1,
             sampel ≥ 20 trade, dan Monte Carlo tidak menunjukkan mayoritas hasil negatif. Ini uji
             historis, bukan jaminan performa masa depan.
           </p>
@@ -549,7 +549,7 @@ export default function McLabPanel() {
               {runs.length === 0 && (
                 <tr>
                   <td colSpan={12} style={{ ...td, color: '#6b7280', textAlign: 'center', padding: '24px' }}>
-                    Belum ada iterasi. Tekan "Jalankan iterasi sekarang" atau tunggu cron 10 menit.
+                    Belum ada iterasi. Tekan &ldquo;Jalankan iterasi sekarang&rdquo; atau tunggu cron 10 menit.
                   </td>
                 </tr>
               )}

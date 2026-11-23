@@ -11,6 +11,15 @@
 
 Removing `ARENA_CONTROL_TOKEN` disables production controls. It does not delete state. Do not restore anonymous write policies as a troubleshooting shortcut.
 
+### Automated step cron
+
+`.github/workflows/arena-step.yml` posts `action=step` every 2 minutes (Vercel Hobby only allows daily crons). Since production controls require a Bearer token, the workflow needs **both** repository secrets under Settings → Secrets and variables → Actions:
+
+- `VERCEL_URL` — the deployed origin, e.g. `https://alphahunter-silk.vercel.app`.
+- `ARENA_CONTROL_TOKEN` — the same value configured in the Vercel environment.
+
+Without `ARENA_CONTROL_TOKEN` the job fails fast with a clear error instead of silently receiving `401`. A `401` here means agents are not stepping: no new model decisions, no new paper trades, and open positions only get TP/SL management when some other authenticated caller runs a step. If the token is rotated, update the GitHub secret in the same change.
+
 ## Scoring and history
 
 - A completed position is one trade; its partial exits are combined into that trade's net PnL/R.
