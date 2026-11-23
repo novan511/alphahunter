@@ -8,6 +8,7 @@
  */
 
 import { llmEnv } from '../quant/marketNarrator';
+import { fetchLLM } from '../llmFetch';
 import type { LLMMessage, LLMResponse, ParamDef, ToolCall, ToolDefinition } from './types';
 
 function jsonSchemaFor(param: ParamDef): Record<string, unknown> {
@@ -65,7 +66,7 @@ export async function callLLMWithTools(
   const env = llmEnv();
   if (!env.configured) throw new Error('LLM_API_KEY belum diset');
 
-  const res = await fetch(env.baseUrl, {
+  const res = await fetchLLM(env.baseUrl, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${env.apiKey}`,

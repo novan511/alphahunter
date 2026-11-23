@@ -18,6 +18,7 @@
  */
 
 import { NVIDIA_API_KEY, NVIDIA_INVOKE_URL } from '../config';
+import { fetchLLM } from '../llmFetch';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -404,7 +405,7 @@ export interface CallLLMOptions {
 export async function callLLM(prompt: string, opts: CallLLMOptions = {}): Promise<string> {
   const env = llmEnv();
   if (!env.configured) throw new Error('LLM_API_KEY belum diset');
-  const res = await fetch(env.baseUrl, {
+  const res = await fetchLLM(env.baseUrl, {
     method: 'POST',
     headers: { Authorization: `Bearer ${env.apiKey}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({

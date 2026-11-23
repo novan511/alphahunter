@@ -2,6 +2,7 @@ import type { NextApiRequest, NextApiResponse } from 'next';
 import { llmEnv } from '../../lib/quant/marketNarrator';
 import { logEvent } from '../../lib/observability';
 import { isSupabaseConfigured } from '../../lib/supabase';
+import { isSupabaseAdminConfigured } from '../../lib/supabaseAdmin';
 import { telegramEnv } from '../../lib/serverTelegram';
 
 /**
@@ -23,7 +24,14 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
     llm: llm.configured,
     supabase: isSupabaseConfigured(),
     cronSecret: Boolean(process.env.SCAN_CRON_SECRET?.trim()),
+    supabaseAdmin: isSupabaseAdminConfigured(),
   };
+  let llmHost: string | null = null;
+  try {
+    llmHost = new URL(llm.baseUrl).host;
+  } catch {
+    llmHost = 'invalid-url';
+  }
   const ok = checks.telegramToken && checks.telegramChatId && checks.llm && checks.supabase;
 
   logEvent('health_check', { ok }, ok ? 'info' : 'warn');
@@ -31,6 +39,7 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
     ok,
     checks,
     model: llm.model,
+    llmBaseUrlHost: llmHost,
     uptimeSeconds: Math.round(process.uptime()),
   });
 }
