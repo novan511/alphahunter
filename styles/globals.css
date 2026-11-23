@@ -1,6 +1,4 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+/* Tailwind is not installed in this project — all styles are plain CSS below. */
 
 :root {
   --bg-primary: #0a0e17;

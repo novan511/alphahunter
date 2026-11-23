@@ -1,6 +1,8 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
+  // Turbopack otherwise walks up to a package-lock.json in the parent folder.
+  turbopack: { root: __dirname },
   images: {
     unoptimized: true,
   },

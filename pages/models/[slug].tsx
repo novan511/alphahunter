@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/router';
+import Link from 'next/link';
 import Layout from '../../components/Layout/Layout';
 import Sparkline from '../../components/Sparkline';
 import ArenaPositionChart from '../../components/Arena/PositionChart';
@@ -157,7 +158,7 @@ export default function ModelPage() {
   return (
     <Layout>
       <div style={{ maxWidth: 1080, margin: '0 auto', padding: '24px 16px', display: 'flex', flexDirection: 'column', gap: 16 }}>
-        <a href="/arena" style={{ color: '#818cf8', fontSize: 12, textDecoration: 'none' }}>← kembali ke arena</a>
+        <Link href="/arena" style={{ color: '#818cf8', fontSize: 12, textDecoration: 'none' }}>← kembali ke arena</Link>
         {err && <div style={card}><p style={{ color: '#ef4444', margin: 0, fontSize: 13 }}>{err}</p></div>}
         {!s && !err && <div style={card}><p style={{ color: '#6b7280', margin: 0 }}>Memuat…</p></div>}
 
