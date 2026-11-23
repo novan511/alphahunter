@@ -1,0 +1,24 @@
+DATA SCAN TERAKHIR (JANGKAR):
+Scan: 07:00 WIB | Index: BTCUSDT | Interval: 4h
+Regime: risk on (confidence 72)
+Breadth: 14 dari 20 koin long, 5 short, 1 netral
+Sektor memimpin: Layer 1 (heating), DeFi (cooling)
+
+TOP COIN:
+- SOLUSDT strong_buy skor 81, trigger 1 bar lalu (segar), alasan: breakout resistance dengan volume 2.1x rata-rata. Risiko: invalidasi bila kembali di bawah support.
+- ETHUSDT buy skor 66, trigger 5 bar lalu (sudah telat), alasan: rotasi dari BTC. Risiko: momentum melambat.
+- BTCUSDT netral skor 48, alasan: konsolidasi di bawah resistance.
+
+ALASAN & RISIKO PER KOIN:
+- SOLUSDT: alasan terkuat breakout terkonfirmasi dengan volume; yang membatalkan tesis adalah return ke bawah support.
+- ETHUSDT: alasan terkuat rotasi sektor; yang membatalkan tesis adalah melemahnya momentum.
+
+STRUKTUR & POLA (4h/1d):
+- BTCUSDT: downtrend, support 80888, resistance 83272, belum ada pola terkonfirmasi.
+- SOLUSDT: BOS terkonfirmasi, support 168, resistance 185, pola flag BELUM terkonfirmasi.
+
+FUNDING & CVD SPOT (data live, bukan bagian scan):
+- SOLUSDT funding 0.012 persen, CVD positif
+- BTCUSDT funding -0.004 persen, CVD netral
+
+REKAM JEJAK LIVE: sampel belum cukup (n=4)
